@@ -1,11 +1,14 @@
 import os
 import sys
 import platform
-# 1. Dynamically find the absolute path to your local bin\win folder
-base_dir = os.path.dirname(os.path.abspath(__file__))
-bin_dir = os.path.join(base_dir, 'bin', 'win')
+# 1. Dynamically find the project root and the bundled binaries.
+# This file now lives in <project>/prototypes/BasicUI, so the project
+# root is two directories above the script's own location.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
 
-# 2. Inject it into the system PATH so ctypes/python-mpv can find it immediately
+# 2. Point PATH at the local bin\win folder so python-mpv can load libmpv-2.dll
+bin_dir = os.path.join(PROJECT_ROOT, 'bin', 'win')
 os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 
 # 3. NOW safely import mpv
@@ -16,8 +19,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush
 
 def get_dll_path():
     """Resolves an absolute, local path to the bundled libmpv-2.dll."""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    dll_path = os.path.join(base_dir, 'bin', 'win', 'libmpv-2.dll')
+    dll_path = os.path.join(PROJECT_ROOT, 'bin', 'win', 'libmpv-2.dll')
     
     # Normalize path separators for Windows
     return os.path.normpath(dll_path)
@@ -75,7 +77,7 @@ class CommCutPrototype(QMainWindow):
             print("MPV player is not initialized.")
             return
             
-        import_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'import', 'test.mp4')
+        import_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
         
         if os.path.exists(import_path):
             print(f"Playing: {import_path}")
