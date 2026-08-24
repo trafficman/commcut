@@ -63,6 +63,9 @@ class MediaPlayer(QMainWindow):
                 input_vo_keyboard=True
             )
 
+        play_button = self.ui.playPause
+        play_button.clicked.connect(self.load_and_play)
+
     def load_and_play(self):
         """Loads test.mp4 from the import folder and starts playback."""
         if not self.player:
@@ -77,13 +80,6 @@ class MediaPlayer(QMainWindow):
             self.player.play(import_path)
         else:
             print(f"Could not find 'test.mp4' in the import folder: {import_path}")
-
-    def showEvent(self, event):
-        """Auto-load the test clip once the window is first shown."""
-        super().showEvent(event)
-        if not getattr(self, "_loaded", False):
-            self._loaded = True
-            self.load_and_play()
 
 if __name__ == "__main__":
     # Required for high-DPI scaling on modern Windows displays
