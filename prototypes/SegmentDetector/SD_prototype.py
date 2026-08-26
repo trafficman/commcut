@@ -15,9 +15,9 @@ os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 import mpv
 
 # 4. Qt libs
-from PySide6.QtWidgets import QMainWindow, QApplication
+from PySide6.QtWidgets import QMainWindow, QApplication, QStyle
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import Qt, QFile
+from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot
 
 def get_dll_path():
     """Resolves an absolute, local path to the bundled libmpv-2.dll."""
@@ -25,6 +25,68 @@ def get_dll_path():
     
     # Normalize path separators for Windows
     return os.path.normpath(dll_path)
+
+class MpvBridge(QObject):
+    """Single communication channel between Qt and libmpv.
+
+    Commands flow down through the public methods; confirmed state flows back
+    up as Qt signals. Widgets never read mpv state directly, so the UI can
+    only ever mirror what mpv reports.
+    """
+
+    pauseChanged = Signal(bool)
+    fileLoaded = Signal(str)
+    playbackEnded = Signal()
+
+    def __init__(self, player, parent=None):
+        super().__init__(parent)
+        self.player = player
+
+        # Observers fire on mpv's worker thread. Emitting Qt signals is
+        # thread-safe and delivers the payload on the GUI thread.
+        player.observe_property('pause', self._on_pause)
+        player.observe_property('eof-reached', self._on_eof)
+        player.observe_property('path', self._on_path)
+
+    # --- state callbacks (mpv worker thread) ---
+    def _on_pause(self, name, value):
+        if value is not None:
+            self.pauseChanged.emit(bool(value))
+
+    def _on_eof(self, name, value):
+        if value:
+            self.playbackEnded.emit()
+
+    def _on_path(self, name, value):
+        if value:
+            self.fileLoaded.emit(str(value))
+
+    # --- command surface (call from the GUI thread) ---
+    def load_and_play(self, path):
+        self.player.play(path)
+        self.player.pause = False
+
+    def toggle_play(self):
+        p = self.player
+        if p.idle_active:
+            print("No media loaded.")
+            return
+        if p.eof_reached:
+            # keep-open froze us on the final frame: restart from the top
+            p.seek(0, reference='absolute', precision='exact')
+            p.pause = False
+        else:
+            p.pause = not p.pause
+
+    def seek_exact(self, seconds):
+        """Frame-exact absolute seek (no keyframe snapping)."""
+        self.player.seek(seconds, reference='absolute', precision='exact')
+
+    def step_frames(self, count=1):
+        if count == 1:
+            self.player.frame_step()
+        elif count == -1:
+            self.player.frame_back_step()
 
 class MediaPlayer(QMainWindow):
     def __init__(self):
@@ -55,31 +117,55 @@ class MediaPlayer(QMainWindow):
         # Initialize MPV Player and bind it to the QFrame window ID.
         # Keep the MPV instance in its own attribute; do NOT overwrite
         # self.ui.videoContainer or you lose the widget reference.
+        self.media_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
         self.player = mpv.MPV(
                 wid=str(int(video_frame.winId())),
                 vo='direct3d',
-                osc=True,
-                input_default_bindings=True,
-                input_vo_keyboard=True
+                osc=False,
+                input_default_bindings=False,
+                input_vo_keyboard=False,
+                keep_open=True,
+                hr_seek='always'
             )
 
-        play_button = self.ui.playPause
-        play_button.clicked.connect(self.load_and_play)
+        # Start paused so mpv's state and the button agree before any load.
+        self.player.pause = True
+        self.bridge = MpvBridge(self.player, parent=self)
 
-    def load_and_play(self):
-        """Loads test.mp4 from the import folder and starts playback."""
-        if not self.player:
-            print("MPV player is not initialized.")
+        play_button = self.ui.playPause
+        play_button.clicked.connect(self.on_transport_clicked)
+        self.bridge.pauseChanged.connect(self.on_pause_changed)
+        self.bridge.fileLoaded.connect(lambda p: print(f"Loaded: {p}"))
+        self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
+
+        self._sync_button(paused=True)
+
+    def on_transport_clicked(self):
+        """First press loads test.mp4; later presses toggle play/pause."""
+        if not os.path.exists(self.media_path):
+            print(f"Could not find 'test.mp4' in the import folder: {self.media_path}")
             return
 
-        import_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
-
-        if os.path.exists(import_path):
-            print(f"Playing: {import_path}")
-            # Tell MPV to open and play the file
-            self.player.play(import_path)
+        if self.player.idle_active:
+            self.bridge.load_and_play(self.media_path)
         else:
-            print(f"Could not find 'test.mp4' in the import folder: {import_path}")
+            # toggle_play also handles restart-at-end-of-file internally
+            self.bridge.toggle_play()
+
+    @Slot(bool)
+    def on_pause_changed(self, paused):
+        self._sync_button(paused)
+
+    def _sync_button(self, paused):
+        """Mirror mpv's pause state onto the button label/icon."""
+        btn = self.ui.playPause
+        style = btn.style()
+        if paused:
+            btn.setText("Play")
+            btn.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
+        else:
+            btn.setText("Pause")
+            btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 if __name__ == "__main__":
     # Required for high-DPI scaling on modern Windows displays

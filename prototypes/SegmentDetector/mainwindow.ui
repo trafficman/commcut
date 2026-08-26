@@ -33,7 +33,7 @@
    <item>
     <widget class="QPushButton" name="playPause">
      <property name="text">
-      <string>Play test.mp4</string>
+      <string>Play</string>
      </property>
     </widget>
    </item>
