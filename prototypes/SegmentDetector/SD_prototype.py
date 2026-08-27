@@ -134,6 +134,8 @@ class MediaPlayer(QMainWindow):
 
         play_button = self.ui.playPause
         play_button.clicked.connect(self.on_transport_clicked)
+        self.ui.forwardFrame.clicked.connect(lambda: self.bridge.step_frames(1))
+        self.ui.backwardFrame.clicked.connect(lambda: self.bridge.step_frames(-1))
         self.bridge.pauseChanged.connect(self.on_pause_changed)
         self.bridge.fileLoaded.connect(lambda p: print(f"Loaded: {p}"))
         self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
