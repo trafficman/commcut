@@ -83,10 +83,26 @@ class MpvBridge(QObject):
         self.player.seek(seconds, reference='absolute', precision='exact')
 
     def step_frames(self, count=1):
-        if count == 1:
-            self.player.frame_step()
-        elif count == -1:
-            self.player.frame_back_step()
+        """Advance exactly one frame via exact seek.
+
+        frame-step renders the frame's audio as it advances, and muting around
+        it is racy (the audio is decoded faster than the mute takes effect), so
+        we seek by one frame duration instead. Seeking flushes the audio buffer
+        and stays silent.
+        """
+        fps = self.player.container_fps
+        pos = self.player.time_pos
+        if not fps or pos is None:
+            # fps/position not yet known (file still loading); nothing to step
+            return
+        target = pos + count / fps
+        if target < 0.0:
+            target = 0.0
+        dur = self.player.duration
+        if dur is not None and target > dur:
+            target = dur
+        self.player.seek(target, reference='absolute', precision='exact')
+        self.player.pause = True
 
 class MediaPlayer(QMainWindow):
     def __init__(self):
