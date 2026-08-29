@@ -14,6 +14,8 @@ os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 # 3. NOW safely import mpv
 import mpv
 
+from timeline import TimelineWidget, Segment
+
 # 4. Qt libs
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle
 from PySide6.QtUiTools import QUiLoader
@@ -35,6 +37,8 @@ class MpvBridge(QObject):
     """
 
     pauseChanged = Signal(bool)
+    positionChanged = Signal(float)
+    durationChanged = Signal(float)
     fileLoaded = Signal(str)
     playbackEnded = Signal()
 
@@ -45,6 +49,8 @@ class MpvBridge(QObject):
         # Observers fire on mpv's worker thread. Emitting Qt signals is
         # thread-safe and delivers the payload on the GUI thread.
         player.observe_property('pause', self._on_pause)
+        player.observe_property('time-pos', self._on_time_pos)
+        player.observe_property('duration', self._on_duration)
         player.observe_property('eof-reached', self._on_eof)
         player.observe_property('path', self._on_path)
 
@@ -52,6 +58,14 @@ class MpvBridge(QObject):
     def _on_pause(self, name, value):
         if value is not None:
             self.pauseChanged.emit(bool(value))
+
+    def _on_time_pos(self, name, value):
+        if value is not None:
+            self.positionChanged.emit(float(value))
+
+    def _on_duration(self, name, value):
+        if value is not None:
+            self.durationChanged.emit(float(value))
 
     def _on_eof(self, name, value):
         if value:
@@ -104,6 +118,28 @@ class MpvBridge(QObject):
         self.player.seek(target, reference='absolute', precision='exact')
         self.player.pause = True
 
+class UiLoader(QUiLoader):
+    """QUiLoader that can construct our custom promoted widgets.
+
+    QUiLoader.createWidget is called for every widget in the .ui file. When it
+    encounters our promoted class name we build the real widget; everything
+    else falls through to the base implementation.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._custom_widgets = {}
+
+    def register_widget(self, cls):
+        self._custom_widgets[cls.__name__] = cls
+
+    def createWidget(self, className, parent=None, name=""):
+        if className in self._custom_widgets:
+            widget = self._custom_widgets[className](parent)
+            widget.setObjectName(name)
+            return widget
+        return super().createWidget(className, parent, name)
+
+
 class MediaPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -115,7 +151,8 @@ class MediaPlayer(QMainWindow):
             sys.exit(-1)
         
         # Load the UI file created in Qt Designer
-        loader = QUiLoader()
+        loader = UiLoader()
+        loader.register_widget(TimelineWidget)
         self.ui = loader.load(ui_file, self)
         self.setCentralWidget(self.ui)
         
@@ -155,6 +192,10 @@ class MediaPlayer(QMainWindow):
         self.bridge.pauseChanged.connect(self.on_pause_changed)
         self.bridge.fileLoaded.connect(lambda p: print(f"Loaded: {p}"))
         self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
+
+        self.bridge.positionChanged.connect(self.ui.timelineWidget.set_position)
+        self.bridge.durationChanged.connect(self.ui.timelineWidget.set_duration)
+        self.ui.timelineWidget.seekRequested.connect(self.bridge.seek_exact)
 
         self._sync_button(paused=True)
 
