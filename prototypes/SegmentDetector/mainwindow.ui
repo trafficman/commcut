@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>892</width>
-    <height>668</height>
+    <width>1024</width>
+    <height>768</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -38,9 +38,46 @@
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout_3">
        <item>
+        <widget class="QPushButton" name="segmentPrevAdd">
+         <property name="text">
+          <string>Add Prev Seg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="clipStart">
+         <property name="text">
+          <string>Start Seg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Policy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="backwardKeyFrame">
+         <property name="text">
+          <string>&lt; KeyFrame</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="backwardFrame">
          <property name="text">
-          <string>Frame Backward</string>
+          <string>&lt; Frame</string>
          </property>
         </widget>
        </item>
@@ -54,7 +91,44 @@
        <item>
         <widget class="QPushButton" name="forwardFrame">
          <property name="text">
-          <string>Frame Forward</string>
+          <string>Frame &gt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="forwardKeyFrame">
+         <property name="text">
+          <string>KeyFrame &gt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_2">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Policy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="clipEnd">
+         <property name="text">
+          <string>End Seg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton">
+         <property name="text">
+          <string>Add Next Seg</string>
          </property>
         </widget>
        </item>
@@ -64,14 +138,14 @@
    </item>
   </layout>
  </widget>
- <customwidgets>
+  <customwidgets>
    <customwidget>
     <class>TimelineWidget</class>
     <extends>QWidget</extends>
     <header>timeline</header>
     <container>1</container>
    </customwidget>
- </customwidgets>
+  </customwidgets>
  <resources/>
  <connections/>
 </ui>
