@@ -18,9 +18,10 @@ import mpv
 from timeline import TimelineWidget, Segment
 
 # 4. Qt libs
-from PySide6.QtWidgets import QMainWindow, QApplication, QStyle
+from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot
+from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
+from PySide6.QtGui import QPixmap, QColor
 
 def get_dll_path():
     """Resolves an absolute, local path to the bundled libmpv-2.dll."""
@@ -65,6 +66,25 @@ def scan_keyframes(path):
             except ValueError:
                 continue
     return sorted(keyframes)
+
+
+class PreScanWorker(QObject):
+    """Runs per-file pre-work off the GUI thread, for the splash screen.
+
+    Emits finished(list) with the keyframe timestamps once scanning is done.
+    Extend run() with more scan stages (scene detection, waveform, ...) as the
+    project grows — emit a progress message between each stage.
+    """
+    finished = Signal(list)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    @Slot()
+    def run(self):
+        keyframes = scan_keyframes(self.path)
+        self.finished.emit(keyframes)
 
 
 class MpvBridge(QObject):
@@ -116,6 +136,11 @@ class MpvBridge(QObject):
             self.fileLoaded.emit(str(value))
 
     # --- command surface (call from the GUI thread) ---
+    def load_file(self, path):
+        """Load a file and pause at the start (used for initial project load)."""
+        self.player.play(path)
+        self.player.pause = True
+
     def load_and_play(self, path):
         self.player.play(path)
         self.player.pause = False
@@ -219,9 +244,6 @@ class MediaPlayer(QMainWindow):
         loader.register_widget(TimelineWidget)
         self.ui = loader.load(ui_file, self)
         self.setCentralWidget(self.ui)
-        
-        # Example: Accessing widgets you placed in Designer
-        # self.ui.playButton.clicked.connect(self.handle_play)
 
         video_frame = self.ui.videoContainer
 
@@ -265,23 +287,13 @@ class MediaPlayer(QMainWindow):
 
         self._sync_button(paused=True)
 
+        self.bridge.load_file(self.media_path)
+
     def on_file_loaded(self, path):
-        """Called when mpv finishes loading a file: scan its keyframes."""
-        keyframes = scan_keyframes(path)
-        self.bridge.set_keyframes(keyframes)
-        print(f"Loaded: {path} ({len(keyframes)} keyframes)")
+        print(f"Loaded: {path}")
 
     def on_transport_clicked(self):
-        """First press loads test.mp4; later presses toggle play/pause."""
-        if not os.path.exists(self.media_path):
-            print(f"Could not find 'test.mp4' in the import folder: {self.media_path}")
-            return
-
-        if self.player.idle_active:
-            self.bridge.load_and_play(self.media_path)
-        else:
-            # toggle_play also handles restart-at-end-of-file internally
-            self.bridge.toggle_play()
+        self.bridge.toggle_play()
 
     @Slot(bool)
     def on_pause_changed(self, paused):
@@ -298,12 +310,29 @@ class MediaPlayer(QMainWindow):
             btn.setText("Pause")
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
+
 if __name__ == "__main__":
     # Required for high-DPI scaling on modern Windows displays
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+
+    pixmap = QPixmap(480, 270)
+    pixmap.fill(QColor(30, 30, 30))
+    splash = QSplashScreen(pixmap)
+    splash.show()
+
+    media_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
+    splash.showMessage(f"Now loading {os.path.basename(media_path)}…",
+                       Qt.AlignCenter | Qt.AlignBottom, QColor(200, 200, 200))
+    app.processEvents()
+
+    keyframes = scan_keyframes(media_path)
+
+    splash.close()
     window = MediaPlayer()
+    window.bridge.set_keyframes(keyframes)
     window.resize(1024, 768)
     window.show()
+
     sys.exit(app.exec())
