@@ -28,6 +28,13 @@ def get_dll_path():
     # Normalize path separators for Windows
     return os.path.normpath(dll_path)
 
+
+# Keyframes closer than this (seconds) to the current position are treated as
+# "the keyframe we're standing on" and skipped, so repeated presses walk cleanly
+# through the list instead of re-seeking to the same spot.
+_KEYFRAME_EPSILON = 0.05
+
+
 class MpvBridge(QObject):
     """Single communication channel between Qt and libmpv.
 
@@ -45,6 +52,7 @@ class MpvBridge(QObject):
     def __init__(self, player, parent=None):
         super().__init__(parent)
         self.player = player
+        self.keyframes = []
 
         # Observers fire on mpv's worker thread. Emitting Qt signals is
         # thread-safe and delivers the payload on the GUI thread.
@@ -118,6 +126,30 @@ class MpvBridge(QObject):
         self.player.seek(target, reference='absolute', precision='exact')
         self.player.pause = True
 
+    # --- keyframe navigation ---
+    def set_keyframes(self, times):
+        """Replace the keyframe list with a sorted list of times (seconds)."""
+        self.keyframes = sorted(times)
+
+    def next_keyframe(self):
+        """Seek to the first keyframe after the current position."""
+        pos = self.player.time_pos
+        if pos is None:
+            return
+        for t in self.keyframes:
+            if t > pos + _KEYFRAME_EPSILON:
+                self.seek_exact(t)
+                return
+
+    def prev_keyframe(self):
+        """Seek to the last keyframe before the current position."""
+        pos = self.player.time_pos
+        if pos is None:
+            return
+        for t in reversed(self.keyframes):
+            if t < pos - _KEYFRAME_EPSILON:
+                self.seek_exact(t)
+                return
 class UiLoader(QUiLoader):
     """QUiLoader that can construct our custom promoted widgets.
 
@@ -189,6 +221,8 @@ class MediaPlayer(QMainWindow):
         play_button.clicked.connect(self.on_transport_clicked)
         self.ui.forwardFrame.clicked.connect(lambda: self.bridge.step_frames(1))
         self.ui.backwardFrame.clicked.connect(lambda: self.bridge.step_frames(-1))
+        self.ui.forwardKeyFrame.clicked.connect(self.bridge.next_keyframe)
+        self.ui.backwardKeyFrame.clicked.connect(self.bridge.prev_keyframe)
         self.bridge.pauseChanged.connect(self.on_pause_changed)
         self.bridge.fileLoaded.connect(lambda p: print(f"Loaded: {p}"))
         self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
@@ -198,6 +232,9 @@ class MediaPlayer(QMainWindow):
         self.ui.timelineWidget.seekRequested.connect(self.bridge.seek_exact)
 
         self._sync_button(paused=True)
+
+        # Placeholder
+        self.bridge.set_keyframes([5.0, 12.0, 20.0, 35.0])
 
     def on_transport_clicked(self):
         """First press loads test.mp4; later presses toggle play/pause."""
