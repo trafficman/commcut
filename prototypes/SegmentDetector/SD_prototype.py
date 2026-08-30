@@ -1,6 +1,7 @@
 import os
 import sys
 import platform
+import subprocess
 # 1. Dynamically find the project root and the bundled binaries.
 # This file now lives in <project>/prototypes/SegmentDector, so the project
 # root is two directories above the script's own location.
@@ -33,6 +34,37 @@ def get_dll_path():
 # "the keyframe we're standing on" and skipped, so repeated presses walk cleanly
 # through the list instead of re-seeking to the same spot.
 _KEYFRAME_EPSILON = 0.05
+
+
+def scan_keyframes(path):
+    """Return sorted I-frame timestamps (seconds) for a video, via ffprobe.
+
+    Runs: ffprobe -v error -select_streams v:0 -show_entries frame=pict_type,pts_time -of csv=p=0 <path>
+    and keeps only the rows whose pict_type is "I".
+    """
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "frame=pict_type,pts_time",
+            "-of", "csv=p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    keyframes = []
+    for line in result.stdout.splitlines():
+        try:
+            pts_time, pict_type = line.split(",", 1)
+        except ValueError:
+            continue
+        if pict_type.strip() == "I":
+            try:
+                keyframes.append(float(pts_time))
+            except ValueError:
+                continue
+    return sorted(keyframes)
 
 
 class MpvBridge(QObject):
@@ -224,7 +256,7 @@ class MediaPlayer(QMainWindow):
         self.ui.forwardKeyFrame.clicked.connect(self.bridge.next_keyframe)
         self.ui.backwardKeyFrame.clicked.connect(self.bridge.prev_keyframe)
         self.bridge.pauseChanged.connect(self.on_pause_changed)
-        self.bridge.fileLoaded.connect(lambda p: print(f"Loaded: {p}"))
+        self.bridge.fileLoaded.connect(self.on_file_loaded)
         self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
 
         self.bridge.positionChanged.connect(self.ui.timelineWidget.set_position)
@@ -233,8 +265,11 @@ class MediaPlayer(QMainWindow):
 
         self._sync_button(paused=True)
 
-        # Placeholder
-        self.bridge.set_keyframes([5.0, 12.0, 20.0, 35.0])
+    def on_file_loaded(self, path):
+        """Called when mpv finishes loading a file: scan its keyframes."""
+        keyframes = scan_keyframes(path)
+        self.bridge.set_keyframes(keyframes)
+        print(f"Loaded: {path} ({len(keyframes)} keyframes)")
 
     def on_transport_clicked(self):
         """First press loads test.mp4; later presses toggle play/pause."""
