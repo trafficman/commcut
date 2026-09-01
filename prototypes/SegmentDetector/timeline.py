@@ -11,6 +11,14 @@ class Segment:
     end: float    # seconds
 
 
+# Alternating segment colors (red, green, blue, repeating).
+SEGMENT_COLORS = [
+    QColor(180, 70, 70),   # red
+    QColor(70, 160, 70),   # green
+    QColor(70, 110, 190),  # blue
+]
+
+
 class TimelineWidget(QWidget):
     """Zoom-ready playback timeline.
 
@@ -27,6 +35,7 @@ class TimelineWidget(QWidget):
         self.duration = 0.0
         self.position = 0.0
         self.segments = []
+        self.active_index = 0
 
         # Zoom/scroll state. pixels_per_second is the zoom level; scroll_offset
         # is how many seconds are scrolled off the left edge.
@@ -35,7 +44,7 @@ class TimelineWidget(QWidget):
 
         self._dragging = False
 
-    # --- coordinate mapping (single source of truth) ---
+    # --- coordinate mapping (single source of rightness) ---
     def time_to_x(self, t):
         return (t - self.scroll_offset) * self.pixels_per_second
 
@@ -55,6 +64,10 @@ class TimelineWidget(QWidget):
         self.segments = segments
         self.update()
 
+    def set_active_index(self, i):
+        self.active_index = i
+        self.update()
+
     # --- zoom ---
     def set_pixels_per_second(self, pps):
         self.pixels_per_second = max(1.0, pps)
@@ -65,6 +78,17 @@ class TimelineWidget(QWidget):
         if self.duration > 0 and self.width() > 0:
             self.pixels_per_second = self.width() / self.duration
             self.scroll_offset = 0.0
+        self.update()
+
+    def zoom_to_segment(self, i):
+        """Zoom so segment i fills the widget width."""
+        if not self.segments or self.width() <= 0:
+            return
+        seg = self.segments[i]
+        seg_duration = seg.end - seg.start
+        if seg_duration > 0:
+            self.pixels_per_second = self.width() / seg_duration
+            self.scroll_offset = seg.start
         self.update()
 
     # --- rendering ---
@@ -79,16 +103,24 @@ class TimelineWidget(QWidget):
         if self.duration <= 0:
             return
 
-        # Layer 1: segment blocks
-        segment_brush = QBrush(QColor(50, 90, 140, 180))
-        painter.setBrush(segment_brush)
+        # Layer 1: segment blocks (alternating colors)
         painter.setPen(Qt.NoPen)
-        for seg in self.segments:
+        for i, seg in enumerate(self.segments):
             x_start = self.time_to_x(seg.start)
             x_end = self.time_to_x(seg.end)
+            painter.fillRect(int(x_start), 10, max(2, int(x_end - x_start)), height - 20,
+                             SEGMENT_COLORS[i % len(SEGMENT_COLORS)])
+
+        # Layer 2: active segment highlight
+        if self.segments:
+            seg = self.segments[self.active_index]
+            x_start = self.time_to_x(seg.start)
+            x_end = self.time_to_x(seg.end)
+            painter.setPen(QPen(QColor(255, 255, 255), 3))
+            painter.setBrush(Qt.NoBrush)
             painter.drawRect(int(x_start), 10, max(2, int(x_end - x_start)), height - 20)
 
-        # Layer 2: playhead
+        # Layer 3: playhead
         playhead_x = int(self.time_to_x(self.position))
         painter.setPen(QPen(QColor(230, 80, 80), 2))
         painter.drawLine(playhead_x, 0, playhead_x, height)
@@ -111,8 +143,9 @@ class TimelineWidget(QWidget):
         self._dragging = False
 
     def resizeEvent(self, event):
-        # Keep the whole timeline fitted when the widget is resized.
-        self.zoom_fit()
+        # Re-zoom to the active segment when the widget is resized.
+        if self.segments:
+            self.zoom_to_segment(self.active_index)
         super().resizeEvent(event)
 
     def _clamp_time(self, x):

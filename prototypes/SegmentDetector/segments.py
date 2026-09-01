@@ -102,3 +102,26 @@ class SegmentModel:
 
     def end(self, i):
         return self.segments[i + 1]["start"] if i + 1 < len(self.segments) else self.duration
+
+    # --- editing operations ---
+
+    def end_segment(self, active_index, position):
+        """Split the active segment at position.
+
+        The active segment (left part) keeps the active index. A new segment
+        is inserted to its right, inheriting the active segment's metadata.
+        Returns True if a split was made, False if position was at a boundary.
+        """
+        seg = self.segments[active_index]
+        start = seg["start"]
+        end = self.end(active_index)
+        position = max(start, min(position, end))
+        if position <= start or position >= end:
+            return False
+        new_seg = {
+            "start": position,
+            "ignored": seg["ignored"],
+            "tags": dict(seg["tags"]),
+        }
+        self.segments.insert(active_index + 1, new_seg)
+        return True

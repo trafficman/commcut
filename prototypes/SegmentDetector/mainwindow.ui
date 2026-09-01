@@ -139,6 +139,13 @@
      </item>
     </layout>
    </item>
+   <item>
+    <widget class="QPushButton" name="stageButton">
+     <property name="text">
+      <string>Stage</string>
+     </property>
+    </widget>
+   </item>
   </layout>
  </widget>
  <customwidgets>

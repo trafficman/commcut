@@ -289,7 +289,41 @@ class MediaPlayer(QMainWindow):
 
         self._sync_button(paused=True)
 
+        # --- editing state ---
+        self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
+        self.current_index = 0
+        self.ui.clipEnd.clicked.connect(self.on_end_segment)
+        self.ui.stageButton.clicked.connect(self.on_stage)
+
+        self._refresh_timeline()
+
         self.bridge.load_file(self.media_path)
+
+    def _refresh_timeline(self):
+        """Push the current segment model + active index onto the timeline."""
+        segments = [Segment(self.segment_model.start(i), self.segment_model.end(i))
+                    for i in range(self.segment_model.segment_count())]
+        self.ui.timelineWidget.set_duration(self.segment_model.duration)
+        self.ui.timelineWidget.set_segments(segments)
+        self.ui.timelineWidget.set_active_index(self.current_index)
+        self.ui.timelineWidget.zoom_to_segment(self.current_index)
+
+    def on_end_segment(self):
+        """Split the active segment at the current playhead position."""
+        position = self.player.time_pos
+        if position is None:
+            return
+        if self.segment_model.end_segment(self.current_index, position):
+            self._refresh_timeline()
+
+    def on_stage(self):
+        """Lock in the active segment, advance to the next."""
+        self.segment_model.save(sidecar_path(self.media_path))
+        self.current_index += 1
+        if self.current_index >= self.segment_model.segment_count():
+            print("Editing complete.")
+            return
+        self._refresh_timeline()
 
     def on_file_loaded(self, path):
         print(f"Loaded: {path}")
