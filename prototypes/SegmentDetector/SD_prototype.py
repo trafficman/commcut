@@ -331,8 +331,10 @@ if __name__ == "__main__":
 
     keyframes = scan_keyframes(media_path)
 
-    duration = probe_duration(media_path) or 0.0
-    SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar_path(media_path))
+    sidecar = sidecar_path(media_path)
+    if not os.path.exists(sidecar):
+        duration = probe_duration(media_path) or 0.0
+        SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
 
     splash.close()
     window = MediaPlayer()
