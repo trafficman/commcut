@@ -17,6 +17,8 @@ import mpv
 
 from timeline import TimelineWidget, Segment
 
+from segments import sidecar_path, probe_duration, SegmentModel
+
 # 4. Qt libs
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtUiTools import QUiLoader
@@ -329,9 +331,13 @@ if __name__ == "__main__":
 
     keyframes = scan_keyframes(media_path)
 
+    duration = probe_duration(media_path) or 0.0
+    SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar_path(media_path))
+
     splash.close()
     window = MediaPlayer()
     window.bridge.set_keyframes(keyframes)
+    window.segment_model = SegmentModel.load(sidecar_path(media_path))
     window.resize(1024, 768)
     window.show()
 

@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 
-# Testing videos
+# Testing files
 *.mp4
 *.mkv
+*.cmct
