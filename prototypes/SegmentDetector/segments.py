@@ -136,3 +136,27 @@ class SegmentModel:
             return False
         del self.segments[active_index + 1]
         return True
+
+    def start_segment(self, active_index, position):
+        """Split the active segment at position, activating the right part.
+
+        The left part (behind the cut) is marked ignored. A new segment is
+        inserted to the right, inheriting the active segment's metadata, and
+        becomes the active segment. Returns True if a split was made.
+        """
+        seg = self.segments[active_index]
+        start = seg["start"]
+        end = self.end(active_index)
+        position = max(start, min(position, end))
+        if position <= start or position >= end:
+            return False
+        # Left part (current active) becomes ignored.
+        seg["ignored"] = True
+        # Right part inherits metadata and becomes the new active segment.
+        new_seg = {
+            "start": position,
+            "ignored": False,
+            "tags": dict(seg["tags"]),
+        }
+        self.segments.insert(active_index + 1, new_seg)
+        return True

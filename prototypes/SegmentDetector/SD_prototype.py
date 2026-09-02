@@ -301,6 +301,7 @@ class MediaPlayer(QMainWindow):
         self.ui.activeRight.clicked.connect(lambda: self._move_active(1))
         self.ui.mergeNext.clicked.connect(self.on_merge_next)
         self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
+        self.ui.clipStart.clicked.connect(self.on_start_segment)
 
         self._refresh_timeline()
 
@@ -329,6 +330,15 @@ class MediaPlayer(QMainWindow):
     def on_merge_next(self):
         """Merge the active segment into the next one."""
         if self.segment_model.merge_next(self.current_index):
+            self._refresh_timeline()
+
+    def on_start_segment(self):
+        """Split the active segment at the playhead, activating the right part."""
+        position = self.player.time_pos
+        if position is None:
+            return
+        if self.segment_model.start_segment(self.current_index, position):
+            self.current_index += 1
             self._refresh_timeline()
 
     def _refresh_timeline(self):
