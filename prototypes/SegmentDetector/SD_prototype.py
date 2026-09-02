@@ -297,6 +297,8 @@ class MediaPlayer(QMainWindow):
         self.ui.stageButton.clicked.connect(self.on_stage)
         self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
         self.ui.toggleZoom.setChecked(self.zoom_active)
+        self.ui.activeLeft.clicked.connect(lambda: self._move_active(-1))
+        self.ui.activeRight.clicked.connect(lambda: self._move_active(1))
 
         self._refresh_timeline()
 
@@ -309,6 +311,13 @@ class MediaPlayer(QMainWindow):
             self.ui.timelineWidget.zoom_to_segment(self.current_index)
         else:
             self.ui.timelineWidget.zoom_fit()
+
+    def _move_active(self, delta):
+        """Move the active segment index by delta, clamped to valid range."""
+        new_index = self.current_index + delta
+        if 0 <= new_index < self.segment_model.segment_count():
+            self.current_index = new_index
+            self._refresh_timeline()
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""

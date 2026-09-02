@@ -139,16 +139,13 @@
      </item>
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout">
-        <item>
-         <widget class="QPushButton" name="toggleZoom">
-          <property name="text">
-           <string>Toggle Zoom</string>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
+       <item>
+        <widget class="QPushButton" name="activeLeft">
+         <property name="text">
+          <string>&lt; Active Left</string>
+         </property>
+        </widget>
+       </item>
        <item>
         <widget class="QPushButton" name="stageButton">
          <property name="text">
@@ -156,7 +153,24 @@
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="activeRight">
+         <property name="text">
+          <string>Active Right &gt;</string>
+         </property>
+        </widget>
+       </item>
       </layout>
+     </item>
+     <item>
+      <widget class="QPushButton" name="toggleZoom">
+       <property name="text">
+        <string>Toggle Zoom</string>
+       </property>
+       <property name="checkable">
+        <bool>true</bool>
+       </property>
+      </widget>
      </item>
     </layout>
    </item>
