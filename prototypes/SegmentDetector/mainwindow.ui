@@ -129,7 +129,7 @@
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="pushButton">
+        <widget class="QPushButton" name="mergeNext">
          <property name="text">
           <string>Add Next Seg</string>
          </property>
@@ -137,14 +137,28 @@
        </item>
       </layout>
      </item>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout">
+        <item>
+         <widget class="QPushButton" name="toggleZoom">
+          <property name="text">
+           <string>Toggle Zoom</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       <item>
+        <widget class="QPushButton" name="stageButton">
+         <property name="text">
+          <string>Stage</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QPushButton" name="stageButton">
-     <property name="text">
-      <string>Stage</string>
-     </property>
-    </widget>
    </item>
   </layout>
  </widget>

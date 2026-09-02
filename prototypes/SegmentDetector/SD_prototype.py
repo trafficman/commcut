@@ -292,12 +292,23 @@ class MediaPlayer(QMainWindow):
         # --- editing state ---
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
         self.current_index = 0
+        self.zoom_active = True
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
+        self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
+        self.ui.toggleZoom.setChecked(self.zoom_active)
 
         self._refresh_timeline()
 
         self.bridge.load_file(self.media_path)
+
+    def on_toggle_zoom(self, checked):
+        """Toggle between zoom-to-active-segment and zoom-fit-whole-video."""
+        self.zoom_active = checked
+        if checked:
+            self.ui.timelineWidget.zoom_to_segment(self.current_index)
+        else:
+            self.ui.timelineWidget.zoom_fit()
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
@@ -306,7 +317,10 @@ class MediaPlayer(QMainWindow):
         self.ui.timelineWidget.set_duration(self.segment_model.duration)
         self.ui.timelineWidget.set_segments(segments)
         self.ui.timelineWidget.set_active_index(self.current_index)
-        self.ui.timelineWidget.zoom_to_segment(self.current_index)
+        if self.zoom_active:
+            self.ui.timelineWidget.zoom_to_segment(self.current_index)
+        else:
+            self.ui.timelineWidget.zoom_fit()
 
     def on_end_segment(self):
         """Split the active segment at the current playhead position."""
