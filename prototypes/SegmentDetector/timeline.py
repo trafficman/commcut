@@ -9,6 +9,7 @@ class Segment:
     """A contiguous unedited region of the source timeline."""
     start: float  # seconds
     end: float    # seconds
+    ignored: bool = False
 
 
 # Alternating segment colors (red, green, blue, repeating).
@@ -17,6 +18,9 @@ SEGMENT_COLORS = [
     QColor(70, 160, 70),   # green
     QColor(70, 110, 190),  # blue
 ]
+
+# Dimmed version used for ignored segments.
+IGNORED_COLOR = QColor(70, 70, 70)
 
 
 class TimelineWidget(QWidget):
@@ -103,13 +107,16 @@ class TimelineWidget(QWidget):
         if self.duration <= 0:
             return
 
-        # Layer 1: segment blocks (alternating colors)
+        # Layer 1: segment blocks (alternating colors, dimmed if ignored)
         painter.setPen(Qt.NoPen)
         for i, seg in enumerate(self.segments):
             x_start = self.time_to_x(seg.start)
             x_end = self.time_to_x(seg.end)
-            painter.fillRect(int(x_start), 10, max(2, int(x_end - x_start)), height - 20,
-                             SEGMENT_COLORS[i % len(SEGMENT_COLORS)])
+            if seg.ignored:
+                color = IGNORED_COLOR
+            else:
+                color = SEGMENT_COLORS[i % len(SEGMENT_COLORS)]
+            painter.fillRect(int(x_start), 10, max(2, int(x_end - x_start)), height - 20, color)
 
         # Layer 2: active segment highlight
         if self.segments:

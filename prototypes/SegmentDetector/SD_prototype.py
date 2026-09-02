@@ -300,10 +300,16 @@ class MediaPlayer(QMainWindow):
         self.ui.activeLeft.clicked.connect(lambda: self._move_active(-1))
         self.ui.activeRight.clicked.connect(lambda: self._move_active(1))
         self.ui.mergeNext.clicked.connect(self.on_merge_next)
+        self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
 
         self._refresh_timeline()
 
         self.bridge.load_file(self.media_path)
+
+    def on_toggle_ignore(self, checked):
+        """Toggle the active segment's ignored flag."""
+        self.segment_model.segments[self.current_index]["ignored"] = checked
+        self.ui.timelineWidget.update()
 
     def on_toggle_zoom(self, checked):
         """Toggle between zoom-to-active-segment and zoom-fit-whole-video."""
@@ -327,7 +333,8 @@ class MediaPlayer(QMainWindow):
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
-        segments = [Segment(self.segment_model.start(i), self.segment_model.end(i))
+        segments = [Segment(self.segment_model.start(i), self.segment_model.end(i),
+                            self.segment_model.segments[i]["ignored"])
                     for i in range(self.segment_model.segment_count())]
         self.ui.timelineWidget.set_duration(self.segment_model.duration)
         self.ui.timelineWidget.set_segments(segments)
@@ -336,6 +343,9 @@ class MediaPlayer(QMainWindow):
             self.ui.timelineWidget.zoom_to_segment(self.current_index)
         else:
             self.ui.timelineWidget.zoom_fit()
+        self.ui.clipIgnore.blockSignals(True)
+        self.ui.clipIgnore.setChecked(self.segment_model.segments[self.current_index]["ignored"])
+        self.ui.clipIgnore.blockSignals(False)
 
     def on_end_segment(self):
         """Split the active segment at the current playhead position."""
