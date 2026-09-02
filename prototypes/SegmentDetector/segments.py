@@ -125,3 +125,14 @@ class SegmentModel:
         }
         self.segments.insert(active_index + 1, new_seg)
         return True
+
+    def merge_next(self, active_index):
+        """Remove the boundary after the active segment, merging it with the next.
+
+        The active segment absorbs the next one's span. The next segment's
+        metadata is discarded. Returns True if a merge happened.
+        """
+        if active_index + 1 >= len(self.segments):
+            return False
+        del self.segments[active_index + 1]
+        return True

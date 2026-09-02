@@ -299,6 +299,7 @@ class MediaPlayer(QMainWindow):
         self.ui.toggleZoom.setChecked(self.zoom_active)
         self.ui.activeLeft.clicked.connect(lambda: self._move_active(-1))
         self.ui.activeRight.clicked.connect(lambda: self._move_active(1))
+        self.ui.mergeNext.clicked.connect(self.on_merge_next)
 
         self._refresh_timeline()
 
@@ -317,6 +318,11 @@ class MediaPlayer(QMainWindow):
         new_index = self.current_index + delta
         if 0 <= new_index < self.segment_model.segment_count():
             self.current_index = new_index
+            self._refresh_timeline()
+
+    def on_merge_next(self):
+        """Merge the active segment into the next one."""
+        if self.segment_model.merge_next(self.current_index):
             self._refresh_timeline()
 
     def _refresh_timeline(self):
