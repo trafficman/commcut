@@ -146,13 +146,16 @@
          </property>
         </widget>
        </item>
-       <item>
-        <widget class="QPushButton" name="undoButton">
-         <property name="text">
-          <string>Undo</string>
-         </property>
-        </widget>
-       </item>
+        <item>
+         <widget class="QPushButton" name="undoButton">
+          <property name="text">
+           <string>Undo</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
        <item>
         <widget class="QPushButton" name="stageButton">
          <property name="text">

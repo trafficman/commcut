@@ -344,6 +344,8 @@ class MediaPlayer(QMainWindow):
         # still fires `clicked` so on_stage runs normally.
         self.dirty = False
         self.ui.stageButton.setCheckable(True)
+        self.ui.undoButton.setCheckable(True)
+        self.ui.undoButton.clicked.connect(self.on_undo)
         self._update_stage_button()
 
         self._refresh_timeline()
@@ -447,11 +449,26 @@ class MediaPlayer(QMainWindow):
         self._update_stage_button()
 
     def _update_stage_button(self):
-        """Reflect the dirty state: checked+enabled when dirty, unchecked+disabled when clean."""
-        self.ui.stageButton.blockSignals(True)
-        self.ui.stageButton.setChecked(self.dirty)
-        self.ui.stageButton.setEnabled(self.dirty)
-        self.ui.stageButton.blockSignals(False)
+        """Reflect the dirty state on the Stage and Undo buttons.
+
+        Both buttons are checkable and enabled only when there are unstaged
+        changes. Signals are blocked so programmatic toggling doesn't
+        re-trigger any handlers.
+        """
+        for btn in (self.ui.stageButton, self.ui.undoButton):
+            btn.blockSignals(True)
+            btn.setChecked(self.dirty)
+            btn.setEnabled(self.dirty)
+            btn.blockSignals(False)
+
+    def on_undo(self):
+        """Revert the in-memory model to the last-staged .cmct state."""
+        self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
+        if self.current_index >= self.segment_model.segment_count():
+            self.current_index = max(0, self.segment_model.segment_count() - 1)
+        self.dirty = False
+        self._update_stage_button()
+        self._refresh_timeline()
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
