@@ -209,6 +209,21 @@ class MpvBridge(QObject):
             if t < pos - _KEYFRAME_EPSILON:
                 self.seek_exact(t)
                 return
+# Tag key → attribute name on self.ui for the corresponding QLineEdit.
+_TAG_FIELDS = {
+    "title":       "lineEditTitle",
+    "network":     "lineEditNetwork",
+    "block":       "lineEditBlock",
+    "filler_type": "lineEditType",
+    "year":        "lineEditYear",
+    "time_period": "lineEditTimePeriod",
+    "show":        "lineEditShow",
+    "special":     "lineEditSpecial",
+    "length":      "lineEditLength",
+    "information": "lineEditInfo",
+}
+
+
 class UiLoader(QUiLoader):
     """QUiLoader that can construct our custom promoted widgets.
 
@@ -341,6 +356,15 @@ class MediaPlayer(QMainWindow):
             self.current_index += 1
             self._refresh_timeline()
 
+    def _read_tags_from_form(self):
+        """Snapshot the current form values into a tags dict."""
+        return {key: getattr(self.ui, attr).text() for key, attr in _TAG_FIELDS.items()}
+
+    def _write_tags_to_form(self, tags):
+        """Populate the form from a tags dict, leaving fields blank if missing."""
+        for key, attr in _TAG_FIELDS.items():
+            getattr(self.ui, attr).setText(tags.get(key, ""))
+
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
         segments = [Segment(self.segment_model.start(i), self.segment_model.end(i),
@@ -356,6 +380,7 @@ class MediaPlayer(QMainWindow):
         self.ui.clipIgnore.blockSignals(True)
         self.ui.clipIgnore.setChecked(self.segment_model.segments[self.current_index]["ignored"])
         self.ui.clipIgnore.blockSignals(False)
+        self._write_tags_to_form(self.segment_model.segments[self.current_index]["tags"])
 
     def on_end_segment(self):
         """Split the active segment at the current playhead position."""
@@ -367,6 +392,7 @@ class MediaPlayer(QMainWindow):
 
     def on_stage(self):
         """Lock in the active segment, advance to the next."""
+        self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
         self.segment_model.save(sidecar_path(self.media_path))
         self.current_index += 1
         if self.current_index >= self.segment_model.segment_count():
