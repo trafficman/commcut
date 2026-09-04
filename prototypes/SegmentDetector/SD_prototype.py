@@ -335,6 +335,16 @@ class MediaPlayer(QMainWindow):
         for key, attr in _LOCK_BUTTONS.items():
             getattr(self.ui, attr).toggled.connect(
                 lambda checked, k=key: self.on_toggle_lock(k, checked))
+        for key, attr in _TAG_FIELDS.items():
+            getattr(self.ui, attr).textChanged.connect(
+                lambda text, k=key: self.on_tag_edited(k, text))
+
+        # Stage button doubles as the "unsaved changes" indicator: checkable +
+        # enabled when dirty, unchecked + disabled when clean. The click action
+        # still fires `clicked` so on_stage runs normally.
+        self.dirty = False
+        self.ui.stageButton.setCheckable(True)
+        self._update_stage_button()
 
         self._refresh_timeline()
 
@@ -343,6 +353,8 @@ class MediaPlayer(QMainWindow):
     def on_toggle_ignore(self, checked):
         """Toggle the active segment's ignored flag."""
         self.segment_model.segments[self.current_index]["ignored"] = checked
+        self.dirty = True
+        self._update_stage_button()
         self.ui.timelineWidget.update()
 
     def on_toggle_zoom(self, checked):
@@ -363,6 +375,8 @@ class MediaPlayer(QMainWindow):
     def on_merge_next(self):
         """Merge the active segment into the next one."""
         if self.segment_model.merge_next(self.current_index):
+            self.dirty = True
+            self._update_stage_button()
             self._refresh_timeline()
 
     def on_start_segment(self):
@@ -372,6 +386,8 @@ class MediaPlayer(QMainWindow):
             return
         if self.segment_model.start_segment(self.current_index, position):
             self.current_index += 1
+            self.dirty = True
+            self._update_stage_button()
             self._refresh_timeline()
 
     def _read_tags_from_form(self):
@@ -383,15 +399,19 @@ class MediaPlayer(QMainWindow):
 
         On a still-unedited segment, locked tags are pre-filled from
         self.tag_locks (overriding any stored empty value), since locks are
-        the only source of input for unedited segments.
+        the only source of input for unedited segments. Signals are blocked
+        during setText so the dirty flag isn't set by the programmatic write.
         """
         unedited = not self._is_segment_edited(self.current_index)
         for key, attr in _TAG_FIELDS.items():
+            line_edit = getattr(self.ui, attr)
             if unedited and key in self.tag_locks:
                 value = self.tag_locks[key]
             else:
                 value = tags.get(key, "")
-            getattr(self.ui, attr).setText(value)
+            line_edit.blockSignals(True)
+            line_edit.setText(value)
+            line_edit.blockSignals(False)
 
     def _is_segment_edited(self, index):
         """True if the segment has any non-empty tag value."""
@@ -420,6 +440,19 @@ class MediaPlayer(QMainWindow):
             self.tag_locks.pop(key, None)
         self._refresh_lock_buttons()
 
+    def on_tag_edited(self, key, text):
+        """Update the in-memory model when a tag field is edited, and mark dirty."""
+        self.segment_model.segments[self.current_index]["tags"][key] = text
+        self.dirty = True
+        self._update_stage_button()
+
+    def _update_stage_button(self):
+        """Reflect the dirty state: checked+enabled when dirty, unchecked+disabled when clean."""
+        self.ui.stageButton.blockSignals(True)
+        self.ui.stageButton.setChecked(self.dirty)
+        self.ui.stageButton.setEnabled(self.dirty)
+        self.ui.stageButton.blockSignals(False)
+
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
         segments = [Segment(self.segment_model.start(i), self.segment_model.end(i),
@@ -444,12 +477,16 @@ class MediaPlayer(QMainWindow):
         if position is None:
             return
         if self.segment_model.end_segment(self.current_index, position):
+            self.dirty = True
+            self._update_stage_button()
             self._refresh_timeline()
 
     def on_stage(self):
         """Lock in the active segment, advance to the next."""
         self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
         self.segment_model.save(sidecar_path(self.media_path))
+        self.dirty = False
+        self._update_stage_button()
         self.current_index += 1
         if self.current_index >= self.segment_model.segment_count():
             print("Editing complete.")
