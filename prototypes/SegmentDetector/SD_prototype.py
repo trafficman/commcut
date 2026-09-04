@@ -223,6 +223,20 @@ _TAG_FIELDS = {
     "information": "lineEditInfo",
 }
 
+# Tag key → attribute name on self.ui for the corresponding lock toggle button.
+# Title is intentionally excluded — Title must be unique per segment.
+_LOCK_BUTTONS = {
+    "filler_type": "lockType",
+    "network":     "lockNetwork",
+    "year":        "lockYear",
+    "time_period": "lockTimePeriod",
+    "block":       "lockBlock",
+    "show":        "lockShow",
+    "special":     "lockSpecial",
+    "length":      "lockLength",
+    "information": "lockInfo",
+}
+
 
 class UiLoader(QUiLoader):
     """QUiLoader that can construct our custom promoted widgets.
@@ -308,6 +322,7 @@ class MediaPlayer(QMainWindow):
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
         self.current_index = 0
         self.zoom_active = True
+        self.tag_locks = {}  # tag key → locked value, carried across unedited segments
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
         self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
@@ -317,6 +332,9 @@ class MediaPlayer(QMainWindow):
         self.ui.mergeNext.clicked.connect(self.on_merge_next)
         self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
         self.ui.clipStart.clicked.connect(self.on_start_segment)
+        for key, attr in _LOCK_BUTTONS.items():
+            getattr(self.ui, attr).toggled.connect(
+                lambda checked, k=key: self.on_toggle_lock(k, checked))
 
         self._refresh_timeline()
 
@@ -361,9 +379,46 @@ class MediaPlayer(QMainWindow):
         return {key: getattr(self.ui, attr).text() for key, attr in _TAG_FIELDS.items()}
 
     def _write_tags_to_form(self, tags):
-        """Populate the form from a tags dict, leaving fields blank if missing."""
+        """Populate the form from a tags dict.
+
+        On a still-unedited segment, locked tags are pre-filled from
+        self.tag_locks (overriding any stored empty value), since locks are
+        the only source of input for unedited segments.
+        """
+        unedited = not self._is_segment_edited(self.current_index)
         for key, attr in _TAG_FIELDS.items():
-            getattr(self.ui, attr).setText(tags.get(key, ""))
+            if unedited and key in self.tag_locks:
+                value = self.tag_locks[key]
+            else:
+                value = tags.get(key, "")
+            getattr(self.ui, attr).setText(value)
+
+    def _is_segment_edited(self, index):
+        """True if the segment has any non-empty tag value."""
+        return any(self.segment_model.segments[index]["tags"].values())
+
+    def _refresh_lock_buttons(self):
+        """Set lock button checked states to match the computed values.
+
+        On an unedited segment, a lock is checked iff its key is in
+        self.tag_locks. On an edited segment, all locks are disengaged.
+        """
+        unedited = not self._is_segment_edited(self.current_index)
+        for key, attr in _LOCK_BUTTONS.items():
+            btn = getattr(self.ui, attr)
+            desired = unedited and key in self.tag_locks
+            btn.blockSignals(True)
+            btn.setChecked(desired)
+            btn.blockSignals(False)
+
+    def on_toggle_lock(self, key, checked):
+        """Record (or clear) a locked tag value, then re-render lock states."""
+        if checked:
+            form_attr = _TAG_FIELDS[key]
+            self.tag_locks[key] = getattr(self.ui, form_attr).text()
+        else:
+            self.tag_locks.pop(key, None)
+        self._refresh_lock_buttons()
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
@@ -381,6 +436,7 @@ class MediaPlayer(QMainWindow):
         self.ui.clipIgnore.setChecked(self.segment_model.segments[self.current_index]["ignored"])
         self.ui.clipIgnore.blockSignals(False)
         self._write_tags_to_form(self.segment_model.segments[self.current_index]["tags"])
+        self._refresh_lock_buttons()
 
     def on_end_segment(self):
         """Split the active segment at the current playhead position."""
