@@ -372,6 +372,7 @@ class MediaPlayer(QMainWindow):
         new_index = self.current_index + delta
         if 0 <= new_index < self.segment_model.segment_count():
             self.current_index = new_index
+            self._snap_playhead_to_active_start()
             self._refresh_timeline()
 
     def on_merge_next(self):
@@ -390,6 +391,7 @@ class MediaPlayer(QMainWindow):
             self.current_index += 1
             self.dirty = True
             self._update_stage_button()
+            self._snap_playhead_to_active_start()
             self._refresh_timeline()
 
     def _read_tags_from_form(self):
@@ -468,7 +470,13 @@ class MediaPlayer(QMainWindow):
             self.current_index = max(0, self.segment_model.segment_count() - 1)
         self.dirty = False
         self._update_stage_button()
+        self._snap_playhead_to_active_start()
         self._refresh_timeline()
+
+    def _snap_playhead_to_active_start(self):
+        """Seek mpv to the start of the current active segment."""
+        if self.current_index < self.segment_model.segment_count():
+            self.bridge.seek_exact(self.segment_model.start(self.current_index))
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
@@ -508,10 +516,13 @@ class MediaPlayer(QMainWindow):
         if self.current_index >= self.segment_model.segment_count():
             print("Editing complete.")
             return
+        self._snap_playhead_to_active_start()
         self._refresh_timeline()
 
     def on_file_loaded(self, path):
+        """Called when mpv finishes loading a file: snap to the active segment start."""
         print(f"Loaded: {path}")
+        self._snap_playhead_to_active_start()
 
     def on_transport_clicked(self):
         self.bridge.toggle_play()
