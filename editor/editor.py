@@ -3,10 +3,14 @@ import sys
 import platform
 import subprocess
 # 1. Dynamically find the project root and the bundled binaries.
-# This file now lives in <project>/prototypes/SegmentDector, so the project
-# root is two directories above the script's own location.
+# This file now lives in <project>/editor, so the project root is one
+# directory above the script's own location.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+# Make the project root importable so 'shared' resolves when this script is
+# run directly (e.g. `python editor/editor.py`).
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # 2. Point PATH at the local bin\win folder so python-mpv can load libmpv-2.dll
 bin_dir = os.path.join(PROJECT_ROOT, 'bin', 'win')
@@ -15,9 +19,9 @@ os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 # 3. NOW safely import mpv
 import mpv
 
-from timeline import TimelineWidget, Segment
+from shared.timeline import TimelineWidget, Segment
 
-from segments import sidecar_path, probe_duration, SegmentModel
+from shared.segments import sidecar_path, probe_duration, SegmentModel
 
 # 4. Qt libs
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
