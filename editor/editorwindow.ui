@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Segment Dector - Prototype</string>
+   <string>Video Editor</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_2">
    <item>
@@ -146,24 +146,24 @@
          </property>
         </widget>
        </item>
-        <item>
-         <widget class="QPushButton" name="undoButton">
-          <property name="text">
-           <string>Undo</string>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
+       <item>
+        <widget class="QPushButton" name="undoButton">
+         <property name="text">
+          <string>Undo</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
        <item>
         <widget class="QPushButton" name="stageButton">
          <property name="text">
           <string>Stage</string>
          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
         </widget>
        </item>
        <item>
