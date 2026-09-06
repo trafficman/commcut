@@ -1,0 +1,396 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SegmentDetector</class>
+ <widget class="QWidget" name="SegmentDetector">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1000</width>
+    <height>1000</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Segment Dector - Prototype</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_2">
+   <item>
+    <layout class="QVBoxLayout" name="verticalLayout">
+     <item>
+      <widget class="QFrame" name="videoContainer">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="TimelineWidget" name="timelineWidget" native="true"/>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="timelineControls">
+       <item>
+        <widget class="QCheckBox" name="clipIgnore">
+         <property name="text">
+          <string>Skip Cur Seg</string>
+         </property>
+         <property name="checked">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="clipStart">
+         <property name="text">
+          <string>Start Seg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Policy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="backwardKeyFrame">
+         <property name="text">
+          <string>&lt; KeyFrame</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="backwardFrame">
+         <property name="text">
+          <string>&lt; Frame</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="playPause">
+         <property name="text">
+          <string>Play</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="forwardFrame">
+         <property name="text">
+          <string>Frame &gt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="forwardKeyFrame">
+         <property name="text">
+          <string>KeyFrame &gt;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_2">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Policy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="clipEnd">
+         <property name="text">
+          <string>End Seg</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="mergeNext">
+         <property name="text">
+          <string>Add Next Seg</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="segmentControls">
+       <item>
+        <widget class="QPushButton" name="activeLeft">
+         <property name="text">
+          <string>&lt; Active Left</string>
+         </property>
+        </widget>
+       </item>
+        <item>
+         <widget class="QPushButton" name="undoButton">
+          <property name="text">
+           <string>Undo</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       <item>
+        <widget class="QPushButton" name="stageButton">
+         <property name="text">
+          <string>Stage</string>
+         </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="activeRight">
+         <property name="text">
+          <string>Active Right &gt;</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <widget class="QPushButton" name="toggleZoom">
+       <property name="text">
+        <string>Toggle Zoom</string>
+       </property>
+       <property name="checkable">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <layout class="QGridLayout" name="tagsLayout">
+       <item row="0" column="2">
+        <widget class="QLineEdit" name="lineEditTitle"/>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="labelType">
+         <property name="text">
+          <string>Type</string>
+         </property>
+        </widget>
+       </item>
+       <item row="9" column="0">
+        <widget class="QLabel" name="labelInfo">
+         <property name="text">
+          <string>Info (O)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="3">
+        <widget class="QPushButton" name="lockType">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="labelYear">
+         <property name="text">
+          <string>Year</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0">
+        <widget class="QLabel" name="labelTitle">
+         <property name="text">
+          <string>Title</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="labelNetwork">
+         <property name="text">
+          <string>Network</string>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="0">
+        <widget class="QLabel" name="labelLength">
+         <property name="text">
+          <string>Length (O)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="0">
+        <widget class="QLabel" name="labelTimePeriod">
+         <property name="text">
+          <string>Time Period</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QLineEdit" name="lineEditType"/>
+       </item>
+       <item row="6" column="0">
+        <widget class="QLabel" name="labelShow">
+         <property name="text">
+          <string>Show (O)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="labelBlock">
+         <property name="text">
+          <string>Block (O)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="0">
+        <widget class="QLabel" name="labelSpecial">
+         <property name="text">
+          <string>Special (O)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QLineEdit" name="lineEditNetwork"/>
+       </item>
+       <item row="3" column="2">
+        <widget class="QLineEdit" name="lineEditYear"/>
+       </item>
+       <item row="4" column="2">
+        <widget class="QLineEdit" name="lineEditTimePeriod"/>
+       </item>
+       <item row="5" column="2">
+        <widget class="QLineEdit" name="lineEditBlock"/>
+       </item>
+       <item row="6" column="2">
+        <widget class="QLineEdit" name="lineEditShow"/>
+       </item>
+       <item row="7" column="2">
+        <widget class="QLineEdit" name="lineEditSpecial"/>
+       </item>
+       <item row="8" column="2">
+        <widget class="QLineEdit" name="lineEditLength"/>
+       </item>
+       <item row="9" column="2">
+        <widget class="QLineEdit" name="lineEditInfo"/>
+       </item>
+       <item row="2" column="3">
+        <widget class="QPushButton" name="lockNetwork">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="3">
+        <widget class="QPushButton" name="lockYear">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="3">
+        <widget class="QPushButton" name="lockTimePeriod">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="3">
+        <widget class="QPushButton" name="lockBlock">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="3">
+        <widget class="QPushButton" name="lockShow">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="3">
+        <widget class="QPushButton" name="lockSpecial">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="3">
+        <widget class="QPushButton" name="lockLength">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="9" column="3">
+        <widget class="QPushButton" name="lockInfo">
+         <property name="text">
+          <string>Lock/Unlock</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>TimelineWidget</class>
+   <extends>QWidget</extends>
+   <header>timeline</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
