@@ -14,7 +14,7 @@ from shared.segments import sidecar_path, probe_duration, SegmentModel
 
 # Qt libs
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
-from PySide6.QtUiTools import QUiLoader
+from shared.ui_loader import UiLoader
 from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
 from PySide6.QtGui import QPixmap, QColor
 
@@ -68,28 +68,6 @@ _LOCK_BUTTONS = {
     "length":      "lockLength",
     "information": "lockInfo",
 }
-
-
-class UiLoader(QUiLoader):
-    """QUiLoader that can construct our custom promoted widgets.
-
-    QUiLoader.createWidget is called for every widget in the .ui file. When it
-    encounters our promoted class name we build the real widget; everything
-    else falls through to the base implementation.
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._custom_widgets = {}
-
-    def register_widget(self, cls):
-        self._custom_widgets[cls.__name__] = cls
-
-    def createWidget(self, className, parent=None, name=""):
-        if className in self._custom_widgets:
-            widget = self._custom_widgets[className](parent)
-            widget.setObjectName(name)
-            return widget
-        return super().createWidget(className, parent, name)
 
 
 class MediaPlayer(QMainWindow):
