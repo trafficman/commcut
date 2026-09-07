@@ -1,6 +1,5 @@
 import os
 import sys
-import subprocess
 
 # Make the project root importable so 'shared' resolves. This must happen
 # before importing anything from shared.
@@ -9,11 +8,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-# NOW safely import mpv
-import mpv
-
+from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.timeline import TimelineWidget, Segment
-
 from shared.segments import sidecar_path, probe_duration, SegmentModel
 
 # Qt libs
@@ -22,49 +18,8 @@ from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
 from PySide6.QtGui import QPixmap, QColor
 
-def get_dll_path():
-    """Resolves an absolute, local path to the bundled libmpv-2.dll."""
-    dll_path = os.path.join(PROJECT_ROOT, 'bin', 'win', 'libmpv-2.dll')
-    
-    # Normalize path separators for Windows
-    return os.path.normpath(dll_path)
 
-
-# Keyframes closer than this (seconds) to the current position are treated as
-# "the keyframe we're standing on" and skipped, so repeated presses walk cleanly
-# through the list instead of re-seeking to the same spot.
-_KEYFRAME_EPSILON = 0.05
-
-
-def scan_keyframes(path):
-    """Return sorted I-frame timestamps (seconds) for a video, via ffprobe.
-
-    Runs: ffprobe -v error -select_streams v:0 -show_entries frame=pict_type,pts_time -of csv=p=0 <path>
-    and keeps only the rows whose pict_type is "I".
-    """
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "frame=pict_type,pts_time",
-            "-of", "csv=p=0",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    keyframes = []
-    for line in result.stdout.splitlines():
-        try:
-            pts_time, pict_type = line.split(",", 1)
-        except ValueError:
-            continue
-        if pict_type.strip() == "I":
-            try:
-                keyframes.append(float(pts_time))
-            except ValueError:
-                continue
-    return sorted(keyframes)
+# scan_keyframes and _KEYFRAME_EPSILON live in shared.mpv now.
 
 
 class PreScanWorker(QObject):
@@ -86,126 +41,6 @@ class PreScanWorker(QObject):
         self.finished.emit(keyframes)
 
 
-class MpvBridge(QObject):
-    """Single communication channel between Qt and libmpv.
-
-    Commands flow down through the public methods; confirmed state flows back
-    up as Qt signals. Widgets never read mpv state directly, so the UI can
-    only ever mirror what mpv reports.
-    """
-
-    pauseChanged = Signal(bool)
-    positionChanged = Signal(float)
-    durationChanged = Signal(float)
-    fileLoaded = Signal(str)
-    playbackEnded = Signal()
-
-    def __init__(self, player, parent=None):
-        super().__init__(parent)
-        self.player = player
-        self.keyframes = []
-
-        # Observers fire on mpv's worker thread. Emitting Qt signals is
-        # thread-safe and delivers the payload on the GUI thread.
-        player.observe_property('pause', self._on_pause)
-        player.observe_property('time-pos', self._on_time_pos)
-        player.observe_property('duration', self._on_duration)
-        player.observe_property('eof-reached', self._on_eof)
-        player.observe_property('path', self._on_path)
-
-    # --- state callbacks (mpv worker thread) ---
-    def _on_pause(self, name, value):
-        if value is not None:
-            self.pauseChanged.emit(bool(value))
-
-    def _on_time_pos(self, name, value):
-        if value is not None:
-            self.positionChanged.emit(float(value))
-
-    def _on_duration(self, name, value):
-        if value is not None:
-            self.durationChanged.emit(float(value))
-
-    def _on_eof(self, name, value):
-        if value:
-            self.playbackEnded.emit()
-
-    def _on_path(self, name, value):
-        if value:
-            self.fileLoaded.emit(str(value))
-
-    # --- command surface (call from the GUI thread) ---
-    def load_file(self, path):
-        """Load a file and pause at the start (used for initial project load)."""
-        self.player.play(path)
-        self.player.pause = True
-
-    def load_and_play(self, path):
-        self.player.play(path)
-        self.player.pause = False
-
-    def toggle_play(self):
-        p = self.player
-        if p.idle_active:
-            print("No media loaded.")
-            return
-        if p.eof_reached:
-            # keep-open froze us on the final frame: restart from the top
-            p.seek(0, reference='absolute', precision='exact')
-            p.pause = False
-        else:
-            p.pause = not p.pause
-
-    def seek_exact(self, seconds):
-        """Frame-exact absolute seek (no keyframe snapping)."""
-        self.player.seek(seconds, reference='absolute', precision='exact')
-
-    def step_frames(self, count=1):
-        """Advance exactly one frame via exact seek.
-
-        frame-step renders the frame's audio as it advances, and muting around
-        it is racy (the audio is decoded faster than the mute takes effect), so
-        we seek by one frame duration instead. Seeking flushes the audio buffer
-        and stays silent.
-        """
-        fps = self.player.container_fps
-        pos = self.player.time_pos
-        if not fps or pos is None:
-            # fps/position not yet known (file still loading); nothing to step
-            return
-        target = pos + count / fps
-        if target < 0.0:
-            target = 0.0
-        dur = self.player.duration
-        if dur is not None and target > dur:
-            target = dur
-        self.player.seek(target, reference='absolute', precision='exact')
-        self.player.pause = True
-
-    # --- keyframe navigation ---
-    def set_keyframes(self, times):
-        """Replace the keyframe list with a sorted list of times (seconds)."""
-        self.keyframes = sorted(times)
-
-    def next_keyframe(self):
-        """Seek to the first keyframe after the current position."""
-        pos = self.player.time_pos
-        if pos is None:
-            return
-        for t in self.keyframes:
-            if t > pos + _KEYFRAME_EPSILON:
-                self.seek_exact(t)
-                return
-
-    def prev_keyframe(self):
-        """Seek to the last keyframe before the current position."""
-        pos = self.player.time_pos
-        if pos is None:
-            return
-        for t in reversed(self.keyframes):
-            if t < pos - _KEYFRAME_EPSILON:
-                self.seek_exact(t)
-                return
 # Tag key → attribute name on self.ui for the corresponding QLineEdit.
 _TAG_FIELDS = {
     "title":       "lineEditTitle",
@@ -275,25 +110,14 @@ class MediaPlayer(QMainWindow):
 
         video_frame = self.ui.videoContainer
 
-        # FIX: Force Qt to create a dedicated native window handle for the
-        # frame. Without this the QFrame has no stable native HWND, so MPV's
-        # direct3d renderer cannot embed into it (it opens its own window or
-        # draws nothing). This is the key difference from the working prototype.
-        video_frame.setAttribute(Qt.WA_NativeWindow, True)
-
-        # Initialize MPV Player and bind it to the QFrame window ID.
+        # Initialize MPV Player and bind it to the QFrame window ID. The
+        # create_mpv_player helper sets the WA_NativeWindow attribute (required
+        # for mpv's direct3d renderer to embed into the frame) and applies the
+        # standard mpv options used by both the editor and the scanner.
         # Keep the MPV instance in its own attribute; do NOT overwrite
         # self.ui.videoContainer or you lose the widget reference.
         self.media_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
-        self.player = mpv.MPV(
-                wid=str(int(video_frame.winId())),
-                vo='direct3d',
-                osc=False,
-                input_default_bindings=False,
-                input_vo_keyboard=False,
-                keep_open=True,
-                hr_seek='always'
-            )
+        self.player = create_mpv_player(video_frame)
 
         # Start paused so mpv's state and the button agree before any load.
         self.player.pause = True
