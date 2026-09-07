@@ -7,21 +7,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.mpv import MpvBridge, create_mpv_player
+from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.ui_loader import UiLoader
 from marker_timeline import MarkerTimelineWidget
 
-from PySide6.QtWidgets import QMainWindow, QApplication, QStyle
+from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
+from PySide6.QtGui import QPixmap, QColor
 
 
 class ScannerWindow(QMainWindow):
     """The Segment Scanner window.
 
-    Minimal version: loads the test video and hooks up the play/pause button
-    plus the two marker timelines (so the playhead is visible on them).
-    Future work: keyframe nav, Place Boundary / Undo, Test Scan, Finished,
-    and the detector sliders.
+    Loads the test video and hooks up the transport controls (play/pause,
+    frame ±, keyframe ±) plus the two marker timelines. The keyframe list is
+    populated by scan_keyframes in __main__ before the window is constructed,
+    then pushed onto the bridge via set_keyframes.
+
+    Future work: Place Boundary / Undo, Test Scan, Finished, detector sliders.
     """
 
     def __init__(self):
@@ -46,6 +49,12 @@ class ScannerWindow(QMainWindow):
         # Wire the play/pause button
         self.ui.playPause.clicked.connect(self.on_play_pause)
         self.bridge.pauseChanged.connect(self.on_pause_changed)
+
+        # Wire frame and keyframe skip buttons
+        self.ui.forwardFrame.clicked.connect(lambda: self.bridge.step_frames(1))
+        self.ui.backwardFrame.clicked.connect(lambda: self.bridge.step_frames(-1))
+        self.ui.forwardKeyFrame.clicked.connect(self.bridge.next_keyframe)
+        self.ui.backwardKeyFrame.clicked.connect(self.bridge.prev_keyframe)
 
         # Wire both marker timelines to the bridge (playhead + duration + seek)
         for timeline in (self.ui.timelineWidget1, self.ui.timelineWidget2):
@@ -93,7 +102,31 @@ class ScannerWindow(QMainWindow):
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+
+    media_path = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+
+    # Splash while ffprobe scans keyframes. The scan runs synchronously
+    # on the GUI thread (it's typically fast); the splash gives the user
+    # something to look at. The splash is closed BEFORE the mpv player is
+    # constructed — constructing mpv (direct3d renderer) while another
+    # top-level window is the active foreground can deadlock on Windows.
+    pixmap = QPixmap(480, 270)
+    pixmap.fill(QColor(30, 30, 30))
+    splash = QSplashScreen(pixmap)
+    splash.show()
+    splash.showMessage(
+        f"Loading {os.path.basename(media_path)}…",
+        Qt.AlignCenter | Qt.AlignBottom,
+        QColor(200, 200, 200),
+    )
+    app.processEvents()
+
+    keyframes = scan_keyframes(media_path)
+
+    splash.close()
     window = ScannerWindow()
+    window.bridge.set_keyframes(keyframes)
     window.resize(1024, 768)
     window.show()
+
     sys.exit(app.exec())
