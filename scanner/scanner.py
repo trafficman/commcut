@@ -53,6 +53,20 @@ class ScannerWindow(QMainWindow):
             self.bridge.durationChanged.connect(timeline.set_duration)
             timeline.seekRequested.connect(self.bridge.seek_exact)
 
+        # Slider value labels: live updates as the user drags the slider.
+        # "Minimum Black Frames" is the count (0-40); "Black Levels" is a
+        # percentage (0-100).
+        self.ui.valueMinimumBlackFrames.setText(
+            f"{self.ui.horizontalSlider.value()} frames"
+        )
+        self.ui.horizontalSlider.valueChanged.connect(
+            lambda v: self.ui.valueMinimumBlackFrames.setText(f"{v} frames")
+        )
+        self.ui.valueBlackLevels.setText(f"{self.ui.horizontalSlider_2.value()}%")
+        self.ui.horizontalSlider_2.valueChanged.connect(
+            lambda v: self.ui.valueBlackLevels.setText(f"{v}%")
+        )
+
         self._sync_button(paused=True)
 
         # Load the test video
