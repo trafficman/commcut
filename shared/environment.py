@@ -9,14 +9,49 @@ scanner/) and need the same two things before anything else:
      ffmpeg resolve to the versions under bin/<os>/ rather than whatever
      happens to be on the system.
 
-Cross-platform note: the bundled-binaries folder is currently `bin/win`
-(Windows-only). When the project goes cross-platform, extend this to
-select bin/linux, bin/mac, etc. based on platform.system() — see AGENTS.md
-"Gaps" and core.py:get_binary_path for the proper approach.
+The bin folder is selected per-OS via ``get_binary_path`` / ``_bin_dir``
+(the cross-platform binary resolution formerly living in ``core.py``).
 """
 
 import os
+import platform
 import sys
+
+
+def _bin_dir():
+    """Return the absolute path to the bundled binaries folder for this OS.
+
+    Mirrors ``core.py``'s directory mapping: ``bin/win`` on Windows,
+    ``bin/linux`` on Linux, ``bin/mac`` on macOS.
+    """
+    system = platform.system().lower()
+    if system == 'windows':
+        folder = os.path.join('bin', 'win')
+    elif system == 'linux':
+        folder = os.path.join('bin', 'linux')
+    elif system == 'darwin':  # macOS
+        folder = os.path.join('bin', 'mac')
+    else:
+        raise EnvironmentError(f"Unsupported operating system: {system}")
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, folder)
+
+
+def get_binary_path(binary_name):
+    """Dynamically resolve the path to a bundled binary based on OS.
+
+    Looks under ``bin/<os>/`` for the named binary, appending the platform's
+    executable extension (``.exe`` on Windows). Raises ``FileNotFoundError``
+    if the binary is not present at the expected location.
+    """
+    ext = '.exe' if platform.system().lower() == 'windows' else ''
+    binary_path = os.path.join(_bin_dir(), f"{binary_name}{ext}")
+
+    if not os.path.exists(binary_path):
+        raise FileNotFoundError(f"Could not find {binary_name} at expected path: {binary_path}")
+
+    return binary_path
 
 
 def setup_environment(script_path):
@@ -39,8 +74,8 @@ def setup_environment(script_path):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    # 2. Prepend the bundled binaries folder to PATH.
-    bin_dir = os.path.join(project_root, 'bin', 'win')
+    # 2. Prepend the bundled binaries folder to PATH, resolved per-OS.
+    bin_dir = _bin_dir()
     os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 
     return script_dir, project_root
