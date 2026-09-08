@@ -188,6 +188,23 @@ class MpvBridge(QObject):
         """Replace the keyframe list with a sorted list of times (seconds)."""
         self.keyframes = sorted(times)
 
+    @property
+    def video_fps(self):
+        """Container frame rate of the loaded file, or None if unavailable.
+
+        Lets callers convert frame-count slider values into durations for
+        the blackdetect filter's ``d`` parameter without touching mpv state
+        directly (preserving the bridge pattern: widgets don't read mpv).
+        """
+        fps = self.player.container_fps
+        if fps is None:
+            return None
+        try:
+            fps = float(fps)
+        except (TypeError, ValueError):
+            return None
+        return fps if fps > 0 else None
+
     def next_keyframe(self):
         """Seek to the first keyframe after the current position."""
         pos = self.player.time_pos

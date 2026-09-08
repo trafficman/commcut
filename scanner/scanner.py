@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 
 # Make the project root importable so 'shared' resolves.
@@ -28,7 +29,10 @@ class ScannerWindow(QMainWindow):
     populated by scan_keyframes in __main__ before the window is constructed,
     then pushed onto the bridge via set_keyframes.
 
-    Future work: Place Boundary / Undo, Test Scan, Finished, detector sliders.
+    Place Boundary and Test Scan are wired: Place Boundary stamps the
+    playhead into the User Marked timeline; Test Scan runs blackdetect and
+    stamps midpoint markers into the Scanner Preview timeline. Remaining:
+    Undo and Finished (full-source scan).
     """
 
     def __init__(self):
@@ -89,8 +93,14 @@ class ScannerWindow(QMainWindow):
         # Wire the Place Boundary button
         self.ui.boundaryButton.clicked.connect(self.on_place_boundary)
 
+        # Wire the Test Scan button
+        self.ui.scanButton.clicked.connect(self.on_test_scan)
+
         # Load the clipped test video
-        self.bridge.load_file(clip_to_temp(os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION))
+        self.clip_path = clip_to_temp(
+            os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION
+        )
+        self.bridge.load_file(self.clip_path)
 
     def _on_position_changed(self, position):
         self.current_position = position
@@ -102,6 +112,63 @@ class ScannerWindow(QMainWindow):
         is written to a .cmct file.
         """
         self.ui.timelineWidget2.add_marker(self.current_position)
+
+    def on_test_scan(self):
+        """Run ffmpeg's ``blackdetect`` on the 2-min preview and stamp one
+        midpoint boundary per black run into the upper **Scanner Preview**
+        timeline (timelineWidget1).
+
+        Slider mapping:
+          - Minimum Black Frames -> ``d = frames / fps`` (minimum run length)
+          - Black Levels          -> ``pix_th = level / 100``
+        Each black run with a real (non-N/A) end yields a single midpoint
+        marker at ``(black_start + black_end) / 2``. Runs open at EOF
+        (black_end:N/A) are skipped. Previous markers are cleared first so
+        re-scanning reflects the current slider settings.
+        """
+        self.ui.timelineWidget1.set_markers([])
+
+        fps = self.bridge.video_fps
+        if not fps:
+            return
+
+        frames = self.ui.horizontalSlider.value()
+        level = self.ui.horizontalSlider_2.value()
+        min_sec = frames / fps if frames > 0 else 0.0
+        pix_th = level / 100.0
+
+        cmd = [
+            "ffmpeg", "-y", "-v", "info",
+            "-i", self.clip_path,
+            "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
+            "-an", "-f", "null", "-",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        self._stamp_blackdetect_mids(proc.stderr)
+
+    def _stamp_blackdetect_mids(self, stderr):
+        """Parse blackdetect stderr and stamp midpoint markers (timelineWidget1)."""
+        mids = []
+        for line in stderr.splitlines():
+            if "[blackdetect" not in line or "black_start:" not in line:
+                continue
+            kv = {}
+            for tok in line.split():
+                if ":" not in tok:
+                    continue
+                key, value = tok.split(":", 1)
+                kv[key] = value
+            end = kv.get("black_end")
+            if end in (None, "N/A"):
+                continue
+            try:
+                t1 = float(kv["black_start"])
+                t2 = float(end)
+            except (KeyError, ValueError):
+                continue
+            mids.append((t1 + t2) / 2.0)
+        mids.sort()
+        self.ui.timelineWidget1.set_markers(mids)
 
     def on_play_pause(self):
         self.bridge.toggle_play()
