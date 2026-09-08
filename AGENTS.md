@@ -203,12 +203,16 @@ Source Video).
 
 What's wired in `ScannerWindow.__init__`: loading the clipped preview,
 transport + frame/keyframe stepping, feeding both timelines the bridge's
-position/duration/seek, and the slider value labels.
+position/duration/seek, the slider value labels, and Place Boundary (the
+current playhead is stamped into the lower **User Marked** timeline via
+`MarkerTimelineWidget.add_marker`).
 
-What's *not* wired yet: the Test Scan, Finished, Place Boundary, and Undo
-buttons (they exist in the `.ui` with no handlers), and the actual
-black-frame detector that consumes the slider values and populates the
-marker timelines via `MarkerTimelineWidget.set_markers`.
+What's *not* wired yet: the Test Scan, Finished, and Undo buttons (they
+exist in the `.ui` with no handlers), and the actual black-frame detector.
+The detector will consume the slider values and stamp one **midpoint**
+marker per detected black run into the upper **Scanner Preview** timeline
+(the lower User Marked timeline is reserved for hand-placed Place
+Boundary clicks).
 
 ## Key conventions and gotchas
 
@@ -262,19 +266,24 @@ marker timelines via `MarkerTimelineWidget.set_markers`.
   create_mpv_player, scan_keyframes), `shared/timeline`, `shared/segments`,
   `shared/ffmpeg`, `shared/environment`, `shared/ui_loader`.
 - Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
-  embedded mpv playback, transport + frame/keyframe stepping, and two
-  marker timelines driven by the bridge.
+  embedded mpv playback, transport + frame/keyframe stepping, Place
+  Boundary stamping into the User Marked timeline, and two marker
+  timelines driven by the bridge.
 
 **Next:**
-- **Automated boundary detection** (the whole point of the Editing
-  Wizard). ffprobe `blackdetect` outputs to **stderr** in key=value
-  format — `black_start:T` and `black_end:T black_duration:D` per black
-  region. The plan is to emit both T1 and T2 as transition points (one
-  per black edge), creating an explicit "black gap" segment that gets
-  marked `ignored: true`. This is the scanner's missing piece: the
-  detector must consume its slider values (Minimum Black Frames, Black
-  Levels) and populate the marker timelines via `set_markers`. The user
-  then edits (Place Boundary / Undo / merge) to clean up results.
+- **Automated boundary detection** (the scanner's detector). ffmpeg's
+  `blackdetect` video filter (`-vf blackdetect=... -f null -`) reports
+  each qualifying black run to **stderr** as `black_start:T1 black_end:T2
+  black_duration:D` (one line per run; `black_end:N/A` for runs open at
+  EOF). The detector maps the slider values to filter params — **Minimum
+  Black Frames** → `d = frames / fps` (minimum run length), **Black
+  Levels** → `pix_th = level / 100` — runs it on the 2-min preview, and
+  for every run with a real (non-`N/A`) end stamps a single **midpoint**
+  marker `(T1 + T2) / 2` into the upper **Scanner Preview** timeline
+  (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`. One black
+  run → one boundary, so there is no bracketed "black gap" segment. The
+  user then cleans up the lower User Marked timeline with Place Boundary
+  / Undo / merge.
 - **Export / smart cut** (the `Export` button in the readme's flow):
   per non-ignored segment, find innermost keyframes bracketing the cut
   points, lossless-copy between them, transcode the partial-keyframe
@@ -288,6 +297,6 @@ marker timelines via `MarkerTimelineWidget.set_markers`.
   `scanner/`).
 - No automated boundary detection yet — the editor still loads a
   one-segment placeholder `.cmct` and relies on manual editing to produce
-  ground-truth data. The detection step (the scanner's detector + its
-  Test Scan/Finished/Place Boundary/Undo handlers) is the next major
-  feature.
+  ground-truth data. The detection step (the scanner's blackdetect
+  detector + its Test Scan/Finished/Undo handlers) is the next major
+  feature; Place Boundary is already wired.
