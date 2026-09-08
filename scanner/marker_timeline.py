@@ -54,6 +54,18 @@ class MarkerTimelineWidget(QWidget):
         self.markers = list(markers)
         self.update()
 
+    def add_marker(self, time):
+        """Add a marker at the given time (deduped, kept sorted).
+
+        Boundaries are held only in this widget's memory — they are never
+        written to a .cmct sidecar by this widget.
+        """
+        if time in self.markers:
+            return
+        self.markers.append(time)
+        self.markers.sort()
+        self.update()
+
     # --- rendering ---
     def paintEvent(self, event):
         painter = QPainter(self)

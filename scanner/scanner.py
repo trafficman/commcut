@@ -60,6 +60,10 @@ class ScannerWindow(QMainWindow):
         self.ui.forwardKeyFrame.clicked.connect(self.bridge.next_keyframe)
         self.ui.backwardKeyFrame.clicked.connect(self.bridge.prev_keyframe)
 
+        # Track the playhead position so Place Boundary can stamp it.
+        self.current_position = 0.0
+        self.bridge.positionChanged.connect(self._on_position_changed)
+
         # Wire both marker timelines to the bridge (playhead + duration + seek)
         for timeline in (self.ui.timelineWidget1, self.ui.timelineWidget2):
             self.bridge.positionChanged.connect(timeline.set_position)
@@ -82,8 +86,22 @@ class ScannerWindow(QMainWindow):
 
         self._sync_button(paused=True)
 
+        # Wire the Place Boundary button
+        self.ui.boundaryButton.clicked.connect(self.on_place_boundary)
+
         # Load the clipped test video
         self.bridge.load_file(clip_to_temp(os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION))
+
+    def _on_position_changed(self, position):
+        self.current_position = position
+
+    def on_place_boundary(self):
+        """Stamp the current playhead as a boundary in the User Marked timeline.
+
+        Boundaries live only in memory (the marker timeline's list); nothing
+        is written to a .cmct file.
+        """
+        self.ui.timelineWidget2.add_marker(self.current_position)
 
     def on_play_pause(self):
         self.bridge.toggle_play()
