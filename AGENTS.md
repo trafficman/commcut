@@ -18,8 +18,10 @@ full vision — described in `README.md` — has three pieces:
    back), auto-detect boundaries, let the user review/adjust, and smart-cut
    each segment out as a separate file.
 
-The working tree currently contains the **Editing Wizard's** video editor
-module. The Rename Wizard and library/export layers are not yet built.
+The working tree currently contains two Wizard modules — the **Editing
+Wizard** (`editor/`) and the **Segment Scanner** (`scanner/`) — plus the
+`shared/` library they both build on. The Rename Wizard and library/export
+layers are not yet built.
 
 ## Layout
 
@@ -27,22 +29,31 @@ module. The Rename Wizard and library/export layers are not yet built.
 commcut/
 ├── README.md                # Project spec (source of truth for scope)
 ├── AGENTS.md                # This file
-├── core.py                  # Cross-platform ffmpeg/ffprobe helpers
-│                            # (NOT currently used by editor/ — see "Gaps")
-├── bin/win/                 # Bundled Windows binaries
-│   ├── ffmpeg.exe
-│   ├── ffprobe.exe
-│   └── libmpv-2.dll
+├── bin/                     # Bundled binaries, one subfolder per OS
+│   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
+│   ├── linux/               # Linux binaries (placeholders, none shipped yet)
+│   └── mac/                 # macOS binaries (placeholders, none shipped yet)
+├── import/                  # Test source videos
+├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
 ├── editor/                  # The Editing Wizard (current focus)
-│   ├── editor.py            # Entry point: MpvBridge, PreScanWorker, Editor
-│   │                        # window, editing state machine, splash flow
-│   ├── segments.py          # SegmentModel + .cmct sidecar persistence
-│   ├── timeline.py          # TimelineWidget (custom QWidget, paintEvent-based)
+│   ├── editor.py            # Entry point: Editor window, editing state machine,
+│   │                        # splash flow, PreScanWorker scaffolding
 │   └── editorwindow.ui      # Qt Designer file; promoted TimelineWidget
+├── scanner/                 # The Segment Scanner (detector + review)
+│   ├── scanner.py           # Entry point: 2-min preview clip load, mpv playback,
+│   │                        # transport, two marker timelines, detector sliders
+│   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
+│   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
+├── shared/                  # Cross-module library (editor + scanner)
+│   ├── environment.py       # setup_environment + get_binary_path (cross-platform)
+│   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
+│   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
+│   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
+│   ├── ffmpeg.py            # clip_to_temp (and home of future smart-cut export)
+│   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── prototypes/              # Earlier exploration / alternatives
 │   ├── BasicUI/             # First prototype
 │   └── VideoEditor/         # Pre-rename copy of the editor module
-└── import/                  # Test source videos
 ```
 
 ## The .cmct sidecar format
@@ -74,7 +85,7 @@ Tag fields (from the readme's scheme): `title`, `network`, `block`,
 all other tags do.
 
 The segment data model and persistence live in
-`editor/segments.py:SegmentModel`. Operations:
+`shared/segments.py:SegmentModel`. Operations:
 `end_segment(i, pos)`, `start_segment(i, pos)`, `merge_next(i)`,
 plus `placeholder(source, duration)` and `save/load` for `.cmct`.
 
@@ -116,10 +127,39 @@ form pre-fills from `self.tag_locks` and the lock buttons show as checked.
 On an **edited** segment, all locks disengage (unchecked) and the form shows
 the stored tags. Title is excluded from the lock system.
 
-## Architecture: the MpvBridge pattern
+## Architecture
 
-The editor communicates with libmpv through a single **`MpvBridge(QObject)`**
-that owns the mpv player and exposes:
+The editor and scanner share a common library under `shared/`. Both call
+`shared/environment.setup_environment(__file__)` at the very top of their
+entry point — it puts the project root on `sys.path` (so `shared.*`
+resolves when running the script directly) and prepends the per-OS
+`bin/<os>/` folder to `PATH` so mpv, ffprobe, and ffmpeg resolve to the
+bundled versions.
+
+The shared modules are:
+
+- `shared/environment.py` — `setup_environment(script_path)` (sys.path +
+  PATH) and `get_binary_path(name)`, which resolves ffmpeg/ffprobe/mpv per
+  OS under `bin/<os>/` (`.exe` on Windows). This is the cross-platform binary
+  resolution that used to live in `core.py`.
+- `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel),
+  `create_mpv_player` (wraps `mpv.MPV` for a `QFrame`, sets
+  `WA_NativeWindow`), and `scan_keyframes(path)` (ffprobe I-frame scan
+  returning sorted timestamps).
+- `shared/timeline.py` — `TimelineWidget`, the editor's zoom/scroll segment
+  timeline (red/green/blue, ignored dimming, active highlight).
+- `shared/segments.py` — `SegmentModel` + `.cmct` persistence
+  (`sidecar_path`, `probe_duration`).
+- `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and the future home of
+  the smart-cut export).
+- `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
+  promoted custom widgets reliably; register a class with
+  `register_widget` before `load()`.
+
+### The MpvBridge pattern
+
+Both the editor and scanner communicate with libmpv through a single
+**`MpvBridge(QObject)`** that owns the mpv player and exposes:
 
 - **Qt signals** (state up): `pauseChanged`, `positionChanged`,
   `durationChanged`, `fileLoaded`, `playbackEnded`. These are fed by
@@ -129,38 +169,62 @@ that owns the mpv player and exposes:
   `set_keyframes`, `next_keyframe`, `prev_keyframe`, `load_file`,
   `load_and_play`.
 
-The editor window and widgets never read mpv state directly — they only
-mirror what the bridge announces via signals.
+The editor/scanner windows and widgets never read mpv state directly — they
+only mirror what the bridge announces via signals.
 
-## Splash flow (pre-work before editor appears)
+## Splash flow (pre-work before the window appears)
 
-`__main__` shows a `QSplashScreen`, then runs background work on a
-`QThread` (currently just `scan_keyframes` via ffprobe). On the worker's
-`finished` signal, the editor window is constructed, keyframes are
-injected, and the splash is closed.
+`__main__` in both the editor and the scanner shows a `QSplashScreen`, then
+runs `scan_keyframes` (via ffprobe) while it's up. The scan is currently
+synchronous on the GUI thread — it's typically sub-second for a 2-minute
+preview. `PreScanWorker` is scaffolding in the editor for future off-thread
+stages, not yet wired into `__main__`.
 
 **Hard-won gotcha:** mpv's Direct3D device initialization hangs when
 another top-level window (the splash) is the active window at construction
-time. If you ever bring the splash back, close it *before* constructing
-the mpv-backed widget. `app.processEvents()` is called once after
-`splash.show()` to ensure the splash actually paints.
+time. Close the splash *before* constructing the mpv-backed widget.
+`app.processEvents()` is called once after `splash.show()` to ensure the
+splash actually paints.
 
-The `PreScanWorker` class is the place to add more pre-work stages
-(scene detection, waveform, etc.) — emit a progress message between each
-stage. For now, scanning is sub-second so a `QThread` is overkill; the
-editor uses a synchronous `scan_keyframes` call inside the splash.
+## The Scanner window
+
+The scanner (`scanner/scanner.py`) is the detector + review half of the
+Editing Wizard. It mirrors the editor's splash/mpv flow, and loads a
+2-minute stream-copied preview of the source via `shared/ffmpeg.clip_to_temp`
+into `temp/` (fast, lossless, small clip — the full video isn't loaded until
+"Finished").
+
+Its UI (`scannerwindow.ui`) has: an embedded video frame, two
+`MarkerTimelineWidget`s ("Scanner Preview" and "User Marked"), transport
+controls (play/pause, frame ±, keyframe ±), a segment-controls row
+(Undo, Place Boundary), detector sliders (Minimum Black Frames 0–40,
+Black Levels 0–100), and a scan row (Test Scan, Finished — Scan Full
+Source Video).
+
+What's wired in `ScannerWindow.__init__`: loading the clipped preview,
+transport + frame/keyframe stepping, feeding both timelines the bridge's
+position/duration/seek, and the slider value labels.
+
+What's *not* wired yet: the Test Scan, Finished, Place Boundary, and Undo
+buttons (they exist in the `.ui` with no handlers), and the actual
+black-frame detector that consumes the slider values and populates the
+marker timelines via `MarkerTimelineWidget.set_markers`.
 
 ## Key conventions and gotchas
 
-- **Bundled binaries.** `editor/editor.py` prepends `bin/win` to `PATH` so
-  `python-mpv` and `ffprobe` resolve. The editor is **Windows-only** until
-  someone replaces this with a cross-platform path lookup (see `core.py`).
+- **Bundled binaries.** Both the editor and the scanner call
+  `shared/environment.setup_environment` at startup, which prepends the
+  per-OS `bin/<os>/` folder to `PATH` via `get_binary_path`. mpv, ffprobe,
+  and ffmpeg resolve to the bundled versions. `get_binary_path` raises
+  `FileNotFoundError` if a binary is missing at the expected path.
 - **Promoted widget.** The timeline is a custom `QWidget` promoted in
   `editorwindow.ui` as `TimelineWidget` / header `timeline`. PySide6's
   `QUiLoader` does not auto-resolve promoted widgets reliably, so
   `editor.py` uses a `UiLoader(QUiLoader)` subclass whose `createWidget`
   is overridden to instantiate `TimelineWidget` directly. Register the
   class with `loader.register_widget(TimelineWidget)` before `loader.load()`.
+  The scanner does the same for `MarkerTimelineWidget` (header
+  `scanner.marker_timeline`) in `scanner.py`.
 - **Frame-accurate step.** mpv's `frame_step` plays a fraction of a second
   of audio (the audio decodes before the mute property takes effect).
   `MpvBridge.step_frames` instead seeks by `1/container_fps` and forces
@@ -191,6 +255,15 @@ editor uses a synchronous `scan_keyframes` call inside the splash.
 - Tag form with lock system and dirty indicator.
 - Keyframe navigation via ffprobe-scanned I-frames.
 - Frame-accurate stepping (silent).
+- Cross-platform binary resolution: `shared/environment.get_binary_path`
+  resolves ffmpeg/ffprobe/mpv per OS under `bin/<os>/`; both the editor and
+  the scanner prepend it to `PATH` via `setup_environment`.
+- Shared library layer used by both wizards: `shared/mpv` (MpvBridge,
+  create_mpv_player, scan_keyframes), `shared/timeline`, `shared/segments`,
+  `shared/ffmpeg`, `shared/environment`, `shared/ui_loader`.
+- Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
+  embedded mpv playback, transport + frame/keyframe stepping, and two
+  marker timelines driven by the bridge.
 
 **Next:**
 - **Automated boundary detection** (the whole point of the Editing
@@ -198,26 +271,23 @@ editor uses a synchronous `scan_keyframes` call inside the splash.
   format — `black_start:T` and `black_end:T black_duration:D` per black
   region. The plan is to emit both T1 and T2 as transition points (one
   per black edge), creating an explicit "black gap" segment that gets
-  marked `ignored: true`. The user then edits to merge/remove as needed.
+  marked `ignored: true`. This is the scanner's missing piece: the
+  detector must consume its slider values (Minimum Black Frames, Black
+  Levels) and populate the marker timelines via `set_markers`. The user
+  then edits (Place Boundary / Undo / merge) to clean up results.
 - **Export / smart cut** (the `Export` button in the readme's flow):
   per non-ignored segment, find innermost keyframes bracketing the cut
   points, lossless-copy between them, transcode the partial-keyframe
-  ends, concatenate. `core.py:basic_transcode_cut` is a simpler version
-  already; the smart-cut version goes here.
-- **Cross-platform binary resolution** via `core.py:get_binary_path`.
+  ends, concatenate. A simpler `clip_to_temp` (stream copy) already lives
+  in `shared/ffmpeg.py`; the smart-cut version goes there.
 
 ## Gaps to be aware of
 
-- `core.py` is currently unused by `editor/`. It contains
-  `get_binary_path` (cross-platform ffmpeg/ffprobe resolution),
-  `get_video_specs`, and `basic_transcode_cut` — all of which the editor
-  will need for export and a real cross-platform story. The editor's
-  `probe_duration` in `segments.py` duplicates part of
-  `get_video_specs`; the import path would be
-  `from core import get_binary_path, get_video_specs`.
 - `prototypes/` contains earlier iterations of the editor. Treat them
-  as historical — the active code is in `editor/`.
-- No automated boundary detection yet — the editor currently loads a
-  one-segment placeholder `.cmct` and relies entirely on manual editing
-  to produce ground-truth data. The detection step is the next major
+  as historical — the active code is in `editor/` (and the scanner in
+  `scanner/`).
+- No automated boundary detection yet — the editor still loads a
+  one-segment placeholder `.cmct` and relies on manual editing to produce
+  ground-truth data. The detection step (the scanner's detector + its
+  Test Scan/Finished/Place Boundary/Undo handlers) is the next major
   feature.
