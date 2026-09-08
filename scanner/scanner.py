@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
+from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.ui_loader import UiLoader
 from marker_timeline import MarkerTimelineWidget
@@ -14,6 +15,9 @@ from marker_timeline import MarkerTimelineWidget
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
 from PySide6.QtGui import QPixmap, QColor
+
+# Seconds of test footage the scanner works on (stream-copied to temp/).
+CLIP_DURATION = 120
 
 
 class ScannerWindow(QMainWindow):
@@ -78,8 +82,8 @@ class ScannerWindow(QMainWindow):
 
         self._sync_button(paused=True)
 
-        # Load the test video
-        self.bridge.load_file(os.path.join(PROJECT_ROOT, "import", "test.mp4"))
+        # Load the clipped test video
+        self.bridge.load_file(clip_to_temp(os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION))
 
     def on_play_pause(self):
         self.bridge.toggle_play()
@@ -103,7 +107,9 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
 
-    media_path = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+    media_path = clip_to_temp(
+        os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION
+    )
 
     # Splash while ffprobe scans keyframes. The scan runs synchronously
     # on the GUI thread (it's typically fast); the splash gives the user
