@@ -216,6 +216,11 @@ Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
 preview is then stream-copied to `temp/` with a deterministic name
 (`test_clip120s.mp4`).
 
+If a `.cmct` sidecar already exists next to the source video, the scanner
+skips itself and launches the Video Editor (`editor/editor.py`) instead, so
+an existing project is never overwritten. The full-source scan that would
+*write* a `.cmct` is still pending (see Finished).
+
 ## Key conventions and gotchas
 
 - **Bundled binaries.** Both the editor and the scanner call
@@ -276,6 +281,10 @@ preview is then stream-copied to `temp/` with a deterministic name
   `pix_th = level / 100`; skips `black_end:N/A` runs; stamps one midpoint
   `(T1 + T2) / 2` per black run into the upper Scanner Preview timeline
   (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`.
+- Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
+  scanner launches `editor/editor.py` and exits, so an existing `.cmct`
+  is never overwritten (the source used is `import/test.mp4`, matching
+  the editor's hardcoded media path).
 
 **Next:**
 - **Finished** — run the same `blackdetect` detector against the *full*

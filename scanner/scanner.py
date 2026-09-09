@@ -10,6 +10,7 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
+from shared.segments import sidecar_path
 from shared.ui_loader import UiLoader
 from marker_timeline import MarkerTimelineWidget
 
@@ -34,6 +35,18 @@ def _clear_temp_clips():
                 os.remove(os.path.join(temp_dir, name))
             except OSError:
                 pass
+
+
+def _editor_to_launch(source_path):
+    """Return the editor script path to launch if a .cmct sidecar already
+    exists for the source, else None.
+
+    The scanner must never overwrite an existing .cmct, so when one is
+    present we hand off to the Video Editor instead of running the scanner.
+    """
+    if os.path.exists(sidecar_path(source_path)):
+        return os.path.join(PROJECT_ROOT, "editor", "editor.py")
+    return None
 
 
 class ScannerWindow(QMainWindow):
@@ -218,6 +231,15 @@ class ScannerWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    source_path = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+
+    # Never overwrite an existing .cmct: if one already exists for the
+    # source, skip the scanner and open the Video Editor instead.
+    editor_path = _editor_to_launch(source_path)
+    if editor_path is not None:
+        subprocess.Popen([sys.executable, editor_path])
+        sys.exit(0)
+
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
 
@@ -225,7 +247,7 @@ if __name__ == "__main__":
     _clear_temp_clips()
 
     media_path = clip_to_temp(
-        os.path.join(PROJECT_ROOT, "import", "test.mp4"),
+        source_path,
         CLIP_DURATION,
         output_dir=os.path.join(PROJECT_ROOT, "temp"),
     )
