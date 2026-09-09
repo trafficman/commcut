@@ -29,10 +29,10 @@ class ScannerWindow(QMainWindow):
     populated by scan_keyframes in __main__ before the window is constructed,
     then pushed onto the bridge via set_keyframes.
 
-    Place Boundary and Test Scan are wired: Place Boundary stamps the
-    playhead into the User Marked timeline; Test Scan runs blackdetect and
-    stamps midpoint markers into the Scanner Preview timeline. Remaining:
-    Undo and Finished (full-source scan).
+    Place Boundary, Undo, and Test Scan are wired: Place Boundary stamps the
+    playhead into the User Marked timeline; Undo removes the last user-placed
+    boundary; Test Scan runs blackdetect and stamps midpoint markers into the
+    Scanner Preview timeline. Remaining: Finished (full-source scan).
     """
 
     def __init__(self):
@@ -93,6 +93,9 @@ class ScannerWindow(QMainWindow):
         # Wire the Place Boundary button
         self.ui.boundaryButton.clicked.connect(self.on_place_boundary)
 
+        # Wire the Undo button (removes the last user-placed boundary)
+        self.ui.undoButton.clicked.connect(self.on_undo)
+
         # Wire the Test Scan button
         self.ui.scanButton.clicked.connect(self.on_test_scan)
 
@@ -112,6 +115,15 @@ class ScannerWindow(QMainWindow):
         is written to a .cmct file.
         """
         self.ui.timelineWidget2.add_marker(self.current_position)
+
+    def on_undo(self):
+        """Remove the last user-placed boundary from the User Marked timeline.
+
+        Assumes the user worked left-to-right, so the last (rightmost)
+        marker in the list is the most recent placement. No-op if the
+        timeline has no user markers.
+        """
+        self.ui.timelineWidget2.pop_marker()
 
     def on_test_scan(self):
         """Run ffmpeg's ``blackdetect`` on the 2-min preview and stamp one

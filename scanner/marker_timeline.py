@@ -66,6 +66,19 @@ class MarkerTimelineWidget(QWidget):
         self.markers.sort()
         self.update()
 
+    def pop_marker(self):
+        """Remove and return the last (rightmost) marker, or None if empty.
+
+        Because markers are kept sorted, the last list entry is the
+        rightmost in time — which equals the most recently placed marker
+        under the scanner's left-to-right assumption.
+        """
+        if not self.markers:
+            return None
+        removed = self.markers.pop()
+        self.update()
+        return removed
+
     # --- rendering ---
     def paintEvent(self, event):
         painter = QPainter(self)

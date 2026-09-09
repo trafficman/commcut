@@ -203,16 +203,13 @@ Source Video).
 
 What's wired in `ScannerWindow.__init__`: loading the clipped preview,
 transport + frame/keyframe stepping, feeding both timelines the bridge's
-position/duration/seek, the slider value labels, and Place Boundary (the
-current playhead is stamped into the lower **User Marked** timeline via
-`MarkerTimelineWidget.add_marker`).
+position/duration/seek, the slider value labels, Place Boundary (playhead
+→ lower **User Marked** timeline via `add_marker`), Undo (pops the last
+user marker), and Test Scan (`blackdetect` → midpoint markers in the upper
+**Scanner Preview** timeline).
 
-What's *not* wired yet: the Test Scan, Finished, and Undo buttons (they
-exist in the `.ui` with no handlers), and the actual black-frame detector.
-The detector will consume the slider values and stamp one **midpoint**
-marker per detected black run into the upper **Scanner Preview** timeline
-(the lower User Marked timeline is reserved for hand-placed Place
-Boundary clicks).
+What's *not* wired yet: the Finished button (scan the full source video
+instead of the 2-minute preview). All detector wiring is complete.
 
 ## Key conventions and gotchas
 
@@ -267,23 +264,18 @@ Boundary clicks).
   `shared/ffmpeg`, `shared/environment`, `shared/ui_loader`.
 - Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
   embedded mpv playback, transport + frame/keyframe stepping, Place
-  Boundary stamping into the User Marked timeline, and two marker
-  timelines driven by the bridge.
+  Boundary + Undo on the User Marked timeline (in-memory, no `.cmct`),
+  and two marker timelines driven by the bridge.
+- Automated boundary detection (Test Scan): `ffmpeg blackdetect` on the
+  2-minute preview, slider-mapped to `d = frames / fps` and
+  `pix_th = level / 100`; skips `black_end:N/A` runs; stamps one midpoint
+  `(T1 + T2) / 2` per black run into the upper Scanner Preview timeline
+  (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`.
 
 **Next:**
-- **Automated boundary detection** (the scanner's detector). ffmpeg's
-  `blackdetect` video filter (`-vf blackdetect=... -f null -`) reports
-  each qualifying black run to **stderr** as `black_start:T1 black_end:T2
-  black_duration:D` (one line per run; `black_end:N/A` for runs open at
-  EOF). The detector maps the slider values to filter params — **Minimum
-  Black Frames** → `d = frames / fps` (minimum run length), **Black
-  Levels** → `pix_th = level / 100` — runs it on the 2-min preview, and
-  for every run with a real (non-`N/A`) end stamps a single **midpoint**
-  marker `(T1 + T2) / 2` into the upper **Scanner Preview** timeline
-  (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`. One black
-  run → one boundary, so there is no bracketed "black gap" segment. The
-  user then cleans up the lower User Marked timeline with Place Boundary
-  / Undo / merge.
+- **Finished** — run the same `blackdetect` detector against the *full*
+  source video (not the 2-minute preview) and apply the resulting midpoint
+  boundaries to the project. (Test Scan on the preview is done.)
 - **Export / smart cut** (the `Export` button in the readme's flow):
   per non-ignored segment, find innermost keyframes bracketing the cut
   points, lossless-copy between them, transcode the partial-keyframe
@@ -295,8 +287,8 @@ Boundary clicks).
 - `prototypes/` contains earlier iterations of the editor. Treat them
   as historical — the active code is in `editor/` (and the scanner in
   `scanner/`).
-- No automated boundary detection yet — the editor still loads a
-  one-segment placeholder `.cmct` and relies on manual editing to produce
-  ground-truth data. The detection step (the scanner's blackdetect
-  detector + its Test Scan/Finished/Undo handlers) is the next major
-  feature; Place Boundary is already wired.
+- Automated boundary detection (Test Scan `blackdetect`, midpoint markers
+  into the Scanner Preview timeline) is wired. Remaining: Finished (full-
+  source scan) and the smart-cut export. The editor still loads a one-
+  segment placeholder `.cmct`; the scanner's detected boundaries are not
+  yet routed into it.
