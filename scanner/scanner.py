@@ -10,7 +10,7 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
-from shared.segments import sidecar_path
+from shared.segments import sidecar_path, probe_duration, SegmentModel
 from shared.ui_loader import UiLoader
 from marker_timeline import MarkerTimelineWidget
 
@@ -49,6 +49,19 @@ def _editor_to_launch(source_path):
     return None
 
 
+def _model_from_midpoints(midpoints, duration, source_name):
+    """Build a SegmentModel whose segment starts are the midpoint boundaries.
+
+    Each midpoint (center of a black run) becomes a transition point, so the
+    model tiles contiguously from 0 to duration. None of the segments are
+    marked ignored — that curation is left to the editor (the user can
+    ignore/merge/adjust after the scan).
+    """
+    starts = sorted({0.0, *(m for m in midpoints if 0.0 < m < duration)})
+    segments = [{"start": s, "ignored": False, "tags": {}} for s in starts]
+    return SegmentModel(source=source_name, duration=duration, segments=segments)
+
+
 class ScannerWindow(QMainWindow):
     """The Segment Scanner window.
 
@@ -57,10 +70,12 @@ class ScannerWindow(QMainWindow):
     populated by scan_keyframes in __main__ before the window is constructed,
     then pushed onto the bridge via set_keyframes.
 
-    Place Boundary, Undo, and Test Scan are wired: Place Boundary stamps the
-    playhead into the User Marked timeline; Undo removes the last user-placed
-    boundary; Test Scan runs blackdetect and stamps midpoint markers into the
-    Scanner Preview timeline. Remaining: Finished (full-source scan).
+    Place Boundary, Undo, Test Scan, and Finished are wired: Place Boundary
+    stamps the playhead into the User Marked timeline; Undo removes the last
+    user-placed boundary; Test Scan runs blackdetect and stamps midpoint
+    markers into the Scanner Preview timeline; Finished runs blackdetect on
+    the full source, writes a .cmct of midpoint boundaries, and opens the
+    Video Editor. Remaining: Export / smart cut.
     """
 
     def __init__(self):
@@ -127,6 +142,9 @@ class ScannerWindow(QMainWindow):
         # Wire the Test Scan button
         self.ui.scanButton.clicked.connect(self.on_test_scan)
 
+        # Wire the Finished button (full-source scan -> .cmct -> editor)
+        self.ui.finishedButton.clicked.connect(self.on_finished)
+
         # Load the clipped test video
         self.clip_path = clip_to_temp(
             os.path.join(PROJECT_ROOT, "import", "test.mp4"),
@@ -186,11 +204,18 @@ class ScannerWindow(QMainWindow):
             "-an", "-f", "null", "-",
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
-        self._stamp_blackdetect_mids(proc.stderr)
+        midpoints = [(t1 + t2) / 2.0 for t1, t2 in self._parse_blackdetect_runs(proc.stderr)]
+        self.ui.timelineWidget1.set_markers(midpoints)
 
-    def _stamp_blackdetect_mids(self, stderr):
-        """Parse blackdetect stderr and stamp midpoint markers (timelineWidget1)."""
-        mids = []
+    @staticmethod
+    def _parse_blackdetect_runs(stderr):
+        """Parse blackdetect stderr into a sorted list of (t1, t2) black runs.
+
+        Runs with black_end:N/A (open at EOF) are skipped. Shared by Test
+        Scan (midpoints for the preview timeline) and Finished (midpoints
+        written to the .cmct).
+        """
+        runs = []
         for line in stderr.splitlines():
             if "[blackdetect" not in line or "black_start:" not in line:
                 continue
@@ -208,9 +233,56 @@ class ScannerWindow(QMainWindow):
                 t2 = float(end)
             except (KeyError, ValueError):
                 continue
-            mids.append((t1 + t2) / 2.0)
-        mids.sort()
-        self.ui.timelineWidget1.set_markers(mids)
+            runs.append((t1, t2))
+        runs.sort()
+        return runs
+
+    def on_finished(self):
+        """Run blackdetect on the FULL source video, write the resulting
+        midpoint boundaries to a .cmct sidecar, then open the Video Editor
+        for manual fixes + tags.
+
+        Each black run [t1, t2] contributes one boundary at its midpoint
+        ``(t1 + t2) / 2`` — the same rule Test Scan uses for the preview
+        timeline. The midpoints become the .cmct segment starts. The scanner
+        never overwrites an existing .cmct: ``__main__`` already routes to the
+        editor when one is present, so this is only reached when no sidecar
+        exists yet.
+        """
+        source = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+
+        duration = probe_duration(source)
+        if duration is None:
+            print("Finished: could not probe source duration.")
+            return
+
+        fps = self.bridge.video_fps
+        if not fps:
+            print("Finished: frame rate unavailable; seek within the preview first.")
+            return
+
+        frames = self.ui.horizontalSlider.value()
+        level = self.ui.horizontalSlider_2.value()
+        min_sec = frames / fps if frames > 0 else 0.0
+        pix_th = level / 100.0
+
+        cmd = [
+            "ffmpeg", "-y", "-v", "info",
+            "-i", source,
+            "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
+            "-an", "-f", "null", "-",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        midpoints = [(t1 + t2) / 2.0 for t1, t2 in self._parse_blackdetect_runs(proc.stderr)]
+
+        model = _model_from_midpoints(midpoints, duration, os.path.basename(source))
+        sidecar = sidecar_path(source)
+        model.save(sidecar)
+        print(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
+
+        # Open the editor to review the .cmct we just wrote, then close the scanner.
+        subprocess.Popen([sys.executable, os.path.join(PROJECT_ROOT, "editor", "editor.py")])
+        sys.exit(0)
 
     def on_play_pause(self):
         self.bridge.toggle_play()

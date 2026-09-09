@@ -205,11 +205,14 @@ What's wired in `ScannerWindow.__init__`: loading the clipped preview,
 transport + frame/keyframe stepping, feeding both timelines the bridge's
 position/duration/seek, the slider value labels, Place Boundary (playhead
 → lower **User Marked** timeline via `add_marker`), Undo (pops the last
-user marker), and Test Scan (`blackdetect` → midpoint markers in the upper
-**Scanner Preview** timeline).
+user marker), Test Scan (`blackdetect` → midpoint markers in the upper
+**Scanner Preview** timeline), and Finished (`blackdetect` on the full
+source → midpoint boundaries written to a `.cmct`, then the Video Editor
+launched for manual fixes + tags).
 
-What's *not* wired yet: the Finished button (scan the full source video
-instead of the 2-minute preview). All detector wiring is complete.
+What's *not* wired yet: the Export / smart-cut step (per non-ignored
+segment: keyframe-bracketed lossless copy + partial-keyframe transcode +
+concat).
 
 Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
 `scanner.py`) so preview clips don't accumulate across runs; the 2-minute
@@ -218,8 +221,10 @@ preview is then stream-copied to `temp/` with a deterministic name
 
 If a `.cmct` sidecar already exists next to the source video, the scanner
 skips itself and launches the Video Editor (`editor/editor.py`) instead, so
-an existing project is never overwritten. The full-source scan that would
-*write* a `.cmct` is still pending (see Finished).
+an existing project is never overwritten. When no `.cmct` exists, the
+Finished button runs `blackdetect` on the full source, writes the midpoint
+boundaries to `<name>.cmct` next to the source, and then launches the
+editor.
 
 ## Key conventions and gotchas
 
@@ -281,15 +286,16 @@ an existing project is never overwritten. The full-source scan that would
   `pix_th = level / 100`; skips `black_end:N/A` runs; stamps one midpoint
   `(T1 + T2) / 2` per black run into the upper Scanner Preview timeline
   (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`.
+- Finished (full-source scan): the same detector run against the full
+  source video (not the 2-minute preview); midpoint boundaries are written
+  as `.cmct` segment starts via `SegmentModel` and the Video Editor is
+  launched automatically.
 - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
   scanner launches `editor/editor.py` and exits, so an existing `.cmct`
   is never overwritten (the source used is `import/test.mp4`, matching
   the editor's hardcoded media path).
 
 **Next:**
-- **Finished** — run the same `blackdetect` detector against the *full*
-  source video (not the 2-minute preview) and apply the resulting midpoint
-  boundaries to the project. (Test Scan on the preview is done.)
 - **Export / smart cut** (the `Export` button in the readme's flow):
   per non-ignored segment, find innermost keyframes bracketing the cut
   points, lossless-copy between them, transcode the partial-keyframe
@@ -301,8 +307,7 @@ an existing project is never overwritten. The full-source scan that would
 - `prototypes/` contains earlier iterations of the editor. Treat them
   as historical — the active code is in `editor/` (and the scanner in
   `scanner/`).
-- Automated boundary detection (Test Scan `blackdetect`, midpoint markers
-  into the Scanner Preview timeline) is wired. Remaining: Finished (full-
-  source scan) and the smart-cut export. The editor still loads a one-
-  segment placeholder `.cmct`; the scanner's detected boundaries are not
-  yet routed into it.
+- Automated boundary detection is fully wired: Test Scan (preview, in-memory
+  midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and
+  the Scanner→Editor handoff when a `.cmct` already exists. Remaining: only
+  the smart-cut (Export) step is pending.
