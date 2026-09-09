@@ -211,6 +211,11 @@ user marker), and Test Scan (`blackdetect` → midpoint markers in the upper
 What's *not* wired yet: the Finished button (scan the full source video
 instead of the 2-minute preview). All detector wiring is complete.
 
+Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
+`scanner.py`) so preview clips don't accumulate across runs; the 2-minute
+preview is then stream-copied to `temp/` with a deterministic name
+(`test_clip120s.mp4`).
+
 ## Key conventions and gotchas
 
 - **Bundled binaries.** Both the editor and the scanner call

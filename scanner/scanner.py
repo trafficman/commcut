@@ -21,6 +21,21 @@ from PySide6.QtGui import QPixmap, QColor
 CLIP_DURATION = 120
 
 
+def _clear_temp_clips():
+    """Remove stale .mp4 preview clips from temp/ so each scanner run starts
+    fresh and clips don't accumulate across runs.
+    """
+    temp_dir = os.path.join(PROJECT_ROOT, "temp")
+    if not os.path.isdir(temp_dir):
+        return
+    for name in os.listdir(temp_dir):
+        if name.lower().endswith(".mp4"):
+            try:
+                os.remove(os.path.join(temp_dir, name))
+            except OSError:
+                pass
+
+
 class ScannerWindow(QMainWindow):
     """The Segment Scanner window.
 
@@ -101,7 +116,9 @@ class ScannerWindow(QMainWindow):
 
         # Load the clipped test video
         self.clip_path = clip_to_temp(
-            os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION
+            os.path.join(PROJECT_ROOT, "import", "test.mp4"),
+            CLIP_DURATION,
+            output_dir=os.path.join(PROJECT_ROOT, "temp"),
         )
         self.bridge.load_file(self.clip_path)
 
@@ -204,8 +221,13 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
 
+    # Start fresh: drop any leftover preview clips from prior runs.
+    _clear_temp_clips()
+
     media_path = clip_to_temp(
-        os.path.join(PROJECT_ROOT, "import", "test.mp4"), CLIP_DURATION
+        os.path.join(PROJECT_ROOT, "import", "test.mp4"),
+        CLIP_DURATION,
+        output_dir=os.path.join(PROJECT_ROOT, "temp"),
     )
 
     # Splash while ffprobe scans keyframes. The scan runs synchronously
