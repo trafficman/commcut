@@ -124,6 +124,7 @@ class MediaPlayer(QMainWindow):
         self.tag_locks = {}  # tag key → locked value, carried across unedited segments
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
+        self.ui.exportButton.clicked.connect(self.on_export)
         self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
         self.ui.toggleZoom.setChecked(self.zoom_active)
         self.ui.activeLeft.clicked.connect(lambda: self._move_active(-1))
@@ -317,6 +318,24 @@ class MediaPlayer(QMainWindow):
             return
         self._snap_playhead_to_active_start()
         self._refresh_timeline()
+
+    def on_export(self):
+        """Persist current edits to the .cmct sidecar, then transcode each
+        non-ignored segment into <project_root>/export as 1.mp4, 2.mp4, ..."""
+        # Snapshot the active segment's form tags into the in-memory model so
+        # the .cmct on disk reflects everything before we cut frames out. If
+        # the cursor has walked past the last segment (editing finished), there
+        # is no active segment to snapshot — the .cmct is already current.
+        if 0 <= self.current_index < self.segment_model.segment_count():
+            self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
+            self.segment_model.save(sidecar_path(self.media_path))
+            self.dirty = False
+            self._update_stage_button()
+
+        from shared.ffmpeg import export_segment_clips
+        out_dir = os.path.join(PROJECT_ROOT, "export")
+        written = export_segment_clips(self.media_path, out_dir=out_dir)
+        print(f"Exported {len(written)} clip(s) to {out_dir}")
 
     def on_file_loaded(self, path):
         """Called when mpv finishes loading a file: snap to the active segment start."""

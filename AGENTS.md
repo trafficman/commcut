@@ -49,7 +49,7 @@ commcut/
 │   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
-│   ├── ffmpeg.py            # clip_to_temp (and home of future smart-cut export)
+│   ├── ffmpeg.py            # clip_to_temp, export_segment_clips (simple transcode)
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── prototypes/              # Earlier exploration / alternatives
 │   ├── BasicUI/             # First prototype
@@ -150,8 +150,9 @@ The shared modules are:
   timeline (red/green/blue, ignored dimming, active highlight).
 - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
   (`sidecar_path`, `probe_duration`).
-- `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and the future home of
-  the smart-cut export).
+ - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
+   for the simple per-segment transcode; the future home of the smart-cut
+   export).
 - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
   promoted custom widgets reliably; register a class with
   `register_widget` before `load()`.
@@ -210,9 +211,11 @@ user marker), Test Scan (`blackdetect` → midpoint markers in the upper
 source → midpoint boundaries written to a `.cmct`, then the Video Editor
 launched for manual fixes + tags).
 
-What's *not* wired yet: the Export / smart-cut step (per non-ignored
-segment: keyframe-bracketed lossless copy + partial-keyframe transcode +
-concat).
+What's wired: the simple Export transcode step (`shared/ffmpeg.export_segment_clips`,
+wired to the `exportButton`) — it iterates the `.cmct`, skips ignored segments,
+and frame-accurately re-encodes each keep-segment (libx264/aac) into
+`export/1.mp4 … N.mp4`. Still pending is the smart-cut (keyframe-bracketed
+lossless copy + partial-keyframe transcode + concat) version of that step.
 
 Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
 `scanner.py`) so preview clips don't accumulate across runs; the 2-minute
@@ -290,17 +293,25 @@ editor.
   source video (not the 2-minute preview); midpoint boundaries are written
   as `.cmct` segment starts via `SegmentModel` and the Video Editor is
   launched automatically.
-- Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
-  scanner launches `editor/editor.py` and exits, so an existing `.cmct`
-  is never overwritten (the source used is `import/test.mp4`, matching
-  the editor's hardcoded media path).
+ - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
+   scanner launches `editor/editor.py` and exits, so an existing `.cmct`
+   is never overwritten (the source used is `import/test.mp4`, matching
+   the editor's hardcoded media path).
+- Export (simple transcode in `shared/ffmpeg.export_segment_clips`, wired to
+  the `exportButton` in `editor/editor.py`): iterates the `.cmct`, skips
+  ignored segments, and frame-accurately re-encodes each keep-segment
+  (libx264/aac, not `-c copy`) into `export/1.mp4 … N.mp4`. The `Export`
+  button persists the active segment's tags to the `.cmct` first so the
+  sidecar is current before cutting.
 
 **Next:**
-- **Export / smart cut** (the `Export` button in the readme's flow):
-  per non-ignored segment, find innermost keyframes bracketing the cut
-  points, lossless-copy between them, transcode the partial-keyframe
-  ends, concatenate. A simpler `clip_to_temp` (stream copy) already lives
-  in `shared/ffmpeg.py`; the smart-cut version goes there.
+- **Smart-cut export**: per non-ignored segment, find the innermost
+  keyframes bracketing the two cut points, lossless-copy between them,
+  transcode only the partial-keyframe ends, then concat. The placeholder
+  `clip_to_temp` (stream copy) still lives in `shared/ffmpeg.py`; the
+  keyframe-bracketed smart-cut version replaces/augments `export_segment_clips`
+  when it lands. Also wire export into a background `QThread` (today it runs on
+  the GUI thread, which blocks the editor while cutting).
 
 ## Gaps to be aware of
 
@@ -309,5 +320,9 @@ editor.
   `scanner/`).
 - Automated boundary detection is fully wired: Test Scan (preview, in-memory
   midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and
-  the Scanner→Editor handoff when a `.cmct` already exists. Remaining: only
-  the smart-cut (Export) step is pending.
+  the Scanner→Editor handoff when a `.cmct` already exists.
+- Export is present as a simple full-segment transcode; the smart-cut
+  (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
+- Export runs synchronously on the GUI thread; move to a worker `QThread`
+  (see `PreScanWorker`) for the smart-cut step so the editor stays
+  responsive.
