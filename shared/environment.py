@@ -68,7 +68,18 @@ def setup_environment(script_path):
     (for assets, input videos, etc.).
     """
     script_dir = os.path.dirname(os.path.abspath(script_path))
-    project_root = os.path.abspath(os.path.join(script_dir, '..'))
+
+    # Writable resource root: the folder next to the bundled executable when
+    # frozen, or the source tree root when run from source. When frozen,
+    # __file__ lives under a temporary _MEIPASS dir (wiped on exit) — never the
+    # place for settings.json or user data — so we root user-facing folders at
+    # dirname(sys.executable) (the binary dir) instead. This is identical in
+    # spirit across Windows, macOS, and Linux: PyInstaller sets sys.frozen and
+    # points sys.executable at the platform binary in all three cases.
+    if getattr(sys, 'frozen', False):
+        project_root = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        project_root = os.path.abspath(os.path.join(script_dir, '..'))
 
     # 1. Make the project root importable so 'shared' resolves.
     if project_root not in sys.path:
