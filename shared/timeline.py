@@ -22,6 +22,10 @@ SEGMENT_COLORS = [
 # Dimmed version used for ignored segments.
 IGNORED_COLOR = QColor(70, 70, 70)
 
+# Fraction of the widget width filled by the active segment when zoomed to a
+# segment; the rest shows the neighboring segments as context.
+ACTIVE_SEGMENT_VIEW_FRACTION = 0.9
+
 
 class TimelineWidget(QWidget):
     """Zoom-ready playback timeline.
@@ -85,14 +89,22 @@ class TimelineWidget(QWidget):
         self.update()
 
     def zoom_to_segment(self, i):
-        """Zoom so segment i fills the widget width."""
+        """Zoom so segment i fills most of the widget, with neighbors peeking.
+
+        The active segment occupies ACTIVE_SEGMENT_VIEW_FRACTION of the width,
+        centered, so the previous and next segments stay visible at the edges.
+        """
         if not self.segments or self.width() <= 0:
             return
         seg = self.segments[i]
         seg_duration = seg.end - seg.start
         if seg_duration > 0:
-            self.pixels_per_second = self.width() / seg_duration
-            self.scroll_offset = seg.start
+            view_duration = seg_duration / ACTIVE_SEGMENT_VIEW_FRACTION
+            self.pixels_per_second = self.width() / view_duration
+            self.scroll_offset = (seg.start + seg.end) / 2 - view_duration / 2
+            # Keep the view inside the source so first/last segments show
+            # real neighbors on one side instead of empty background.
+            self.scroll_offset = max(0.0, min(self.duration - view_duration, self.scroll_offset))
         self.update()
 
     # --- rendering ---
