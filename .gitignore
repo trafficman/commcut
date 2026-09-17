@@ -5,3 +5,7 @@ __pycache__/
 *.mp4
 *.mkv
 *.cmct
+*.json
+
+# Agent harness
+.kilo/
