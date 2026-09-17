@@ -12,6 +12,15 @@ from PySide6.QtCore import QFile, QIODevice, QSaveFile
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shared.ui_loader import UiLoader
 
+REQUIRED_FILE_SCHEME_PLACEHOLDER = "title"
+
+
+def file_scheme_error(scheme):
+    """Return a validation message for a file naming scheme, or None if valid."""
+    if "{title}" not in scheme:
+        return "The file naming scheme must include {title} to ensure uniqueness."
+    return None
+
 
 class SettingsWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -62,6 +71,10 @@ class SettingsWindow(QMainWindow):
         scheme = self.ui.lineEditFileScheme.text()
         if scheme == self._saved_scheme:
             return True
+        error = file_scheme_error(scheme)
+        if error is not None:
+            QMessageBox.warning(self, "Invalid file naming scheme", error)
+            return False
         try:
             settings = self._read_settings()
             settings["file_naming_scheme"] = scheme
