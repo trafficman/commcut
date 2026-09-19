@@ -50,6 +50,7 @@ commcut/
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
 │   ├── ffmpeg.py            # clip_to_temp, export_segment_clips (simple transcode)
+│   ├── naming.py            # File naming scheme parser + renderer (tags, AND/OR groups, escaping)
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── prototypes/              # Earlier exploration / alternatives
 │   ├── BasicUI/             # First prototype
@@ -148,12 +149,16 @@ The shared modules are:
   returning sorted timestamps).
 - `shared/timeline.py` — `TimelineWidget`, the editor's zoom/scroll segment
   timeline (red/green/blue, ignored dimming, active highlight).
-- `shared/segments.py` — `SegmentModel` + `.cmct` persistence
-  (`sidecar_path`, `probe_duration`).
+ - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
+   (`sidecar_path`, `probe_duration`).
  - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
    for the simple per-segment transcode; the future home of the smart-cut
    export).
-- `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
+ - `shared/naming.py` — file naming scheme parser and `render_filename()`.
+   Maps user-facing tag names (e.g. `{type}`) to canonical `.cmct` keys
+   (e.g. `filler_type`), supports `{a,b}` fallback, `[...]` AND groups,
+   `[{a}|{b}]` OR groups, and `\`-escaping for literal special characters.
+ - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
   promoted custom widgets reliably; register a class with
   `register_widget` before `load()`.
 
@@ -227,7 +232,100 @@ skips itself and launches the Video Editor (`editor/editor.py`) instead, so
 an existing project is never overwritten. When no `.cmct` exists, the
 Finished button runs `blackdetect` on the full source, writes the midpoint
 boundaries to `<name>.cmct` next to the source, and then launches the
-editor.
+ editor.
+
+## File Naming Scheme
+
+The naming scheme is a user-editable template string stored in
+`settings.json` under the key `file_naming_scheme`. It is parsed and
+rendered by `shared/naming.py:render_filename(scheme, tags)`, which takes
+a tags dict keyed by canonical `.cmct` keys (e.g. `filler_type`, not
+`type`).
+
+### Syntax
+
+| Construct        | Example                     | Meaning                                                        |
+|----------------|------------------------------|----------------------------------------------------------------|
+| Tag            | `{title}`                    | Render the tag's value, or empty if absent.                    |
+| Fallback       | `{year,time_period}`         | Render first non-empty value (left to right).                  |
+| AND group      | `[{block} - ]`              | Render only if **all** tags inside are non-empty; otherwise the entire group (including surrounding literals like separators) is omitted. |
+| OR group       | `[{length}|{info}]`         | Render if **any** tag is non-empty. Non-empty values are joined with single spaces; the pipe is consumed (not rendered). The entire group is omitted when all tags are empty. |
+| Literal parens | `[({length}|{info})]`       | Same as OR group above, with literal `(` and `)` as normal output characters. |
+| Escape         | `\{`, `\}`, `\[`, `\]`, `\,`, `\|`, `\\` | Produce the literal character instead of triggering tag/group/separator parsing. |
+
+### Tag name aliasing
+
+The user-facing syntax uses short names; the `.cmct` format stores canonical
+keys. The parser normalizes aliases at parse time:
+
+| User-facing   | Canonical    |
+|---------------|--------------|
+| `{title}`     | `title`      |
+| `{network}`   | `network`    |
+| `{block}`     | `block`      |
+| `{type}`      | `filler_type` |
+| `{year}`      | `year`       |
+| `{time_period}` | `time_period` |
+| `{show}`      | `show`       |
+| `{special}`   | `special`    |
+| `{length}`    | `length`     |
+| `{info}`      | `information`|
+
+`resolve_tag_value()` accepts both forms, so a scheme can use either
+`{type}` or `{filler_type}` interchangeably. `VALID_TAG_NAMES`,
+`CANONICAL_TAG_KEYS`, and `REQUIRED_TAG_NAMES` (currently just `title`)
+are exposed for validation.
+
+### Parser architecture
+
+`shared/naming.py` contains a recursive-descent parser (`_parse`) that
+tokenizes the scheme into an AST:
+
+- **`_Literal(text)`** — literal output text
+- **`_Tag(names)`** — a tag with left-to-right fallback names
+- **`_Pipe`** — OR separator token (renders as a single space)
+- **`_Group(elements, is_or)`** — a `[]` group with AND (`is_or=False`) or
+  OR (`is_or=True`) semantics
+
+Detection rules:
+- `_has_top_level_pipe(content)` scans `[]` content for unescaped `|` at
+  depth 0 (outside `{}` and nested `[]`). If found, the group is OR.
+- Escaped pipes (`\|`) are skipped — they become literal `|` characters
+  and the group is treated as AND.
+- Nested groups are parsed recursively; each evaluates its own AND/OR
+  condition independently. The parent group's presence check only
+  considers its **direct** child tags (not tags inside sub-groups), so
+  `[{block} - [({length}|{info})]]` renders `"Toonami -"` when block is
+  set but both length and info are empty.
+
+### Whitespace handling
+
+- OR groups: empty tags leave gaps from the pipe→space substitution.
+  `_cleanup_or_text()` collapses multiple spaces and trims spaces
+  *inside* literal parentheses (e.g. `( Sec)` → `(Sec)`) but preserves
+  spaces *outside* (e.g. ` - (30 Sec)` stays intact).
+- The top-level `render_filename()` strips leading/trailing whitespace.
+
+### README default scheme
+
+The README's naming scheme translates to:
+
+```
+{network} - {filler_type} - {year,time_period} - [{block,special} ]{title} [({length}|{information})]
+```
+
+Note: optional sections whose separators should be conditional must have
+their separator **inside** the bracket. Wrapping `{year,time_period}` in
+`[{year,time_period} - ]` prevents stray ` - ` separators when the year
+is absent.
+
+### Integration
+
+The export flow (`editor/editor.py:on_export` →
+`shared/ffmpeg.export_segment_clips`) currently names files `1.mp4`,
+`2.mp4`, etc. To use the naming scheme, read it from `settings.json`,
+call `render_filename(scheme, segment_tags)` for each non-ignored
+segment's tags, and append `.mp4`.
 
 ## Key conventions and gotchas
 
@@ -279,7 +377,7 @@ editor.
   the scanner prepend it to `PATH` via `setup_environment`.
 - Shared library layer used by both wizards: `shared/mpv` (MpvBridge,
   create_mpv_player, scan_keyframes), `shared/timeline`, `shared/segments`,
-  `shared/ffmpeg`, `shared/environment`, `shared/ui_loader`.
+  `shared/ffmpeg`, `shared/environment`, `shared/naming`, `shared/ui_loader`.
 - Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
   embedded mpv playback, transport + frame/keyframe stepping, Place
   Boundary + Undo on the User Marked timeline (in-memory, no `.cmct`),
@@ -298,11 +396,15 @@ editor.
    is never overwritten (the source used is `import/test.mp4`, matching
    the editor's hardcoded media path).
 - Export (simple transcode in `shared/ffmpeg.export_segment_clips`, wired to
-  the `exportButton` in `editor/editor.py`): iterates the `.cmct`, skips
-  ignored segments, and frame-accurately re-encodes each keep-segment
-  (libx264/aac, not `-c copy`) into `export/1.mp4 … N.mp4`. The `Export`
-  button persists the active segment's tags to the `.cmct` first so the
-  sidecar is current before cutting.
+   the `exportButton` in `editor/editor.py`): iterates the `.cmct`, skips
+   ignored segments, and frame-accurately re-encodes each keep-segment
+   (libx264/aac, not `-c copy`) into `export/1.mp4 … N.mp4`. The `Export`
+   button persists the active segment's tags to the `.cmct` first so the
+   sidecar is current before cutting.
+- File naming scheme parser (`shared/naming.py`): `render_filename(scheme,
+  tags)` produces a filename stem from a template, with test coverage in
+  `tests/test_naming.py` (71 tests). See the "File Naming Scheme" section
+  below for the full syntax.
 
 **Next:**
 - **Smart-cut export**: per non-ignored segment, find the innermost
