@@ -335,7 +335,7 @@ def _render_nodes(nodes: list[_Node], tags: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 def render_filename(scheme: str, tags: dict[str, str]) -> str:
-    """Render a naming scheme into a filename stem (without extension).
+    r"""Render a naming scheme into a filename stem (without extension).
 
     *tags* is a dict keyed by canonical .cmct keys (e.g. ``filler_type``,
     ``information``).  The scheme is parsed once and rendered against
@@ -389,7 +389,7 @@ def render_filename(scheme: str, tags: dict[str, str]) -> str:
 
     Backslash-pipe is a literal pipe, not an OR trigger:
 
-        >>> render_filename("a \| b", tags)
+        >>> render_filename(r"a \| b", tags)
         'a | b'
     """
     nodes = _parse(scheme)
