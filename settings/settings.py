@@ -11,8 +11,22 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 from PySide6.QtCore import QFile, QIODevice, QSaveFile
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shared.ui_loader import UiLoader
+from shared.naming import render_filename
 
 REQUIRED_FILE_SCHEME_PLACEHOLDER = "title"
+
+PREVIEW_TAGS: dict[str, str] = {
+    "title": "Worlds Finale",
+    "network": "Cartoon Network",
+    "block": "Toonami",
+    "filler_type": "Promo",
+    "year": "2000",
+    "time_period": "2000s",
+    "show": "Batman TAS",
+    "special": "Kids",
+    "length": "30 Seconds",
+    "information": "Remastered",
+}
 
 
 def file_scheme_error(scheme):
@@ -54,6 +68,8 @@ class SettingsWindow(QMainWindow):
 
         self.ui.buttonBox.accepted.connect(self.accept_changes)
         self.ui.buttonBox.rejected.connect(self.reject_changes)
+        self.ui.lineEditFileScheme.textChanged.connect(self._update_preview)
+        self._update_preview()
 
     def _read_settings(self):
         try:
@@ -93,6 +109,27 @@ class SettingsWindow(QMainWindow):
             return False
         self._saved_scheme = scheme
         return True
+
+    def _update_preview(self) -> None:
+        """Live-render the naming scheme against placeholder tags."""
+        scheme = self.ui.lineEditFileScheme.text()
+        preview = self.ui.lineEditPreview
+        if not scheme:
+            preview.setText("")
+            preview.setStyleSheet("")
+            return
+        error = file_scheme_error(scheme)
+        if error:
+            preview.setText(error)
+            preview.setStyleSheet("color: red; background-color: #ffebee;")
+            return
+        try:
+            result = render_filename(scheme, PREVIEW_TAGS)
+            preview.setText(result)
+            preview.setStyleSheet("")
+        except Exception as exc:
+            preview.setText(f"Error: {exc}")
+            preview.setStyleSheet("color: red; background-color: #ffebee;")
 
     def accept_changes(self):
         """Save unsaved scheme edits and close on success."""
