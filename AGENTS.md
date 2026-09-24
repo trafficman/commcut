@@ -20,8 +20,9 @@ full vision — described in `README.md` — has three pieces:
 
 The working tree currently contains two Wizard modules — the **Editing
 Wizard** (`editor/`) and the **Segment Scanner** (`scanner/`) — plus the
-`shared/` library they both build on. The Rename Wizard and library/export
-layers are not yet built.
+standalone **Settings** window and the `shared/` library they build on. The
+Rename Wizard and export integration for named library destinations are not
+yet built.
 
 ## Layout
 
@@ -35,6 +36,9 @@ commcut/
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
 ├── import/                  # Test source videos
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
+├── settings/                # Standalone Settings window
+│   ├── settings.py          # Scheme persistence, validation, previews, atomic save
+│   └── settingswindow.ui    # File/folder scheme editors and live previews
 ├── editor/                  # The Editing Wizard (current focus)
 │   ├── editor.py            # Entry point: Editor window, editing state machine,
 │   │                        # splash flow, PreScanWorker scaffolding
@@ -44,13 +48,15 @@ commcut/
 │   │                        # transport, two marker timelines, detector sliders
 │   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
-├── shared/                  # Cross-module library (editor + scanner)
+├── shared/                  # Cross-module library (editor + scanner + settings)
 │   ├── environment.py       # setup_environment + get_binary_path (cross-platform)
 │   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
 │   ├── ffmpeg.py            # clip_to_temp, export_segment_clips (simple transcode)
-│   ├── naming.py            # File naming scheme parser + renderer (tags, AND/OR groups, escaping)
+│   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
+│   ├── naming.py            # Filename scheme policy + render_filename()
+│   ├── paths.py             # Folder scheme validation, sanitization, safe components
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── prototypes/              # Earlier exploration / alternatives
 │   ├── BasicUI/             # First prototype
@@ -83,7 +89,10 @@ makes overlaps and gaps structurally impossible.
 Tag fields (from the readme's scheme): `title`, `network`, `block`,
 `filler_type`, `year`, `time_period`, `show`, `special`, `length`,
 `information`. Title must be unique per segment and has **no lock button**;
-all other tags do.
+all other tags do. The base required record fields are Title, Network,
+Filler Type, and Time Period; Year is optional. Form-level enforcement of all
+four fields is not wired yet, but folder resolution requires the three
+structure tags and filename validation requires Title.
 
 The segment data model and persistence live in
 `shared/segments.py:SegmentModel`. Operations:
@@ -130,12 +139,11 @@ the stored tags. Title is excluded from the lock system.
 
 ## Architecture
 
-The editor and scanner share a common library under `shared/`. Both call
-`shared/environment.setup_environment(__file__)` at the very top of their
-entry point — it puts the project root on `sys.path` (so `shared.*`
-resolves when running the script directly) and prepends the per-OS
-`bin/<os>/` folder to `PATH` so mpv, ffprobe, and ffmpeg resolve to the
-bundled versions.
+The editor, scanner, and Settings window use the common library under
+`shared/`. Each entry point calls `shared.environment.setup_environment(__file__)`
+near the top — it puts the project root on `sys.path` (so `shared.*` resolves
+when running the script directly) and prepends the per-OS `bin/<os>/` folder to
+`PATH` so mpv, ffprobe, and ffmpeg resolve to the bundled versions.
 
 The shared modules are:
 
@@ -154,13 +162,23 @@ The shared modules are:
  - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
    for the simple per-segment transcode; the future home of the smart-cut
    export).
- - `shared/naming.py` — file naming scheme parser and `render_filename()`.
-   Maps user-facing tag names (e.g. `{type}`) to canonical `.cmct` keys
-   (e.g. `filler_type`), supports `{a,b}` fallback, `[...]` AND groups,
-   `[{a}|{b}]` OR groups, and `\`-escaping for literal special characters.
+ - `shared/scheme.py` — shared tag aliases and canonical-name resolution plus
+   the public AST (`LiteralNode`, `TagNode`, `PipeNode`, `GroupNode`), lenient
+   filename parsing, strict diagnostic parsing for path validation, and
+   conditional node rendering. Existing filename syntax remains tolerant.
+ - `shared/naming.py` — filename policy and `render_filename()`. It re-exports
+   the shared tag helpers, keeps `{title}` as the filename requirement, and
+   supports `{a,b}` fallback, `[...]` AND groups, `[{a}|{b}]` OR groups,
+   nested groups, and `\`-escaping.
+ - `shared/paths.py` — restricted folder-scheme compiler and resolver.
+   `compile_folder_scheme()` validates the path-specific grammar;
+   `render_folder_components()` sanitizes tag leaves and returns safe,
+   display-cased relative components; `format_folder_components()` is for
+   previews. Portable component sanitation also lives here for later reuse by
+   filename export.
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
-  promoted custom widgets reliably; register a class with
-  `register_widget` before `load()`.
+   promoted custom widgets reliably; register a class with
+   `register_widget` before `load()`.
 
 ### The MpvBridge pattern
 
@@ -237,10 +255,10 @@ boundaries to `<name>.cmct` next to the source, and then launches the
 ## File Naming Scheme
 
 The naming scheme is a user-editable template string stored in
-`settings.json` under the key `file_naming_scheme`. It is parsed and
-rendered by `shared/naming.py:render_filename(scheme, tags)`, which takes
-a tags dict keyed by canonical `.cmct` keys (e.g. `filler_type`, not
-`type`).
+`settings.json` under the key `file_naming_scheme`. Its public entry point is
+`shared/naming.py:render_filename(scheme, tags)`, which delegates parsing and
+rendering to `shared/scheme.py` and applies filename policy. It takes a tags
+dict keyed by canonical `.cmct` keys (e.g. `filler_type`, not `type`).
 
 ### Syntax
 
@@ -256,36 +274,34 @@ a tags dict keyed by canonical `.cmct` keys (e.g. `filler_type`, not
 ### Tag name aliasing
 
 The user-facing syntax uses short names; the `.cmct` format stores canonical
-keys. The parser normalizes aliases at parse time:
-
-| User-facing   | Canonical    |
-|---------------|--------------|
-| `{title}`     | `title`      |
-| `{network}`   | `network`    |
-| `{block}`     | `block`      |
-| `{type}`      | `filler_type` |
-| `{year}`      | `year`       |
-| `{time_period}` | `time_period` |
-| `{show}`      | `show`       |
-| `{special}`   | `special`    |
-| `{length}`    | `length`     |
-| `{info}`      | `information`|
+keys. `TagNode` retains the names written in the scheme, while
+`canonical_tag_name()` and `resolve_tag_value()` resolve aliases during
+validation/rendering.
 
 `resolve_tag_value()` accepts both forms, so a scheme can use either
-`{type}` or `{filler_type}` interchangeably. `VALID_TAG_NAMES`,
-`CANONICAL_TAG_KEYS`, and `REQUIRED_TAG_NAMES` (currently just `title`)
-are exposed for validation.
+`{type}` or `{filler_type}` interchangeably. `VALID_TAG_NAMES` contains the
+short user-facing names, `CANONICAL_TAG_KEYS` contains the stored keys, and
+`shared.naming.REQUIRED_TAG_NAMES` contains the filename-specific requirement
+(`title`). Folder requirements are policy-owned by `shared/paths.py`.
 
 ### Parser architecture
 
-`shared/naming.py` contains a recursive-descent parser (`_parse`) that
-tokenizes the scheme into an AST:
+`shared/scheme.py` contains one recursive-descent parser (`_parse`) behind two
+entry points:
 
-- **`_Literal(text)`** — literal output text
-- **`_Tag(names)`** — a tag with left-to-right fallback names
-- **`_Pipe`** — OR separator token (renders as a single space)
-- **`_Group(elements, is_or)`** — a `[]` group with AND (`is_or=False`) or
-  OR (`is_or=True`) semantics
+- `parse_scheme()` preserves the tolerant behavior used by filenames.
+- `parse_scheme_strict()` rejects malformed delimiters, empty tag names,
+  dangling escapes, excessive nesting, and similar syntax defects with
+  source positions. `shared/paths.py` adds the folder-specific semantic rules.
+
+Both produce the same public AST:
+
+- **`LiteralNode(text, escaped)`** — literal output text; strict parsing records
+  whether a literal came from an escape.
+- **`TagNode(names)`** — a tag with left-to-right fallback names.
+- **`PipeNode`** — OR separator token (renders as a single space).
+- **`GroupNode(elements, is_or)`** — a `[]` group with AND (`is_or=False`) or
+  OR (`is_or=True`) semantics.
 
 Detection rules:
 - `_has_top_level_pipe(content)` scans `[]` content for unescaped `|` at
@@ -322,10 +338,117 @@ is absent.
 ### Integration
 
 The export flow (`editor/editor.py:on_export` →
-`shared/ffmpeg.export_segment_clips`) currently names files `1.mp4`,
-`2.mp4`, etc. To use the naming scheme, read it from `settings.json`,
-call `render_filename(scheme, segment_tags)` for each non-ignored
-segment's tags, and append `.mp4`.
+`shared/ffmpeg.export_segment_clips`) currently still names files
+`1.mp4`, `2.mp4`, etc. The filename and folder resolvers are implemented and
+persisted, but neither is wired into this ffmpeg path yet. A future export
+integration must resolve every destination before starting ffmpeg, create
+parent directories, sanitize filenames, and detect existing/case-insensitive
+destination conflicts.
+
+## Folder Organization Scheme
+
+The folder organization scheme is a single-line, user-editable path template
+stored in `settings.json` under `folder_organization_scheme`. Its default is:
+
+```text
+{network}/[Blocks/{block}/]{type}/{time_period}/[{special,show}/]
+```
+
+`shared/paths.py` owns the restricted folder grammar. The public flow is:
+
+1. `compile_folder_scheme(text)` validates syntax and static path safety and
+   returns a reusable `FolderScheme`.
+2. `render_folder_components(scheme, tags)` resolves and sanitizes tag values,
+   applies optional fragments, and returns a tuple of safe relative components.
+3. `format_folder_components(components)` produces the preview form with `/`
+   separators and a trailing `/`.
+
+The renderer intentionally does **not** return a raw path. Future export code
+must join the returned components beneath its chosen export root and validate
+that root before writing.
+
+### Folder syntax and policy
+
+| Construct | Example | Meaning |
+|-----------|---------|---------|
+| Path separator | `/` | Structural folder separator; it cannot be escaped. |
+| Tag | `{network}` | Required unless it occurs inside a conditional group. |
+| Fallback | `{year,block}` | Select the first non-empty candidate. |
+| Optional path fragment | `[Blocks/{block}/]` | Include every character in the group when its tag resolves; otherwise omit the complete fragment. |
+| Literal | `Blocks` | Authored safe path text. Invalid/unsafe literals are configuration errors, not silently rewritten. |
+
+Folder groups are stricter than filename groups:
+
+- Exactly one tag expression (which may itself contain fallback names).
+- Zero or more literal characters and path separators; one group can create
+  several folders.
+- No nested groups.
+- No pipe-based OR groups.
+- `{network}`, exact `{type}` or `{filler_type}`, and exact `{time_period}`
+  must each appear as unguarded top-level tags. A required tag cannot be
+  guarded by a group or placed in a fallback expression.
+- Other known shared tags may be used wherever policy allows; users are free
+  to organize beyond the default structure.
+
+A missing/empty bare tag is a render error. A missing/empty group tag omits the
+group. If the first nonempty fallback value sanitizes to empty, rendering
+raises rather than silently trying the next fallback.
+
+### Output sanitation and path safety
+
+Raw tag values remain unchanged in `.cmct`; sanitation happens only when
+rendering a filesystem destination. `sanitize_path_component()` currently
+implements the portable folder policy:
+
+- Normalize Unicode to NFC while preserving display casing.
+- Replace contiguous control, format-control, reserved path, and visually
+  unsafe characters with one `-`.
+- Collapse whitespace, trim surrounding whitespace, and remove trailing dots
+  or spaces.
+- Prefix Windows device names (`CON`, `NUL`, `COM1`, `LPT1`, and superscript
+  variants) with `_`.
+- Reject empty-after-cleanup values and invalid Unicode.
+- Enforce 255 UTF-8 bytes per component and 4096 UTF-8 bytes for the relative
+  path.
+- Provide `normalized_validation_key()` (NFC plus `casefold()`) for future
+  case-insensitive collision checks without lowercasing displayed names.
+
+Authored schemes reject rooted paths, drive-qualified/UNC forms, `.`/`..`,
+empty or repeated components, portable-invalid literals, and path-size
+violations. Runtime empty components caused solely by omitted optional groups
+are collapsed. `FolderScheme` keeps the source text authoritative and detects
+mutation of its public AST nodes via a structural fingerprint.
+
+Filename sanitation is **not** implemented yet. A future filename layer should
+reuse the common component rules while applying filename-specific reserved-name
+and extension policy.
+
+## Settings Scheme UI
+
+`settings/settings.py` and `settings/settingswindow.ui` mirror the file-scheme
+editor for folder schemes:
+
+- `file_naming_scheme` defaults to the README file template when absent.
+- `folder_organization_scheme` defaults to the folder template above.
+- Both fields load independently; a malformed stored folder value disables
+  only the folder editor and preserves the rest of the JSON object.
+- File and folder updates are written together through one `QSaveFile`, so a
+  failed validation or filesystem write cannot partially persist one field.
+  Unchanged legacy file values are preserved even if future stricter filename
+  validation would reject them.
+- File preview continues to call `render_filename()`.
+- Folder preview calls the exact production path
+  `compile_folder_scheme()` → `render_folder_components()` →
+  `format_folder_components()` with `PREVIEW_TAGS`; Settings must not duplicate
+  resolver logic.
+- Cancel and window-manager close restore both last-saved values. Constructor
+  warnings are deferred with `QTimer` so headless construction cannot block
+  before the event loop starts.
+- Import/Export directory fields and Browse buttons are present in the UI but
+  remain unwired.
+
+Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
+`tests/test_settings.py`, alongside the existing `tests/test_naming.py`.
 
 ## Key conventions and gotchas
 
@@ -375,9 +498,10 @@ segment's tags, and append `.mp4`.
 - Cross-platform binary resolution: `shared/environment.get_binary_path`
   resolves ffmpeg/ffprobe/mpv per OS under `bin/<os>/`; both the editor and
   the scanner prepend it to `PATH` via `setup_environment`.
-- Shared library layer used by both wizards: `shared/mpv` (MpvBridge,
-  create_mpv_player, scan_keyframes), `shared/timeline`, `shared/segments`,
-  `shared/ffmpeg`, `shared/environment`, `shared/naming`, `shared/ui_loader`.
+ - Shared library layer used by the wizards and Settings: `shared/mpv`
+   (MpvBridge, create_mpv_player, scan_keyframes), `shared/timeline`,
+   `shared/segments`, `shared/ffmpeg`, `shared/environment`, `shared/scheme`,
+   `shared/naming`, `shared/paths`, and `shared/ui_loader`.
 - Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
   embedded mpv playback, transport + frame/keyframe stepping, Place
   Boundary + Undo on the User Marked timeline (in-memory, no `.cmct`),
@@ -401,12 +525,26 @@ segment's tags, and append `.mp4`.
    (libx264/aac, not `-c copy`) into `export/1.mp4 … N.mp4`. The `Export`
    button persists the active segment's tags to the `.cmct` first so the
    sidecar is current before cutting.
-- File naming scheme parser (`shared/naming.py`): `render_filename(scheme,
-  tags)` produces a filename stem from a template, with test coverage in
-  `tests/test_naming.py` (71 tests). See the "File Naming Scheme" section
-  below for the full syntax.
+ - File naming scheme parser (`shared/scheme.py` + `shared/naming.py`):
+   `render_filename(scheme, tags)` produces a filename stem from a template,
+   with test coverage in `tests/test_naming.py` and `tests/test_scheme.py`. See
+   the "File Naming Scheme" section above for the full syntax.
+ - Folder organization resolver (`shared/paths.py`): strict folder grammar,
+   required Network/Type/Time Period placeholders, optional multi-folder
+   groups, tag sanitation, portable component validation, and safe relative
+   component output. Covered by `tests/test_paths.py`.
+ - Settings (`settings/settings.py`): independent file/folder scheme defaults,
+   validation, production-resolver previews, atomic `QSaveFile` persistence,
+   cancel/window-close restoration, and offscreen UI tests in
+   `tests/test_settings.py`. The full suite currently contains 168 tests.
 
 **Next:**
+- **Named destination integration**: read both persisted schemes before
+  export, render every non-ignored segment, apply the future filename-specific
+  sanitation policy, create the resolved directory hierarchy, and scan all
+  destinations for existing or normalized collisions before starting any
+  ffmpeg process. This is deliberately not part of the completed folder-parser
+  and Settings slices.
 - **Smart-cut export**: per non-ignored segment, find the innermost
   keyframes bracketing the two cut points, lossless-copy between them,
   transcode only the partial-keyframe ends, then concat. The placeholder
@@ -425,6 +563,12 @@ segment's tags, and append `.mp4`.
   the Scanner→Editor handoff when a `.cmct` already exists.
 - Export is present as a simple full-segment transcode; the smart-cut
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
+- File/folder schemes are implemented and editable in Settings, but export
+  still writes `export/1.mp4 … N.mp4`; filename sanitation, named destination
+  creation, and batch conflict preflight are not wired into ffmpeg yet.
+- The editor tag form does not yet enforce all four base required fields
+  (Title, Network, Filler Type, and Time Period); current requirements are
+  enforced by the filename/folder resolvers at their respective boundaries.
 - Export runs synchronously on the GUI thread; move to a worker `QThread`
   (see `PreScanWorker`) for the smart-cut step so the editor stays
   responsive.
