@@ -1,0 +1,249 @@
+"""Tests for file and folder scheme integration in Settings."""
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+import settings.settings as settings_module
+from shared.paths import DEFAULT_FOLDER_SCHEME
+
+VALID_FILE_SCHEME = settings_module.DEFAULT_FILE_SCHEME
+
+
+# ---------------------------------------------------------------------------
+# Qt and settings fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def qapp():
+    """Create one offscreen QApplication for all Settings-window tests."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
+
+
+@pytest.fixture
+def window_factory(qapp, monkeypatch, tmp_path):
+    """Create isolated Settings windows backed by temporary settings files."""
+    windows = []
+
+    def create(settings=None):
+        settings_path = tmp_path / "settings.json"
+        if settings is not None:
+            settings_path.write_text(
+                json.dumps(settings, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        monkeypatch.setattr(settings_module, "PROJECT_ROOT", str(tmp_path))
+        window = settings_module.SettingsWindow()
+        windows.append(window)
+        qapp.processEvents()
+        return window
+
+    yield create
+
+    for window in windows:
+        window.close()
+        window.deleteLater()
+    qapp.processEvents()
+
+
+def base_settings(**extra):
+    """Return valid baseline settings with optional overrides."""
+    return {
+        settings_module.FILE_NAMING_SCHEME_KEY: VALID_FILE_SCHEME,
+        **extra,
+    }
+
+
+def read_saved_settings(tmp_path):
+    """Read the temporary settings file after a save operation."""
+    return json.loads((Path(tmp_path) / "settings.json").read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Pure folder validation
+# ---------------------------------------------------------------------------
+
+def test_folder_scheme_error_uses_production_compiler():
+    assert settings_module.folder_scheme_error(DEFAULT_FOLDER_SCHEME) is None
+
+    error = settings_module.folder_scheme_error("{network}/{type}")
+
+    assert error is not None
+    assert "missing required top-level tags" in error
+
+
+# ---------------------------------------------------------------------------
+# Loading and preview behavior
+# ---------------------------------------------------------------------------
+
+def test_fresh_install_loads_and_saves_both_defaults(window_factory, tmp_path):
+    window = window_factory()
+
+    assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
+    assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
+    assert window.save_schemes()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
+    assert saved[settings_module.FOLDER_ORGANIZATION_SCHEME_KEY] == DEFAULT_FOLDER_SCHEME
+
+
+def test_missing_folder_key_uses_default_and_renders_preview(window_factory):
+    window = window_factory(base_settings())
+
+    assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
+    assert window.ui.lineEditFolderPreview.text() == (
+        "Cartoon Network/Blocks/Toonami/Promo/2000s/Kids/"
+    )
+
+
+def test_folder_preview_uses_production_errors_and_success_state(window_factory):
+    window = window_factory(base_settings())
+    preview = window.ui.lineEditFolderPreview
+
+    window.ui.lineEditFolderScheme.setText("{network}/{type}")
+    assert "missing required top-level tags" in preview.text()
+    assert settings_module.PREVIEW_ERROR_STYLE in preview.styleSheet()
+
+    window.ui.lineEditFolderScheme.setText(DEFAULT_FOLDER_SCHEME)
+    assert preview.text().endswith("Kids/")
+    assert preview.styleSheet() == ""
+
+
+def test_folder_help_matches_the_shared_tag_set_and_restrictions(window_factory):
+    window = window_factory(base_settings())
+    help_text = window.ui.textBrowserFolderScheme.toPlainText()
+
+    assert "{title}" in help_text
+    assert "{year}" in help_text
+    assert "{info}" in help_text
+    assert "nested groups" in help_text
+    assert "OR groups" in help_text
+
+
+def test_malformed_stored_folder_scheme_disables_only_folder_editor(
+    window_factory,
+    monkeypatch,
+):
+    messages = []
+
+    class MessageBoxRecorder:
+        @staticmethod
+        def warning(parent, title, message):
+            messages.append((title, message))
+
+    monkeypatch.setattr(settings_module, "QMessageBox", MessageBoxRecorder)
+    window = window_factory(base_settings(
+        **{settings_module.FOLDER_ORGANIZATION_SCHEME_KEY: "{network}/{type}"}
+    ))
+
+    assert window.ui.lineEditFileScheme.isEnabled()
+    assert not window.ui.lineEditFolderScheme.isEnabled()
+    assert window.ui.lineEditFolderPreview.text() == ""
+    assert messages
+
+
+# ---------------------------------------------------------------------------
+# Saving and cancel behavior
+# ---------------------------------------------------------------------------
+
+def test_save_persists_default_folder_key_when_missing(window_factory, tmp_path):
+    window = window_factory(base_settings())
+
+    assert window.save_schemes()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
+    assert saved[settings_module.FOLDER_ORGANIZATION_SCHEME_KEY] == DEFAULT_FOLDER_SCHEME
+
+
+def test_save_updates_both_schemes_and_preserves_unrelated_settings(
+    window_factory,
+    tmp_path,
+):
+    window = window_factory(base_settings(unrelated="keep me"))
+    custom_file_scheme = "{title} - {network}"
+    custom_folder_scheme = "{network}/{type}/{time_period}"
+
+    window.ui.lineEditFileScheme.setText(custom_file_scheme)
+    window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
+
+    assert window.save_schemes()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == custom_file_scheme
+    assert saved[settings_module.FOLDER_ORGANIZATION_SCHEME_KEY] == custom_folder_scheme
+    assert saved["unrelated"] == "keep me"
+
+
+def test_unchanged_invalid_legacy_file_value_does_not_block_folder_save(
+    window_factory,
+    tmp_path,
+):
+    stored_file_scheme = "invalid legacy scheme"
+    window = window_factory({
+        settings_module.FILE_NAMING_SCHEME_KEY: stored_file_scheme,
+        settings_module.FOLDER_ORGANIZATION_SCHEME_KEY: DEFAULT_FOLDER_SCHEME,
+    })
+    custom_folder_scheme = "{network}/{type}/{time_period}"
+
+    window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
+
+    assert window.save_schemes()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == stored_file_scheme
+    assert saved[settings_module.FOLDER_ORGANIZATION_SCHEME_KEY] == custom_folder_scheme
+
+
+def test_invalid_folder_scheme_blocks_the_atomic_save(window_factory, tmp_path, monkeypatch):
+    messages = []
+
+    class MessageBoxRecorder:
+        @staticmethod
+        def warning(parent, title, message):
+            messages.append((title, message))
+
+    monkeypatch.setattr(settings_module, "QMessageBox", MessageBoxRecorder)
+    window = window_factory(base_settings())
+
+    window.ui.lineEditFileScheme.setText("{title} changed")
+    window.ui.lineEditFolderScheme.setText("{network}/{type}")
+
+    assert not window.save_schemes()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
+    assert settings_module.FOLDER_ORGANIZATION_SCHEME_KEY not in saved
+    assert messages[0][0] == "Invalid folder organization scheme"
+
+
+def test_cancel_restores_both_saved_schemes(window_factory):
+    window = window_factory(base_settings())
+    custom_folder_scheme = "{network}/{type}/{time_period}"
+
+    window.ui.lineEditFileScheme.setText("{title} changed")
+    window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
+    window.reject_changes()
+
+    assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
+    assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
+
+
+def test_window_manager_close_restores_unsaved_schemes(window_factory):
+    window = window_factory(base_settings())
+    custom_folder_scheme = "{network}/{type}/{time_period}"
+
+    window.ui.lineEditFileScheme.setText("{title} changed")
+    window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
+    window.close()
+
+    assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
+    assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
