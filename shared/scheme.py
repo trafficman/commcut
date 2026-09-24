@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Sequence
+
+_MAX_STRICT_GROUP_DEPTH = 64
 
 _TAG_ALIASES: dict[str, str] = {
     "title": "title",
@@ -47,6 +50,14 @@ def normalize_tag_name(user_name: str) -> str | None:
     return _TAG_ALIASES.get(user_name)
 
 
+def canonical_tag_name(user_name: str) -> str | None:
+    """Return a known tag's canonical name from an alias or canonical key."""
+    canonical = normalize_tag_name(user_name)
+    if canonical is not None:
+        return canonical
+    return user_name if user_name in CANONICAL_TAG_KEYS else None
+
+
 def resolve_tag_value(user_name: str, tags: dict[str, str]) -> str | None:
     """Return a known tag's non-empty value, accepting aliases or canonical keys.
 
@@ -59,37 +70,51 @@ def resolve_tag_value(user_name: str, tags: dict[str, str]) -> str | None:
     >>> resolve_tag_value("type", {"filler_type": ""}) is None
     True
     """
-    canonical = normalize_tag_name(user_name)
-    if canonical is None:
-        canonical = user_name if user_name in CANONICAL_TAG_KEYS else None
+    canonical = canonical_tag_name(user_name)
     if canonical is None:
         return None
     value = tags.get(canonical, "")
     return value if value else None
 
 
+class SchemeSyntaxError(ValueError):
+    """A template syntax error at a zero-based source position."""
+
+    def __init__(self, message: str, position: int) -> None:
+        self.reason = message
+        self.position = position
+        super().__init__(f"{message} at position {position}")
+
+
 @dataclass
-class _Literal:
+class LiteralNode:
     text: str
+    escaped: bool = False
 
 
 @dataclass
-class _Tag:
+class TagNode:
     names: list[str]
 
 
 @dataclass
-class _Pipe:
+class PipeNode:
     pass
 
 
 @dataclass
-class _Group:
-    elements: list[_Node]
+class GroupNode:
+    elements: list[Node]
     is_or: bool
 
 
-_Node = _Literal | _Tag | _Pipe | _Group
+Node = LiteralNode | TagNode | PipeNode | GroupNode
+
+_Literal = LiteralNode
+_Tag = TagNode
+_Pipe = PipeNode
+_Group = GroupNode
+_Node = Node
 
 
 def _has_top_level_pipe(content: str) -> bool:
@@ -116,40 +141,67 @@ def _has_top_level_pipe(content: str) -> bool:
     return False
 
 
-def _parse(text: str, is_or_context: bool = False) -> list[_Node]:
+def _parse(
+    text: str,
+    is_or_context: bool = False,
+    *,
+    strict: bool = False,
+    offset: int = 0,
+    group_depth: int = 0,
+) -> list[Node]:
     """Parse a template fragment into AST nodes."""
-    nodes: list[_Node] = []
+    nodes: list[Node] = []
     i = 0
     while i < len(text):
         c = text[i]
 
-        if c == "\\" and i + 1 < len(text):
-            nodes.append(_Literal(text[i + 1]))
-            i += 2
+        if c == "\\":
+            if i + 1 < len(text):
+                nodes.append(LiteralNode(text[i + 1], escaped=strict))
+                i += 2
+                continue
+            if strict:
+                raise SchemeSyntaxError("Dangling escape", offset + i)
+            nodes.append(LiteralNode(c))
+            i += 1
             continue
 
         if c == "|" and is_or_context:
-            nodes.append(_Pipe())
+            nodes.append(PipeNode())
             i += 1
             continue
 
         if c == "{":
+            opening_position = offset + i
             i += 1
             start = i
             while i < len(text):
                 if text[i] == "\\" and i + 1 < len(text):
                     i += 2
                     continue
+                if strict and text[i] == "{":
+                    raise SchemeSyntaxError("Nested tag", offset + i)
                 if text[i] == "}":
                     break
                 i += 1
             inner = text[start:i]
+            if i >= len(text) and strict:
+                raise SchemeSyntaxError("Unclosed tag", opening_position)
             i += 1
-            names = [n for n in (raw.strip() for raw in inner.split(",")) if n]
-            nodes.append(_Tag(names))
+            raw_names = [raw.strip() for raw in inner.split(",")]
+            if strict and any(not name for name in raw_names):
+                raise SchemeSyntaxError("Empty tag name", opening_position)
+            names = [name for name in raw_names if name]
+            nodes.append(TagNode(names))
             continue
 
         if c == "[":
+            opening_position = offset + i
+            if strict and group_depth >= _MAX_STRICT_GROUP_DEPTH:
+                raise SchemeSyntaxError(
+                    "Group nesting exceeds the strict parser limit",
+                    opening_position,
+                )
             i += 1
             start = i
             depth = 1
@@ -165,24 +217,41 @@ def _parse(text: str, is_or_context: bool = False) -> list[_Node]:
                         break
                 i += 1
             content = text[start:i]
+            if i >= len(text) and strict:
+                raise SchemeSyntaxError("Unclosed group", opening_position)
             i += 1
             is_or = _has_top_level_pipe(content)
-            elements = _parse(content, is_or_context=is_or)
-            nodes.append(_Group(elements, is_or))
+            elements = _parse(
+                content,
+                is_or_context=is_or,
+                strict=strict,
+                offset=offset + start,
+                group_depth=group_depth + 1,
+            )
+            nodes.append(GroupNode(elements, is_or))
             continue
 
-        nodes.append(_Literal(c))
+        if strict and c in "}]":
+            label = "Unexpected closing brace" if c == "}" else "Unexpected closing bracket"
+            raise SchemeSyntaxError(label, offset + i)
+
+        nodes.append(LiteralNode(c))
         i += 1
 
     return nodes
 
 
-def parse_scheme(text: str) -> list[_Node]:
-    """Parse a template into reusable AST nodes."""
+def parse_scheme(text: str) -> list[Node]:
+    """Parse a template leniently into reusable AST nodes."""
     return _parse(text)
 
 
-def _render_tag(tag: _Tag, tags: dict[str, str]) -> str:
+def parse_scheme_strict(text: str) -> list[Node]:
+    """Parse a template, rejecting malformed syntax and empty tag names."""
+    return _parse(text, strict=True)
+
+
+def _render_tag(tag: TagNode, tags: dict[str, str]) -> str:
     for name in tag.names:
         value = resolve_tag_value(name, tags)
         if value:
@@ -190,10 +259,10 @@ def _render_tag(tag: _Tag, tags: dict[str, str]) -> str:
     return ""
 
 
-def _collect_tags(elements: list[_Node]) -> list[_Tag]:
-    found: list[_Tag] = []
+def _collect_tags(elements: list[Node]) -> list[TagNode]:
+    found: list[TagNode] = []
     for elem in elements:
-        if isinstance(elem, _Tag):
+        if isinstance(elem, TagNode):
             found.append(elem)
     return found
 
@@ -205,21 +274,21 @@ def _cleanup_or_text(text: str) -> str:
     return text.strip()
 
 
-def _render_elements(elements: list[_Node], tags: dict[str, str]) -> str:
+def _render_elements(elements: Sequence[Node], tags: dict[str, str]) -> str:
     parts: list[str] = []
     for elem in elements:
-        if isinstance(elem, _Literal):
+        if isinstance(elem, LiteralNode):
             parts.append(elem.text)
-        elif isinstance(elem, _Tag):
+        elif isinstance(elem, TagNode):
             parts.append(_render_tag(elem, tags))
-        elif isinstance(elem, _Pipe):
+        elif isinstance(elem, PipeNode):
             parts.append(" ")
-        elif isinstance(elem, _Group):
+        elif isinstance(elem, GroupNode):
             parts.append(_render_group(elem, tags))
     return "".join(parts)
 
 
-def _render_group(group: _Group, tags: dict[str, str]) -> str:
+def _render_group(group: GroupNode, tags: dict[str, str]) -> str:
     all_tags = _collect_tags(group.elements)
 
     if group.is_or:
@@ -236,6 +305,6 @@ def _render_group(group: _Group, tags: dict[str, str]) -> str:
     return rendered
 
 
-def render_nodes(nodes: list[_Node], tags: dict[str, str]) -> str:
+def render_nodes(nodes: Sequence[Node], tags: dict[str, str]) -> str:
     """Render parsed template nodes against tag values."""
     return _render_elements(nodes, tags)
