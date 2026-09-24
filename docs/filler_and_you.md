@@ -51,48 +51,48 @@ This is a big one, and arguably the most important to get right if you really wa
 
 **Back To:**
 
-    A type of bumper that goes between the end of a commercial break and the start of the next segment of a specific show, typically in the form of "Now, we're back to <show>!".
+* A type of bumper that goes between the end of a commercial break and the start of the next segment of a specific show, typically in the form of "Now, we're back to <show>!".
 
 **Be Right Back:**
 
-	A type of bumper that goes between the end of one segment of a specific show and the commercial break, typically in the form of "We'll be right back to <show>!".
+* A type of bumper that goes between the end of one segment of a specific show and the commercial break, typically in the form of "We'll be right back to <show>!".
 
 **Blocks:**
 
-	A section of programming with unique filler not otherwise used in the general network programming. May contain its own bumpers, promo material, intros, etc.
+* A section of programming with unique filler not otherwise used in the general network programming. May contain its own bumpers, promo material, intros, etc.
 
 **Bumper/Ident:**
 
-	An element that acts as a transition to or from commercial breaks. Idents were originally born from legal requirements for traditional broadcast radio (and later, television) to identify themselves periodically ("You are watching CBS"). Adopted by cable networks and evolved into the modern (and often more elaborate) bumper as a form of brand recognition and to raise viewer retention. Typically 30 seconds or less, almost never longer than 60.
+* An element that acts as a transition to or from commercial breaks. Idents were originally born from legal requirements for traditional broadcast radio (and later, television) to identify themselves periodically ("You are watching CBS"). Adopted by cable networks and evolved into the modern (and often more elaborate) bumper as a form of brand recognition and to raise viewer retention. Typically 30 seconds or less, almost never longer than 60.
 	
 **Commercial:**
 
-	Non-network specific advertisements, can play on multiple channels/networks.
+* Non-network specific advertisements, can play on multiple channels/networks.
 
 **Ending:**
 
-	Distinct from outro. Show specific ending (credits, etc) that's not technically filler, and is usually baked right into the episode. However, some releases (mainly DVD rips) may cut them out and provide them as separate files in order to save on storage space. Most common in anime.
+* Distinct from outro. Show specific ending (credits, etc) that's not technically filler, and is usually baked right into the episode. However, some releases (mainly DVD rips) may cut them out and provide them as separate files in order to save on storage space. Most common in anime.
 
 **Interstitial:**
 
-	Network specific promo material used to pad out larger time segments, my personal rule of thumb tends to be anything longer than 60 seconds.
+* Network specific promo material used to pad out larger time segments, my personal rule of thumb tends to be anything longer than 60 seconds.
 
 **Intro:**
 
-	Network (or often, block) specific bumpers that air between commercials and the start of a specific show, Toonami intros being a prominent example.
+* Network (or often, block) specific bumpers that air between commercials and the start of a specific show, Toonami intros being a prominent example.
 
 **Opening:**
 
-	Distinct from intro. Show specific opening that's not technically filler, and is usually baked right into the episode. However, some releases (mainly DVD rips) may cut them out and provide them as separate files in order to save on storage space. Most common in anime.
+* Distinct from intro. Show specific opening that's not technically filler, and is usually baked right into the episode. However, some releases (mainly DVD rips) may cut them out and provide them as separate files in order to save on storage space. Most common in anime.
 
 **Outro:**
 
-	Network (or often, block) specific bumpers that air between the end of a specific show or (more commonly) block and commercials.Most often used to signal the end of a block (Adult Swim sign offs as an example).
+* Network (or often, block) specific bumpers that air between the end of a specific show or (more commonly) block and commercials.Most often used to signal the end of a block (Adult Swim sign offs as an example).
 
 **Promo:**
 
-	Network specific promotional material, basically, commercials for shows or other events airing on that network.
+* Network specific promotional material, basically, commercials for shows or other events airing on that network.
 
 **Up Next:**
 
-	A type of bumper that announces the shows airing after the current/previous one, often in a "Now, Then, Later" format telling you the next three scheduled shows.
+* A type of bumper that announces the shows airing after the current/previous one, often in a "Now, Then, Later" format telling you the next three scheduled shows.
