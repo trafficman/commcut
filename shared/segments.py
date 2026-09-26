@@ -47,6 +47,13 @@ def probe_duration(path):
         return None
 
 
+# Outcome codes returned by SegmentModel.place_end_boundary().
+END_BOUNDARY_INSERTED = "inserted"
+END_BOUNDARY_MOVED = "moved"
+END_BOUNDARY_NO_CHANGE = "no_change"
+END_BOUNDARY_BLOCKED = "blocked"
+
+
 class SegmentModel:
     """Holds the parsed .cmct data and handles persistence."""
 
@@ -128,6 +135,53 @@ class SegmentModel:
         }
         self.segments.insert(active_index + 1, new_seg)
         return True
+
+    def place_end_boundary(self, active_index, position, tags=None) -> str:
+        """Place the active segment's end transition point at position.
+
+        A segment's end and the next segment's start are the same stored
+        value, so "put my end boundary here" has two possible answers: insert
+        a boundary (the playhead is inside the active segment, so a new
+        segment is created) or move the existing one (the playhead is already
+        past the end, but still within the following segment).
+
+        Exactly one transition point is ever affected. A position beyond the
+        following segment is refused rather than clamped, so this can never
+        quietly eat several segments -- absorbing one is what merge_next is
+        for. Moving the boundary necessarily resizes both neighbours, since
+        they share that value; no tags or ignored flags are touched.
+
+        A position at or before the active segment's start is left alone for
+        now; only the forward direction is handled.
+
+        Returns END_BOUNDARY_INSERTED, END_BOUNDARY_MOVED, or
+        END_BOUNDARY_NO_CHANGE (the boundary already sits there, or the
+        position is at a video edge with nothing to move), or
+        END_BOUNDARY_BLOCKED (the position would collapse a neighbour to zero
+        length, or would cross a second boundary).
+        """
+        if not 0 <= active_index < len(self.segments):
+            return END_BOUNDARY_NO_CHANGE
+        start = self.start(active_index)
+        end = self.end(active_index)
+
+        if start < position < end:
+            if self.end_segment(active_index, position, tags):
+                return END_BOUNDARY_INSERTED
+            return END_BOUNDARY_NO_CHANGE
+
+        if position > end:
+            next_index = active_index + 1
+            if next_index >= len(self.segments):
+                # Last segment: its end is the video duration, and there is no
+                # following segment to give the time to.
+                return END_BOUNDARY_NO_CHANGE
+            if position < self.end(next_index):
+                self.segments[next_index]["start"] = position
+                return END_BOUNDARY_MOVED
+            return END_BOUNDARY_BLOCKED
+
+        return END_BOUNDARY_NO_CHANGE
 
     def merge_next(self, active_index):
         """Remove the boundary after the active segment, merging it with the next.

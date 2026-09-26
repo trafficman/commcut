@@ -10,7 +10,10 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.timeline import TimelineWidget, Segment
-from shared.segments import sidecar_path, probe_duration, SegmentModel
+from shared.segments import (
+    sidecar_path, probe_duration, SegmentModel,
+    END_BOUNDARY_BLOCKED, END_BOUNDARY_NO_CHANGE,
+)
 from shared.exporting import missing_required_tags
 
 # Qt libs
@@ -380,16 +383,39 @@ class MediaPlayer(QMainWindow):
         self._refresh_required_fields()
 
     def on_end_segment(self):
-        """Split the active segment at the current playhead position."""
+        """Place the active segment's end boundary at the playhead.
+
+        Inside the active segment this splits it, creating a new segment that
+        keeps the active index. Past the end it moves the boundary forward
+        within the following segment, so nudging an end boundary forward no
+        longer needs a multi-step detour. Only one transition point is ever
+        touched; a playhead far enough forward to cross a second boundary is
+        refused rather than clamped.
+        """
         position = self.player.time_pos
         if position is None:
             return
-        if self.segment_model.end_segment(
-            self.current_index, position, self._inherited_tags()
-        ):
-            self.dirty = True
-            self._update_stage_button()
-            self._refresh_timeline()
+        outcome = self.segment_model.place_end_boundary(
+            self.current_index,
+            position,
+            self._inherited_tags(),
+        )
+        if outcome == END_BOUNDARY_BLOCKED:
+            QMessageBox.warning(
+                self,
+                "Boundary not moved",
+                "The playhead is past the end of the following segment, so End "
+                "Seg cannot place the boundary there without crossing more "
+                "than one boundary.\n\nUse Add Next Seg to absorb the following "
+                "segment into this one, or navigate to it and cut there "
+                "instead.",
+            )
+            return
+        if outcome == END_BOUNDARY_NO_CHANGE:
+            return
+        self.dirty = True
+        self._update_stage_button()
+        self._refresh_timeline()
 
     def on_stage(self):
         """Lock in the active segment, advance to the next.
