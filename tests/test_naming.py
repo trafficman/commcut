@@ -9,11 +9,15 @@ import pytest
 
 from shared.naming import (
     CANONICAL_TAG_KEYS,
+    FilenameSchemeError,
     REQUIRED_TAG_NAMES,
     VALID_TAG_NAMES,
+    compile_filename_scheme,
     normalize_tag_name,
-    resolve_tag_value,
+    render_compiled_filename,
     render_filename,
+    resolve_tag_value,
+    sanitize_filename_stem,
 )
 
 
@@ -416,3 +420,51 @@ class TestReadmeScheme:
         }
         expected = "Cartoon Network - Theme - Weekend Theme Song"
         assert render_filename(scheme, tags) == expected
+
+
+# ---------------------------------------------------------------------------
+# Strict export filename policy
+# ---------------------------------------------------------------------------
+
+class TestFilenameExportPolicy:
+    """Strict validation and filesystem-safe filename components for export."""
+
+    def test_compile_and_render_valid_scheme(self, full_tags):
+        scheme = compile_filename_scheme("{title} - {network}")
+
+        assert render_compiled_filename(scheme, full_tags) == (
+            "Worlds Finale - Cartoon Network"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "{network}",
+            r"\{title\}",
+            "{network,title}",
+            "[{title}] {network}",
+            "{title}/{unknown}",
+        ],
+    )
+    def test_invalid_export_schemes_are_rejected(self, text):
+        with pytest.raises(FilenameSchemeError):
+            compile_filename_scheme(text)
+
+    @pytest.mark.parametrize(
+        ("stem", "expected"),
+        [
+            ("Promo/One", "Promo-One.mp4"),
+            ("NUL", "_NUL.mp4"),
+            ("A\u202eB", "A-B.mp4"),
+        ],
+    )
+    def test_filename_stem_sanitization(self, stem, expected):
+        assert sanitize_filename_stem(stem) == expected
+
+    def test_filename_stem_cannot_be_empty(self):
+        with pytest.raises(ValueError, match="empty after sanitization"):
+            sanitize_filename_stem(" .. ")
+
+    def test_filename_includes_extension_in_byte_limit(self):
+        with pytest.raises(FilenameSchemeError, match="exceeds 255"):
+            sanitize_filename_stem("A" * 252)
