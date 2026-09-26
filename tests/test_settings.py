@@ -11,6 +11,7 @@ import settings.settings as settings_module
 from shared.paths import DEFAULT_FOLDER_SCHEME
 
 VALID_FILE_SCHEME = settings_module.DEFAULT_FILE_SCHEME
+file_scheme_error = settings_module.file_scheme_error
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +127,98 @@ def test_folder_help_matches_the_shared_tag_set_and_restrictions(window_factory)
     assert "{info}" in help_text
     assert "nested groups" in help_text
     assert "OR groups" in help_text
+
+
+def test_file_help_documents_the_syntax_and_the_title_requirement(window_factory):
+    """The file scheme help is the in-app documentation, so it must name every
+    construct the parser actually supports and the rule it enforces."""
+    window = window_factory(base_settings())
+    help_text = window.ui.textBrowserFileScheme.toPlainText()
+
+    # The shared tag set.
+    assert "{title}" in help_text
+    assert "{year}" in help_text
+    assert "{info}" in help_text
+    # Fallback, optional group, OR group, escaping, and nesting.
+    assert "{a,b}" in help_text
+    assert "[{block} - ]" in help_text
+    assert "[a|b]" in help_text
+    assert "backslash" in help_text
+    assert "nest" in help_text
+    # The rule the strict profile enforces.
+    assert "outside any brackets" in help_text
+    # Output details the user cannot otherwise see.
+    assert ".mp4" in help_text
+    assert "255" in help_text
+
+
+def test_file_help_examples_behave_as_documented(window_factory, monkeypatch):
+    """Every construct the help names must actually do what the help says."""
+    window = window_factory(base_settings())
+    preview = window.ui.lineEditPreview
+    base_tags = dict(settings_module.PREVIEW_TAGS)
+
+    def rendered(scheme, **overrides):
+        monkeypatch.setattr(
+            settings_module, "PREVIEW_TAGS", {**base_tags, **overrides})
+        window.ui.lineEditFileScheme.setText(scheme)
+        # setText on an unchanged value does not re-emit textChanged, so drive
+        # the real preview path explicitly to keep every case independent.
+        window._update_file_preview()
+        assert preview.styleSheet() == "", f"{scheme} was rejected by the preview"
+        return preview.text()
+
+    # {a,b} takes the first tag that is set, then the next one.
+    assert rendered("{title} [{year,time_period}]").endswith("2000")
+    assert rendered("{title} [{year,time_period}]", year="").endswith("2000s")
+    assert rendered("{title} [{year,time_period}]", year="", time_period="") \
+        == base_tags["title"]
+    # An optional section drops, separator and all, when its tag is empty.
+    assert rendered("{title} [{block} - ]").endswith("Toonami -")
+    assert rendered("{title} [{block} - ]", block="") == base_tags["title"]
+    # [a|b] joins the tags that are set, and drops the group when none are.
+    assert rendered(
+        "{title} [{length}|{information}]",
+    ).endswith("30 Seconds Remastered")
+    assert rendered(
+        "{title} [{length}|{information}]", information="",
+    ).endswith("30 Seconds")
+    assert rendered(
+        "{title} [{length}|{information}]", length="", information="",
+    ) == base_tags["title"]
+    # A backslash writes the next character literally.
+    assert rendered(r"{title} \[x\]").endswith("[x]")
+
+
+def test_file_help_states_the_title_rule_the_compiler_enforces(window_factory):
+    """The help says {title} must be top-level and alone; prove that is so."""
+    window = window_factory(base_settings())
+    help_text = window.ui.textBrowserFileScheme.toPlainText()
+    assert "outside any brackets" in help_text
+
+    assert file_scheme_error("{title}") is None
+
+    # Neither a bracketed title nor a fallback that merely contains one counts.
+    assert file_scheme_error("[{title}]") is not None
+    assert file_scheme_error("{year,title}") is not None
+
+
+def test_help_panels_are_tall_enough_for_their_text(qapp, window_factory):
+    """In-app help only helps if it is not clipped, so both panels must fit
+    their content at the window's minimum width, where text wraps the most."""
+    window = window_factory(base_settings())
+    window.show()
+    window.resize(window.minimumSize())
+    qapp.processEvents()
+
+    for name in ("textBrowserFileScheme", "textBrowserFolderScheme"):
+        browser = getattr(window.ui, name)
+        document_height = browser.document().size().height()
+        assert document_height > 0, f"{name} did not lay out"
+        assert browser.minimumHeight() >= document_height, (
+            f"{name} would clip {document_height:.0f}px of help into "
+            f"{browser.minimumHeight()}px"
+        )
 
 
 def test_malformed_stored_folder_scheme_disables_only_folder_editor(

@@ -6,14 +6,14 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>500</width>
-    <height>440</height>
+    <width>780</width>
+    <height>515</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>500</width>
-    <height>420</height>
+    <width>780</width>
+    <height>515</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -69,8 +69,23 @@
      </item>
      <item row="3" column="1">
       <widget class="QTextBrowser" name="textBrowserFileScheme">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>165</height>
+        </size>
+       </property>
        <property name="html">
-        <string>&lt;p&gt;Choose from: {title}, {network}, {block}, {type}, {year}, {time_period}, {show}, {special}, {length}, and {info}&lt;/p&gt;&lt;p&gt;&lt;b&gt;Must include {title} to ensure uniqueness&lt;/b&gt;&lt;/p&gt;</string>
+        <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+hr { height: 1px; border-width: 0; }
+li.unchecked::marker { content: &quot;\2610&quot;; }
+li.checked::marker { content: &quot;\2612&quot;; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Choose from: {title}, {network}, {block}, {type}, {year}, {time_period}, {show}, {special}, {length}, and {info}&lt;/p&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Use &lt;span style=&quot; font-weight:700;&quot;&gt;{a,b}&lt;/span&gt; for fallback tags (the first available tag, from left to right, will be rendered), &lt;span style=&quot; font-weight:700;&quot;&gt;[ ]&lt;/span&gt; to create a group, an optional AND section that will be dropped if all tags are not present (keep the separator inside, as in &lt;span style=&quot; font-weight:700;&quot;&gt;[{block} - ]&lt;/span&gt;), and &lt;span style=&quot; font-weight:700;&quot;&gt;[{a}|{b}]&lt;/span&gt; to create an OR group, which will render any present tags, separated by spaces where the pipe is (if no tags are present, the entire group is not rendered). Groups may nest, and a backslash before a character writes it literally.&lt;/p&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;Must include {title} on its own, outside any brackets, to ensure uniqueness.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
        </property>
       </widget>
      </item>
@@ -110,8 +125,23 @@
      </item>
      <item row="6" column="1">
       <widget class="QTextBrowser" name="textBrowserFolderScheme">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>100</height>
+        </size>
+       </property>
        <property name="html">
-         <string>&lt;p&gt;Choose from: {title}, {network}, {block}, {type}, {year}, {time_period}, {show}, {special}, {length}, and {info}&lt;/p&gt;&lt;p&gt;Use &lt;b&gt;/&lt;/b&gt; between folders and &lt;b&gt;{a,b}&lt;/b&gt; for fallback values. A group may contain one tag and additional literal folders; nested groups and | OR groups are not supported.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Must include exact top-level tags: {network}, {type}, and {time_period}.&lt;/b&gt;&lt;/p&gt;</string>
+        <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+hr { height: 1px; border-width: 0; }
+li.unchecked::marker { content: &quot;\2610&quot;; }
+li.checked::marker { content: &quot;\2612&quot;; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Choose from: {title}, {network}, {block}, {type}, {year}, {time_period}, {show}, {special}, {length}, and {info}&lt;/p&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Use &lt;span style=&quot; font-weight:700;&quot;&gt;/&lt;/span&gt; between folders and &lt;span style=&quot; font-weight:700;&quot;&gt;{a,b}&lt;/span&gt; for fallback values. A group may contain one tag and additional literal folders; nested groups and | OR groups are not supported.&lt;/p&gt;
+&lt;p style=&quot; margin-top:12px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;Must include exact top-level tags: {network}, {type}, and {time_period}.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
        </property>
       </widget>
      </item>

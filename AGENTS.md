@@ -552,6 +552,21 @@ editor for folder schemes:
 - Cancel and window-manager close restore both last-saved values. Constructor
   warnings are deferred with `QTimer` so headless construction cannot block
   before the event loop starts.
+- Each scheme has an in-app help panel (`textBrowserFileScheme` /
+  `textBrowserFolderScheme`) so the window is usable without these docs. The
+  file panel documents the tag set, `{a,b}` fallback, optional `[ ]` groups
+  (including keeping the separator inside the brackets), `[a|b]` OR groups,
+  nesting, backslash escaping, the unconditional top-level `{title}` rule, and
+  the `.mp4` / 255-byte output. **These panels are documentation:** if the
+  parser changes, update them in the same change.
+  `test_file_help_examples_behave_as_documented` renders every construct the
+  file panel names through the real preview, and
+  `test_file_help_states_the_title_rule_the_compiler_enforces` checks the
+  `{title}` wording against `file_scheme_error`, so the help cannot drift
+  into lying. Both help panels are also given explicit `minimumHeight`s that
+  cover their content at the window's minimum width — text wraps tallest
+  there — so neither is ever clipped; the window is 780x720 for that reason.
+  `test_help_panels_are_tall_enough_for_their_text` guards it.
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
 
