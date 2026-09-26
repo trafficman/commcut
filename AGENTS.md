@@ -36,6 +36,10 @@ commcut/
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
 ├── import/                  # Test source videos
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
+├── main.py                  # Application entry point: shows the main menu
+├── mainwindow.py            # MainWindow: launches the scanner / settings as
+│                            # child processes
+├── mainwindow.ui            # Qt Designer file for the main menu
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
@@ -200,6 +204,40 @@ small block in the same method.
 The refusal is deliberately loud. Every out-of-range case used to be a silent
 no-op, and that silence is most of what made the flow feel broken; the dialog
 names **Add Next Seg** and points at navigating to the other segment.
+
+## The main menu
+
+`main.py` is the application entry point. It calls
+`shared.environment.setup_environment(__file__)`, constructs `MainWindow` from
+`mainwindow.py`, and runs the event loop. `MainWindow` loads `mainwindow.ui`
+through the shared `UiLoader` and `setCentralWidget`, matching the Settings
+window's structure.
+
+Two buttons: **Editor** and **Settings**.
+
+**"Editor" launches the scanner, not the editor.** The scanner is the
+pre-process phase of the Editing Wizard — it detects clip boundaries and then
+hands off to the editor itself — so the two are one journey, not two menu
+items. The window says so in a hint label and a tooltip, since "Editor" alone
+does not.
+
+Children are launched with `subprocess.Popen([sys.executable, script])`, the
+same mechanism the scanner already uses to hand off to the editor. Three
+reasons: the menu **stays open in the background** (it never waits on or
+observes the child, so there is no need to reopen it on child exit), each
+window gets its own Qt event loop and its own mpv instance, and it sidesteps
+the Windows mpv D3D hazard where constructing a player while another
+top-level window is foreground can deadlock. A launch that fails — including a
+script that is not on disk — is reported with a `QMessageBox` rather than
+allowed to escape into the event loop.
+
+`setup_environment` resolves `PROJECT_ROOT` by checking whether the calling
+script's own folder contains `shared/environment.py`. Root-level scripts
+(`main.py`, `mainwindow.py`) therefore resolve the root correctly, where the
+previous unconditional "go up one level" would have escaped the tree and sent
+every launched path to the wrong place. Subdirectory scripts are unaffected.
+`tests/test_main_window.py` covers both cases plus the launch and failure
+paths.
 
 ## Required record fields
 
@@ -575,12 +613,15 @@ editor for folder schemes:
   file panel names through the real preview, and
   `test_file_help_states_the_title_rule_the_compiler_enforces` checks the
   `{title}` wording against `file_scheme_error`, so the help cannot drift
-  into lying. `test_file_help_documents_the_syntax_and_the_title_requirement`
+  into lying.   `test_file_help_documents_the_syntax_and_the_title_requirement`
   asserts the help *names* each construct but matches on the construct rather
   than one exact notation, so rewording the help does not fail the suite while
   dropping a construct does. The window is intentionally compact (780x515), so
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
-  each panel lays out and can still reach text taller than itself.
+  each panel lays out and can still reach text taller than itself. The main
+  menu and its launched paths are covered by `tests/test_main_window.py`.
+  The full suite currently contains 291 tests.
+
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
 
