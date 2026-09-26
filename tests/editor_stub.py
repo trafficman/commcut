@@ -11,6 +11,7 @@ import os
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from editor.editor import MediaPlayer, _LOCK_BUTTONS, _REQUIRED_TAG_FIELDS, _TAG_FIELDS
+from shared.mpv import BoundaryPreview
 from shared.segments import SegmentModel
 from shared.timeline import TimelineWidget
 
@@ -22,6 +23,47 @@ def ensure_qapp():
     if app is None:
         app = QApplication([])
     return app
+
+
+class FakeBridge:
+    """The MpvBridge surface the editor uses, without libmpv or a video.
+
+    Records every seek and frame/keyframe step so tests can assert the exact
+    playhead sequence — which is what the boundary peek is made of — instead
+    of only where the playhead happened to end up.
+    """
+
+    def __init__(self, duration=120.0, fps=23.976, paused=True):
+        self.seeks = []
+        self.frame_steps = []
+        self.keyframe_steps = []
+        self.play_toggles = 0
+        self.position = 0.0
+        self.duration = duration
+        self.video_fps = fps
+        self.paused = paused
+
+    def seek_exact(self, seconds):
+        self.seeks.append(seconds)
+        self.position = seconds
+
+    def step_frames(self, count=1):
+        self.frame_steps.append(count)
+
+    def next_keyframe(self):
+        self.keyframe_steps.append(1)
+
+    def prev_keyframe(self):
+        self.keyframe_steps.append(-1)
+
+    def toggle_play(self):
+        self.paused = not self.paused
+        self.play_toggles += 1
+
+    def take_seeks(self):
+        """Return the recorded seeks and clear the log."""
+        seeks, self.seeks = self.seeks, []
+        return seeks
 
 
 class EditorStub:
@@ -44,7 +86,13 @@ class EditorStub:
     on_toggle_zoom = MediaPlayer.on_toggle_zoom
     _refresh_timeline = MediaPlayer._refresh_timeline
     _move_active = MediaPlayer._move_active
-    _snap_playhead_to_active_start = lambda self: None
+    _activate = MediaPlayer._activate
+    _snap_playhead_to_active_start = MediaPlayer._snap_playhead_to_active_start
+    on_seek_requested = MediaPlayer.on_seek_requested
+    on_step_frames = MediaPlayer.on_step_frames
+    on_step_keyframe = MediaPlayer.on_step_keyframe
+    on_transport_clicked = MediaPlayer.on_transport_clicked
+    on_file_loaded = MediaPlayer.on_file_loaded
 
     def __init__(self, segments, duration=120.0, media_path=None):
         ensure_qapp()
@@ -93,6 +141,10 @@ class EditorStub:
         self.dirty = False
         self.media_path = media_path or "test.mp4"
         self.player = type("Player", (), {"time_pos": 10.0})()
+        # Mirrors MediaPlayer.__init__: the playhead's only channel is the
+        # bridge, and the boundary peek rides on it.
+        self.bridge = FakeBridge(duration=duration)
+        self.boundary_preview = BoundaryPreview(self.bridge)
         # Mirrors the self._refresh_timeline() call at the end of
         # MediaPlayer.__init__, so the initial form/lock/outline/zoom state
         # matches.
@@ -142,11 +194,16 @@ class EditorStub:
         self.current_index = index
         self._refresh_timeline()
 
+    def navigate_to(self, index):
+        """Step to `index` the way the Active ←/→ buttons do."""
+        self._move_active(index - self.current_index)
+
     def set_ignored(self, value):
         self.ui.clipIgnore.setChecked(value)
 
     def set_playhead(self, position):
         self.player.time_pos = position
+        self.bridge.position = position
 
     def timeline(self):
         return self.ui.timelineWidget
@@ -158,3 +215,10 @@ class EditorStub:
     def resize_timeline(self, width):
         """Resize the timeline widget, as a window resize would."""
         self.ui.timelineWidget.resize(width, self.ui.timelineWidget.height())
+
+    def finish_preview(self):
+        """Let the peek's dwell elapse and run its return seek."""
+        self.boundary_preview._return_to_boundary()
+
+    def preview_pending(self):
+        return self.boundary_preview.pending

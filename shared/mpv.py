@@ -19,7 +19,7 @@ DLL resolves — see shared.environment.setup_environment.
 
 import subprocess
 
-from PySide6.QtCore import QObject, Signal, Qt
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 from shared.diagnostics import log
 from shared.environment import get_binary_path, video_output
@@ -29,6 +29,15 @@ from shared.environment import get_binary_path, video_output
 # "the keyframe we're standing on" and skipped, so repeated presses walk
 # cleanly through the list instead of re-seeking to the same spot.
 _KEYFRAME_EPSILON = 0.05
+
+# How far (seconds) the playhead may have drifted from where BoundaryPreview
+# left it before its return seek is considered stale and skipped.
+_PREVIEW_POSITION_EPSILON = 0.05
+
+# How many frames past a segment boundary BoundaryPreview peeks by default, and
+# how long that peek lasts before returning to the boundary.
+SEGMENT_PREVIEW_FRAMES = 15
+SEGMENT_PREVIEW_DWELL_MS = 450
 
 
 def scan_keyframes(path):
@@ -168,6 +177,22 @@ class MpvBridge(QObject):
         """Frame-exact absolute seek (no keyframe snapping)."""
         self.player.seek(seconds, reference="absolute", precision="exact")
 
+    @property
+    def position(self):
+        """Current playhead position in seconds, or None if not known yet."""
+        return self.player.time_pos
+
+    @property
+    def paused(self):
+        """Whether mpv is paused, or None while the state is unknown."""
+        value = self.player.pause
+        return None if value is None else bool(value)
+
+    @property
+    def duration(self):
+        """Loaded media duration in seconds, or None if not known yet."""
+        return self.player.duration
+
     def step_frames(self, count=1):
         """Advance exactly one frame via exact seek.
 
@@ -231,3 +256,99 @@ class MpvBridge(QObject):
             if t < pos - _KEYFRAME_EPSILON:
                 self.seek_exact(t)
                 return
+
+
+class BoundaryPreview(QObject):
+    """Briefly show the clip just past a segment boundary, then come back.
+
+    Segments are a transition-point model, so a boundary is exactly where one
+    clip ends and the next begins — which in practice is a black frame. That
+    is the right resting place for the playhead (End Seg and Start Seg cut at
+    `player.time_pos`), but it is a useless thing to *look* at, so stepping
+    through segments with the Active arrow keys lands on nothing but black.
+
+    ``flash(boundary)`` therefore seeks to the boundary, seeks a few frames
+    past it so the clip is briefly visible, and schedules a return to the
+    exact boundary. Two exact seeks cost milliseconds, so the peek itself does
+    not slow anything down; the only deliberate delay is the dwell.
+
+    A pending peek is abandoned the moment the playhead is used for anything
+    else (a user seek, a frame step, a cut) — see ``cancel``. The return also
+    skips itself if the playhead has since moved somewhere else on its own, so
+    a pending timer can never yank the playhead out from under an action.
+
+    ``frames`` is the off switch: 0 (or None) turns the peek off and leaves
+    every navigation seeking straight to the boundary. ``dwell_ms`` is how
+    long the peek lasts. Both are plain public attributes, so a future
+    settings value only has to assign them.
+    """
+
+    def __init__(self, bridge, frames=SEGMENT_PREVIEW_FRAMES,
+                 dwell_ms=SEGMENT_PREVIEW_DWELL_MS, parent=None):
+        super().__init__(parent)
+        self.bridge = bridge
+        self.frames = frames
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(dwell_ms)
+        self._timer.timeout.connect(self._return_to_boundary)
+        self._boundary = None
+        self._peeked_to = None
+
+    @property
+    def pending(self):
+        """True while a peek is showing and its return is still scheduled."""
+        return self._boundary is not None
+
+    def cancel(self):
+        """Abandon a pending peek, leaving the playhead where it is."""
+        self._timer.stop()
+        self._boundary = None
+        self._peeked_to = None
+
+    def flash(self, boundary):
+        """Seek to `boundary`, peek a few frames past it, then return.
+
+        A no-op beyond the single seek to `boundary` when the peek is turned
+        off, when the frame rate is not known yet, or when mpv is playing (a
+        seek out and back would read as a stutter mid-playback).
+        """
+        self.cancel()
+        self.bridge.seek_exact(boundary)
+
+        offset = self._offset()
+        if offset <= 0.0 or self.bridge.paused is not True:
+            return
+
+        target = boundary + offset
+        duration = self.bridge.duration
+        if duration is not None and target > duration:
+            target = duration
+        self.bridge.seek_exact(target)
+        self._boundary = boundary
+        self._peeked_to = target
+        self._timer.start()
+
+    def _offset(self):
+        """The peek distance in seconds, or 0.0 when it cannot be computed."""
+        if not self.frames:
+            return 0.0
+        fps = self.bridge.video_fps
+        if not fps:
+            return 0.0
+        return self.frames / fps
+
+    def _return_to_boundary(self):
+        """Seek back to the boundary unless the playhead has moved on."""
+        self._timer.stop()
+        boundary, peeked_to = self._boundary, self._peeked_to
+        self._boundary = self._peeked_to = None
+        if boundary is None:
+            return
+
+        current = self.bridge.position
+        if current is not None and peeked_to is not None:
+            if abs(current - peeked_to) > _PREVIEW_POSITION_EPSILON:
+                # Something else owns the playhead now; leave it alone.
+                return
+        self.bridge.seek_exact(boundary)

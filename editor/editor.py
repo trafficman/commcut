@@ -9,7 +9,10 @@ from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.diagnostics import install_excepthook
-from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
+from shared.mpv import (
+    BoundaryPreview, MpvBridge, SEGMENT_PREVIEW_DWELL_MS,
+    SEGMENT_PREVIEW_FRAMES, create_mpv_player, scan_keyframes,
+)
 from shared.timeline import TimelineWidget, Segment, ZOOM_FIT, ZOOM_SEGMENT
 from shared.segments import (
     sidecar_path, probe_duration, require_source_video, source_video_path,
@@ -128,17 +131,29 @@ class MediaPlayer(QMainWindow):
 
         play_button = self.ui.playPause
         play_button.clicked.connect(self.on_transport_clicked)
-        self.ui.forwardFrame.clicked.connect(lambda: self.bridge.step_frames(1))
-        self.ui.backwardFrame.clicked.connect(lambda: self.bridge.step_frames(-1))
-        self.ui.forwardKeyFrame.clicked.connect(self.bridge.next_keyframe)
-        self.ui.backwardKeyFrame.clicked.connect(self.bridge.prev_keyframe)
+        self.ui.forwardFrame.clicked.connect(lambda: self.on_step_frames(1))
+        self.ui.backwardFrame.clicked.connect(lambda: self.on_step_frames(-1))
+        self.ui.forwardKeyFrame.clicked.connect(lambda: self.on_step_keyframe(1))
+        self.ui.backwardKeyFrame.clicked.connect(lambda: self.on_step_keyframe(-1))
         self.bridge.pauseChanged.connect(self.on_pause_changed)
         self.bridge.fileLoaded.connect(self.on_file_loaded)
         self.bridge.playbackEnded.connect(lambda: print("Reached end of file."))
 
         self.bridge.positionChanged.connect(self.ui.timelineWidget.set_position)
         self.bridge.durationChanged.connect(self.ui.timelineWidget.set_duration)
-        self.ui.timelineWidget.seekRequested.connect(self.bridge.seek_exact)
+        self.ui.timelineWidget.seekRequested.connect(self.on_seek_requested)
+
+        # Brief boundary peek on every active-segment change: the boundary
+        # itself is a black frame, so stepping segments would otherwise only
+        # ever show black. `frames`/`dwell_ms` are public attributes, so a
+        # future settings value turns the peek off by setting frames to 0
+        # (or None) and tunes the delay without touching this call site.
+        self.boundary_preview = BoundaryPreview(
+            self.bridge,
+            frames=SEGMENT_PREVIEW_FRAMES,
+            dwell_ms=SEGMENT_PREVIEW_DWELL_MS,
+            parent=self,
+        )
 
         self._sync_button(paused=True)
 
@@ -207,9 +222,39 @@ class MediaPlayer(QMainWindow):
         """Move the active segment index by delta, clamped to valid range."""
         new_index = self.current_index + delta
         if 0 <= new_index < self.segment_model.segment_count():
-            self.current_index = new_index
-            self._snap_playhead_to_active_start()
-            self._refresh_timeline()
+            self._activate(new_index)
+
+    def _activate(self, index, preview=True):
+        """Make `index` the active segment and move the playhead to its start.
+
+        Every path that *steps through* segments goes through here, so the
+        boundary peek (and the playhead snap that follows it) cannot be
+        applied to some transitions and forgotten on others: Active ←/→,
+        Start Seg, and Stage. preview=False is for reverting the model (Undo),
+        which is not the user looking at clips; the initial load snaps
+        directly via _snap_playhead_to_active_start.
+        """
+        self.current_index = index
+        self._snap_playhead_to_active_start(preview=preview)
+        self._refresh_timeline()
+
+    def on_seek_requested(self, position):
+        """Timeline scrub: a user seek owns the playhead, so drop any peek."""
+        self.boundary_preview.cancel()
+        self.bridge.seek_exact(position)
+
+    def on_step_frames(self, count):
+        """Step by frames, abandoning any pending boundary peek."""
+        self.boundary_preview.cancel()
+        self.bridge.step_frames(count)
+
+    def on_step_keyframe(self, direction):
+        """Step to the next/previous keyframe, abandoning any pending peek."""
+        self.boundary_preview.cancel()
+        if direction >= 0:
+            self.bridge.next_keyframe()
+        else:
+            self.bridge.prev_keyframe()
 
     def on_merge_next(self):
         """Merge the active segment into the next one."""
@@ -220,17 +265,18 @@ class MediaPlayer(QMainWindow):
 
     def on_start_segment(self):
         """Split the active segment at the playhead, activating the right part."""
+        # The playhead is about to be read as a cut point, so it must not be
+        # yanked back by a pending peek halfway through the action.
+        self.boundary_preview.cancel()
         position = self.player.time_pos
         if position is None:
             return
         if self.segment_model.start_segment(
             self.current_index, position, self._inherited_tags()
         ):
-            self.current_index += 1
             self.dirty = True
             self._update_stage_button()
-            self._snap_playhead_to_active_start()
-            self._refresh_timeline()
+            self._activate(self.current_index + 1)
 
     def _read_tags_from_form(self):
         """Snapshot the current form values into a tags dict."""
@@ -362,13 +408,25 @@ class MediaPlayer(QMainWindow):
             self.current_index = max(0, self.segment_model.segment_count() - 1)
         self.dirty = False
         self._update_stage_button()
-        self._snap_playhead_to_active_start()
-        self._refresh_timeline()
+        # Reverting is not stepping through segments, so no boundary peek.
+        self._activate(self.current_index, preview=False)
 
-    def _snap_playhead_to_active_start(self):
-        """Seek mpv to the start of the current active segment."""
-        if self.current_index < self.segment_model.segment_count():
-            self.bridge.seek_exact(self.segment_model.start(self.current_index))
+    def _snap_playhead_to_active_start(self, preview=False):
+        """Seek mpv to the start of the current active segment.
+
+        With preview=True the playhead first peeks a few frames past the
+        boundary — which is a black frame — and comes back here; see
+        shared.mpv.BoundaryPreview. Either way the resting position is the
+        exact boundary, because that is where End Seg and Start Seg cut.
+        """
+        self.boundary_preview.cancel()
+        if self.current_index >= self.segment_model.segment_count():
+            return
+        boundary = self.segment_model.start(self.current_index)
+        if preview:
+            self.boundary_preview.flash(boundary)
+        else:
+            self.bridge.seek_exact(boundary)
 
     def _refresh_timeline(self):
         """Push the current segment model + active index onto the timeline."""
@@ -398,6 +456,9 @@ class MediaPlayer(QMainWindow):
         touched; a playhead far enough forward to cross a second boundary is
         refused rather than clamped.
         """
+        # The playhead is read as the cut point, so a pending peek must not
+        # still be armed to move it while this runs.
+        self.boundary_preview.cancel()
         position = self.player.time_pos
         if position is None:
             return
@@ -430,6 +491,9 @@ class MediaPlayer(QMainWindow):
         before anything is written, so the .cmct sidecar never receives a
         staged record that export would later reject.
         """
+        # A refused or completing stage never re-arms the peek, so drop any
+        # pending one up front rather than leaving it to fire mid-dialog.
+        self.boundary_preview.cancel()
         missing = self._missing_required_labels()
         if missing:
             self._refresh_required_fields()
@@ -449,12 +513,13 @@ class MediaPlayer(QMainWindow):
         if self.current_index + 1 >= self.segment_model.segment_count():
             print("Editing complete.")
             return
-        self.current_index += 1
-        self._snap_playhead_to_active_start()
-        self._refresh_timeline()
+        self._activate(self.current_index + 1)
 
     def on_export(self):
         """Persist edits, plan named destinations, then transcode every keep clip."""
+        # Export runs for minutes; a peek firing during it would move the
+        # playhead for no reason.
+        self.boundary_preview.cancel()
         self.ui.exportButton.setEnabled(False)
         try:
             from shared.exporting import (
@@ -527,6 +592,8 @@ class MediaPlayer(QMainWindow):
         self._snap_playhead_to_active_start()
 
     def on_transport_clicked(self):
+        # Play/pause means the user has taken over the playhead.
+        self.boundary_preview.cancel()
         self.bridge.toggle_play()
 
     @Slot(bool)

@@ -257,7 +257,40 @@ A linear left-to-right walk through the segments. The editor window holds:
 | **Stage**         | Read form tags into the active segment, save the whole model to `.cmct`, clear `dirty`, advance `current_index`. |
 | **Undo**          | Reload model from `.cmct` (reverts all unstaged changes), clear `dirty`.                            |
 | **Toggle Zoom**   | Toggle between zoom-to-active-segment and fit-whole-video.                                         |
-| **Active ←/→**    | Move `current_index` by ±1 (clamped). On any active change, snap the playhead to the new segment's start. |
+| **Active ←/→**    | Move `current_index` by ±1 (clamped). On any active change, snap the playhead to the new segment's start, with the boundary peek described below. |
+
+**The boundary peek.** A segment boundary is a transition point and therefore
+usually a black frame, so resting the playhead there is correct but useless to
+look at: stepping through segments with Active ←/→ showed nothing but black. On
+an active-segment change the playhead now seeks to the boundary, seeks
+`SEGMENT_PREVIEW_FRAMES` (15) frames past it, waits `SEGMENT_PREVIEW_DWELL_MS`
+(450), and seeks back to the exact boundary. The resting position is still the
+cut point, which is what **End Seg** and **Start Seg** read, so nothing about
+the editing model changes — the peek only ever lends the picture.
+
+All of that lives in `shared/mpv.py:BoundaryPreview`, which owns the
+single-shot `QTimer`. The editor drives it through
+`MediaPlayer._activate(index, preview=True)`, the single place a *step through
+segments* changes the active segment (`_move_active`, `on_start_segment`,
+`on_stage`); `on_undo` passes `preview=False` and the initial load snaps
+directly. The peek is skipped, leaving a plain seek to the boundary, when
+`frames` is 0/None, when the frame rate is not known yet, or when mpv is
+playing (a seek out and back would stutter mid-playback).
+
+**A pending peek is always given up before the playhead is used for anything
+else**, because a timer that fires 450ms later would otherwise move the
+playhead out from under an action in progress. `cancel()` is called by
+`on_seek_requested` (timeline scrub), `on_step_frames`,
+`on_step_keyframe`, `on_transport_clicked`, `on_end_segment`,
+`on_start_segment`, `on_stage`, `on_undo`, and `on_export`, plus every call to
+`_snap_playhead_to_active_start`. As a second line of defence the return seek
+also skips itself when `bridge.position` has drifted more than
+`_PREVIEW_POSITION_EPSILON` from where the peek left it.
+
+`BoundaryPreview.frames` is the off switch a future settings key would drive —
+assigning `0` restores the original snap-to-boundary behavior — and
+`dwell_ms`/`_timer.setInterval` tune the delay. There is no settings UI for it
+yet; it is always on at the constants above.
 
 **Zoom mode is owned by the timeline widget, not the button.** The toggle is
 the only thing that picks a mode: `on_toggle_zoom` hands it to
@@ -434,8 +467,9 @@ The shared modules are:
   console.
 - `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel),
   `create_mpv_player` (wraps `mpv.MPV` for a `QFrame`, sets
-  `WA_NativeWindow`), and `scan_keyframes(path)` (ffprobe I-frame scan
-  returning sorted timestamps).
+  `WA_NativeWindow`), `scan_keyframes(path)` (ffprobe I-frame scan
+  returning sorted timestamps), and `BoundaryPreview` (the editor's boundary
+  peek).
 - `shared/timeline.py` — `TimelineWidget`, the editor's zoom/scroll segment
   timeline (red/green/blue, ignored dimming, active highlight). Also owns the
   zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
@@ -479,9 +513,19 @@ Both the editor and scanner communicate with libmpv through a single
 - **Methods** (commands down): `toggle_play`, `seek_exact`, `step_frames`,
   `set_keyframes`, `next_keyframe`, `prev_keyframe`, `load_file`,
   `load_and_play`.
+- **Read-only properties** (state up, on demand rather than by signal):
+  `video_fps`, `position`, `paused`, `duration`. These exist so the editor
+  does not have to reach into `player` for a one-off read; `BoundaryPreview`
+  is the first user of `position`/`paused`/`duration`.
 
 The editor/scanner windows and widgets never read mpv state directly — they
 only mirror what the bridge announces via signals.
+
+`shared/mpv.py` also owns **`BoundaryPreview(QObject)`**, the boundary peek
+described in the editing state machine above. It is bridge-driven rather than
+mpv-driven, which keeps its timer and cancel logic testable without libmpv or
+a video — `tests/test_boundary_preview.py` drives it through a `FakeBridge`
+that records the seek sequence.
 
 ## Splash flow (pre-work before the window appears)
 
@@ -766,7 +810,7 @@ editor for folder schemes:
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself. The main
   menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 343 passing tests.
+  The full suite currently contains 371 passing tests.
 
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
@@ -816,6 +860,10 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
   fit-whole via toggle.
 - Editing state machine: End Seg, Start Seg, Merge Next, Skip, Stage,
   Undo, Active navigation, Toggle Zoom.
+- Boundary peek: an active-segment change flashes 15 frames past the
+  boundary (450ms) and returns to the exact cut point, so stepping through
+  black boundaries shows the clip. Always on; `BoundaryPreview.frames = 0`
+  is the off switch a future settings key would drive.
 - Tag form with lock system and dirty indicator.
 - Keyframe navigation via ffprobe-scanned I-frames.
 - Frame-accurate stepping (silent).
@@ -889,7 +937,11 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     — is covered by `tests/test_timeline_zoom.py`, which exercises the real
     `TimelineWidget`. Note that Qt delivers `resizeEvent` to a *visible* widget
     only, so any test that resizes a widget to check zoom behavior has to
-    `show()` it first.
+    `show()` it first. The boundary peek's seek sequence and its cancellation
+    rules are in `tests/test_boundary_preview.py`, which drives the real
+    `BoundaryPreview` and the real `MediaPlayer` handlers through the stub's
+    `FakeBridge` — it records every seek, which is the only way to assert that
+    the playhead *rests on* the boundary rather than merely passing through it.
  - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
    argv dispatch, and the agreement between the spec's `datas` mapping and
    `resource_path()` are covered by `tests/test_frozen_mode.py`, which
