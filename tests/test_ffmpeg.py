@@ -215,3 +215,47 @@ def test_execute_export_plan_rejects_missing_source(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="Source video"):
         execute_export_plan(str(tmp_path / "missing.mp4"), plan, ffmpeg_path="ffmpeg")
+
+
+# ---------------------------------------------------------------------------
+# The scanner's preview clip
+# ---------------------------------------------------------------------------
+
+def _fake_ffmpeg(monkeypatch, tmp_path):
+    """Stub get_binary_path + subprocess so clip_to_temp runs without ffmpeg."""
+    commands = []
+    monkeypatch.setattr(
+        "shared.ffmpeg.get_binary_path", lambda name: "ffmpeg")
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("shared.ffmpeg.subprocess.run", fake_run)
+    return commands
+
+
+def test_preview_clip_is_named_after_the_source(tmp_path, monkeypatch):
+    """Two sources must not share one preview clip, so the name follows the
+    file the user picked rather than a fixed test.mp4."""
+    from shared.ffmpeg import clip_to_temp
+
+    _fake_ffmpeg(monkeypatch, tmp_path)
+    output_dir = str(tmp_path / "temp")
+
+    result = clip_to_temp(str(tmp_path / "import" / "Saturday Morning.mkv"),
+                          120, output_dir=output_dir)
+
+    assert os.path.basename(result) == "Saturday Morning_clip120s.mp4"
+
+
+def test_two_sources_get_different_preview_clips(tmp_path, monkeypatch):
+    from shared.ffmpeg import clip_to_temp
+
+    _fake_ffmpeg(monkeypatch, tmp_path)
+    output_dir = str(tmp_path / "temp")
+
+    first = clip_to_temp(str(tmp_path / "one.mp4"), 120, output_dir=output_dir)
+    second = clip_to_temp(str(tmp_path / "two.mp4"), 120, output_dir=output_dir)
+
+    assert first != second

@@ -41,6 +41,7 @@ UI_FILES = (
     ("editor", "editorwindow.ui"),
     ("scanner", "scannerwindow.ui"),
     ("settings", "settingswindow.ui"),
+    ("picker", "pickerwindow.ui"),
 )
 
 
@@ -409,3 +410,37 @@ def test_source_and_payload_layouts_agree():
         source = f"{folder}/{name}" if folder else name
         destination = folder if folder else "."
         assert f"('{source}', '{destination}')" in spec_text, source
+
+
+def test_every_ui_file_in_the_tree_is_listed_and_bundled():
+    """The reverse direction, which is the one that bites.
+
+    A new window's .ui that is written and loaded in code but never added to
+    the spec works perfectly from source and fails only in a packaged build,
+    where the payload has no copy of it. Iterating UI_FILES above cannot catch
+    that -- it only checks the files the list already knows about -- so walk
+    the tree instead and require every .ui to be listed.
+    """
+    spec_path = os.path.join(PROJECT_ROOT, "packaging", "commcut.spec")
+    with open(spec_path, encoding="utf-8") as handle:
+        spec_text = handle.read()
+
+    skip = {"prototypes", "packaging", "dist", "__pycache__", ".git"}
+
+    def pruned(dirnames):
+        # Hidden folders (agent worktrees, VCS internals) hold copies of this
+        # tree and are not part of the shipped app.
+        return [d for d in dirnames if d not in skip and not d.startswith(".")]
+
+    for dirpath, dirnames, filenames in os.walk(PROJECT_ROOT):
+        dirnames[:] = pruned(dirnames)
+        for name in filenames:
+            if not name.endswith(".ui"):
+                continue
+            relative = os.path.relpath(
+                os.path.join(dirpath, name), PROJECT_ROOT)
+            # UI_FILES pairs are (subfolder, file name), with "" for the root.
+            folder = os.path.dirname(relative).replace(os.sep, "/")
+            assert (folder, name) in UI_FILES, f"{relative} is not in UI_FILES"
+            source = f"{folder}/{name}" if folder else name
+            assert f"('{source}', '{folder or '.'}')" in spec_text, relative

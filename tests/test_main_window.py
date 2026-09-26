@@ -2,7 +2,8 @@
 
 The menu is the app's entry point, so the two things worth guarding are that
 it resolves the right scripts and that a failure to launch surfaces as a
-dialog rather than a crash.
+dialog rather than a crash. **Editor** opens the source picker, which is what
+hands the chosen video to the scanner.
 """
 
 import os
@@ -25,6 +26,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.path.join("editor", "editor.py"),
     os.path.join("scanner", "scanner.py"),
     os.path.join("settings", "settings.py"),
+    os.path.join("picker", "picker.py"),
 ])
 def test_setup_environment_finds_the_project_root_from_any_entry_point(entry):
     """Root-level scripts must not be treated as if they were one level below
@@ -81,10 +83,10 @@ def test_window_offers_both_destinations(window):
     assert window.ui.settingsButton.text() == "Settings"
 
 
-def test_editor_button_explains_it_enters_through_the_scanner(window):
-    """The scanner is the pre-process phase, so the hint should say so."""
-    hint = window.ui.labelEditorHint.text()
-    assert "scan" in hint.lower()
+def test_editor_button_explains_the_journey_it_starts(window):
+    """The hint should name what actually happens: pick, scan, then tag."""
+    hint = window.ui.labelEditorHint.text().lower()
+    assert "scan" in hint
     assert window.ui.editorButton.toolTip()
 
 
@@ -100,12 +102,13 @@ def test_window_keeps_its_own_size(window):
 # Launching
 # ---------------------------------------------------------------------------
 
-def test_editor_button_launches_the_scanner(window):
+def test_editor_button_launches_the_source_picker(window):
+    """The menu picks the video; the scanner is launched by the picker."""
     window.ui.editorButton.click()
 
     assert len(window.launches) == 1
     assert window.launches[0][1] == os.path.join(
-        PROJECT_ROOT, "scanner", "scanner.py")
+        PROJECT_ROOT, "picker", "picker.py")
 
 
 def test_settings_button_launches_the_settings_window(window):
@@ -116,7 +119,8 @@ def test_settings_button_launches_the_settings_window(window):
 
 
 def test_launched_scripts_actually_exist(window):
-    for command in (("scanner", "scanner.py"), ("settings", "settings.py")):
+    for command in (("scanner", "scanner.py"), ("settings", "settings.py"),
+                     ("picker", "picker.py")):
         path = os.path.join(PROJECT_ROOT, *command)
         assert os.path.exists(path), f"{path} does not exist"
 
@@ -188,3 +192,59 @@ def test_launch_refuses_a_missing_script(monkeypatch, tmp_path):
         environment.launch_command("scanner")
 
     assert "scanner" in str(error.value)
+
+
+# ---------------------------------------------------------------------------
+# Arguments to a child window
+# ---------------------------------------------------------------------------
+
+def test_launch_command_appends_arguments_from_source():
+    """The picker hands the chosen video to the scanner as an argument."""
+    from shared.environment import launch_command
+
+    command = launch_command("scanner", r"C:\videos\compilation.mp4")
+
+    assert command[-1] == r"C:\videos\compilation.mp4"
+
+
+def test_launch_command_appends_arguments_when_frozen(monkeypatch):
+    import shared.environment as environment
+
+    monkeypatch.setattr(environment, "is_frozen", lambda: True)
+    monkeypatch.setattr(environment.sys, "executable", r"C:\app\commcut.exe")
+
+    command = environment.launch_command("editor", r"C:\videos\clip.mp4")
+
+    assert command == [
+        r"C:\app\commcut.exe", "--window", "editor", r"C:\videos\clip.mp4"]
+
+
+def test_launch_command_without_arguments_is_unchanged():
+    from shared.environment import launch_command
+
+    command = launch_command("settings")
+
+    assert command[-1].endswith(os.path.join("settings", "settings.py"))
+
+
+def test_every_window_name_has_a_script():
+    """WINDOW_NAMES drives the error message, so it must not list a window
+    that has no script to launch."""
+    from shared.environment import WINDOW_NAMES, launch_command
+
+    for name in WINDOW_NAMES:
+        assert launch_command(name)[-1].endswith(".py")
+
+
+def test_dispatcher_forwards_arguments_to_the_window(monkeypatch):
+    """main.py drops extra argv on the floor if it stops forwarding it, and the
+    scanner would then silently fall back to the default source video."""
+    import main
+
+    seen = {}
+    monkeypatch.setitem(
+        main.__dict__, "_run_window", lambda name, args: seen.update(
+            name=name, args=args) or 0)
+
+    assert main.main(["commcut", "--window", "scanner", "a b.mp4"]) == 0
+    assert seen == {"name": "scanner", "args": ["a b.mp4"]}
