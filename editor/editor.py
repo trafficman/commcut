@@ -8,17 +8,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.diagnostics import install_excepthook
+from shared.diagnostics import install_excepthook, log
 from shared.mpv import (
     BoundaryPreview, MpvBridge, SEGMENT_PREVIEW_DWELL_MS,
     SEGMENT_PREVIEW_FRAMES, create_mpv_player, scan_keyframes,
 )
 from shared.timeline import TimelineWidget, Segment, ZOOM_FIT, ZOOM_SEGMENT
 from shared.segments import (
-    sidecar_path, probe_duration, require_source_video, source_video_path,
+    sidecar_path, probe_duration,
     SegmentModel,
     END_BOUNDARY_BLOCKED, END_BOUNDARY_NO_CHANGE,
 )
+from shared.sources import require_source_video
 from shared.exporting import missing_required_tags
 
 # Qt libs
@@ -97,10 +98,11 @@ _REQUIRED_FIELD_STYLE = "QLineEdit { border: 1px solid #c0392b; }"
 
 
 class MediaPlayer(QMainWindow):
-    def __init__(self):
+    def __init__(self, media_path):
         super().__init__()
 
         # Define UI file
+
         ui_file = QFile(resource_path("editor", "editorwindow.ui"))
         if not ui_file.open(QFile.ReadOnly):
             # Raised rather than printed and exited: in a windowed packaged
@@ -122,7 +124,11 @@ class MediaPlayer(QMainWindow):
         # standard mpv options used by both the editor and the scanner.
         # Keep the MPV instance in its own attribute; do NOT overwrite
         # self.ui.videoContainer or you lose the widget reference.
-        self.media_path = source_video_path()
+        # The compilation video this run works on. It arrives from the picker
+        # (or the scanner's handoff) and is already validated, so the editor
+        # never guesses at a filename: the .cmct sidecar read below and every
+        # export path derive from this one value.
+        self.media_path = media_path
         self.player = create_mpv_player(video_frame)
 
         # Start paused so mpv's state and the button agree before any load.
@@ -612,16 +618,20 @@ class MediaPlayer(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-def run():
+def run(source=None):
     """Run the editor. Returns the process exit code.
 
     Also the entry point main.py dispatches to for '--window editor', so a
-    packaged build and a source run share this one code path.
+    packaged build and a source run share this one code path. `source` is the
+    video to work on, handed over by the picker or by the scanner; without one
+    the legacy import/test.mp4 is used, so running this script directly still
+    works.
     """
     # Checked before the QApplication exists so the "no source video" message
     # is a clean, readable error rather than a traceback out of an event loop
     # that is already running.
-    media_path = require_source_video()
+    media_path = require_source_video(source)
+    log(f"editor working on {media_path}")
 
     # Required for high-DPI scaling on modern Windows displays
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
@@ -649,7 +659,7 @@ def run():
     # Building a direct3d renderer while another top-level window is the
     # foreground deadlocks on Windows, and a splash is a top-level window.
     splash.close()
-    window = MediaPlayer()
+    window = MediaPlayer(media_path)
     window.bridge.set_keyframes(keyframes)
     window.segment_model = SegmentModel.load(sidecar_path(media_path))
     window.resize(1024, 768)

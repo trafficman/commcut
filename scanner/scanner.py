@@ -14,9 +14,10 @@ from shared.diagnostics import install_excepthook, log
 from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.segments import (
-    sidecar_path, probe_duration, require_source_video, source_video_path,
+    sidecar_path, probe_duration,
     SegmentModel,
 )
+from shared.sources import require_source_video
 from shared.ui_loader import UiLoader
 from scanner.marker_timeline import MarkerTimelineWidget
 
@@ -41,11 +42,6 @@ def _clear_temp_clips():
                 os.remove(os.path.join(temp_dir, name))
             except OSError:
                 pass
-
-
-def _source_path():
-    """The compilation video the scanner and editor both work on."""
-    return source_video_path()
 
 
 def _editor_to_launch(source_path):
@@ -76,21 +72,26 @@ def _model_from_midpoints(midpoints, duration, source_name):
 class ScannerWindow(QMainWindow):
     """The Segment Scanner window.
 
-    Loads the test video and hooks up the transport controls (play/pause,
-    frame ±, keyframe ±) plus the two marker timelines. The keyframe list is
-    populated by scan_keyframes in __main__ before the window is constructed,
-    then pushed onto the bridge via set_keyframes.
+    Loads a preview clip of the chosen source video and hooks up the transport
+    controls (play/pause, frame ±, keyframe ±) plus the two marker timelines.
+    The keyframe list is populated by scan_keyframes in run() before the window
+    is constructed, then pushed onto the bridge via set_keyframes.
 
     Place Boundary, Undo, Test Scan, and Finished are wired: Place Boundary
     stamps the playhead into the User Marked timeline; Undo removes the last
     user-placed boundary; Test Scan runs blackdetect and stamps midpoint
     markers into the Scanner Preview timeline; Finished runs blackdetect on
     the full source, writes a .cmct of midpoint boundaries, and opens the
-    Video Editor. Remaining: Export / smart cut.
+    Video Editor on that same source. Remaining: Export / smart cut.
     """
 
-    def __init__(self):
+    def __init__(self, source_path):
         super().__init__()
+
+        # The compilation video this run works on, chosen in the picker. Held
+        # as an attribute because Finished scans this file and hands the same
+        # path to the editor; nothing re-derives it.
+        self.source_path = source_path
 
         # Load the .ui file
         ui_file = QFile(resource_path("scanner", "scannerwindow.ui"))
@@ -159,9 +160,10 @@ class ScannerWindow(QMainWindow):
         # Wire the Finished button (full-source scan -> .cmct -> editor)
         self.ui.finishedButton.clicked.connect(self.on_finished)
 
-        # Load the clipped test video
+        # Load the preview clip. clip_to_temp names the file after the source,
+        # so two different videos never share one preview.
         self.clip_path = clip_to_temp(
-            source_video_path(),
+            self.source_path,
             CLIP_DURATION,
             output_dir=os.path.join(PROJECT_ROOT, "temp"),
         )
@@ -263,7 +265,7 @@ class ScannerWindow(QMainWindow):
         editor when one is present, so this is only reached when no sidecar
         exists yet.
         """
-        source = _source_path()
+        source = self.source_path
 
         duration = probe_duration(source)
         if duration is None:
@@ -295,7 +297,9 @@ class ScannerWindow(QMainWindow):
         log(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
 
         # Open the editor to review the .cmct we just wrote, then close the scanner.
-        subprocess.Popen(launch_command('editor'))
+        # The source path travels with it: the editor works on this video, not
+        # on a default one.
+        subprocess.Popen(launch_command('editor', source))
         QApplication.quit()
 
     def on_play_pause(self):
@@ -316,20 +320,23 @@ class ScannerWindow(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-def run():
+def run(source=None):
     """Run the scanner. Returns the process exit code.
 
     Also the entry point main.py dispatches to for '--window scanner', so a
-    packaged build and a source run share this one code path.
+    packaged build and a source run share this one code path. `source` is the
+    video the picker chose; without one the legacy import/test.mp4 is used, so
+    running this script directly still works.
     """
-    source_path = require_source_video()
+    source_path = require_source_video(source)
+    log(f"scanner working on {source_path}")
 
     # Never overwrite an existing .cmct: if one already exists for the
     # source, skip the scanner and open the Video Editor instead. Checked
     # before the QApplication is built, because this process does nothing
     # but hand off.
     if _editor_to_launch(source_path) is not None:
-        subprocess.Popen(launch_command('editor'))
+        subprocess.Popen(launch_command('editor', source_path))
         return 0
 
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
@@ -369,7 +376,7 @@ def run():
     keyframes = scan_keyframes(media_path)
 
     splash.close()
-    window = ScannerWindow()
+    window = ScannerWindow(source_path)
     window.bridge.set_keyframes(keyframes)
     window.resize(1024, 768)
     window.show()

@@ -24,6 +24,12 @@
     <layout class="QGridLayout" name="gridLayout">
      <item row="0" column="2">
       <widget class="QPushButton" name="fileBrowseImport">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Coming soon: for this alpha the import folder is fixed next to commcut.exe</string>
+       </property>
        <property name="text">
         <string>Browse...</string>
        </property>
@@ -32,19 +38,28 @@
      <item row="1" column="0">
       <widget class="QLabel" name="labelExport">
        <property name="text">
-        <string>Export Folder</string>
+        <string>Export Folder (coming soon)</string>
        </property>
       </widget>
      </item>
      <item row="0" column="0">
       <widget class="QLabel" name="labelImport">
        <property name="text">
-        <string>Import Folder</string>
+        <string>Import Folder (coming soon)</string>
        </property>
       </widget>
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="lineEditImport">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Coming soon: for this alpha the import folder is fixed next to commcut.exe</string>
+       </property>
+       <property name="placeholderText">
+        <string>Fixed for this alpha - the import folder beside commcut.exe</string>
+       </property>
        <property name="readOnly">
         <bool>true</bool>
        </property>
@@ -111,6 +126,12 @@ li.checked::marker { content: &quot;\2612&quot;; }
      </item>
      <item row="1" column="2">
       <widget class="QPushButton" name="fileBrowseExport">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Coming soon: for this alpha the export folder is fixed next to commcut.exe</string>
+       </property>
        <property name="text">
         <string>Browse...</string>
        </property>
@@ -118,6 +139,15 @@ li.checked::marker { content: &quot;\2612&quot;; }
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="lineEditExport">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Coming soon: for this alpha the export folder is fixed next to commcut.exe</string>
+       </property>
+       <property name="placeholderText">
+        <string>Fixed for this alpha - the export folder beside commcut.exe</string>
+       </property>
        <property name="readOnly">
         <bool>true</bool>
        </property>

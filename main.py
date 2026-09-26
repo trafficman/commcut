@@ -45,20 +45,29 @@ def run_main_menu(argv):
     return app.exec()
 
 
-def _run_window(window_name, argv):
-    """Dispatch to a child window's entry point. Returns the exit code."""
-    # Imported lazily: from source these are the same modules the standalone
-    # scripts are, and importing them all up front would pull in mpv and every
-    # window's dependencies just to show the main menu.
+def _run_window(window_name, args):
+    """Dispatch to a child window's entry point. Returns the exit code.
+
+    `args` is everything after ``--window <name>`` on the command line, handed
+    straight to the window's ``run()``. That is how the picker passes the
+    source video to the scanner, and the scanner to the editor.
+
+    Imported lazily: from source these are the same modules the standalone
+    scripts are, and importing them all up front would pull in mpv and every
+    window's dependencies just to show the main menu.
+    """
     if window_name == 'scanner':
         from scanner.scanner import run as scanner_run
-        return scanner_run()
+        return scanner_run(*args)
     if window_name == 'editor':
         from editor.editor import run as editor_run
-        return editor_run()
+        return editor_run(*args)
     if window_name == 'settings':
         from settings.settings import run as settings_run
-        return settings_run()
+        return settings_run(*args)
+    if window_name == 'picker':
+        from picker.picker import run as picker_run
+        return picker_run(*args)
     raise ValueError(f"Unknown window: {window_name!r}")
 
 

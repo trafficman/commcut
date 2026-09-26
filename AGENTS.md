@@ -34,16 +34,19 @@ commcut/
 │   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
 │   ├── linux/               # Linux binaries (placeholders, none shipped yet)
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
-├── import/                 # Test source videos
+├── import/                 # Source videos; the picker offers what is in here
 ├── temp/                   # Scratch output (e.g. 2-min scanner preview clips)
 ├── main.py                  # Application entry point: argv dispatcher + main menu
-├── mainwindow.py            # MainWindow: launches the scanner / settings as
+├── mainwindow.py            # MainWindow: launches the picker / settings as
 │                            # child processes
 ├── mainwindow.ui            # Qt Designer file for the main menu
 ├── packaging/               # PyInstaller build (see "Packaging" below)
 │   ├── commcut.spec         # onefile (default) and onedir modes
 │   ├── build.py             # pre-flight checks + portable folder assembly
 │   └── README.md            # build instructions and the shipped layout
+├── picker/                  # Source video picker (front door of the wizard)
+│   ├── picker.py            # Lists import/, launches the scanner on the choice
+│   └── pickerwindow.ui      # List + status line + Refresh/Open/Cancel
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
@@ -62,6 +65,7 @@ commcut/
 │   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
+│   ├── sources.py           # import/ policy: what can be opened, what is offered
 │   ├── ffmpeg.py            # clip_to_temp, export_segment_clips (simple transcode)
 │   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
 │   ├── naming.py            # Filename scheme policy + render_filename()
@@ -80,7 +84,7 @@ commcut/
 ```
 commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the .ui files)
 bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
-import/             drop a compilation video in here, named test.mp4
+import/             drop compilation videos in here; the picker lists them
 export/             named clips are written here
 ```
 
@@ -141,11 +145,16 @@ it points into the payload. Use `resource_path()`.
 Every window is a separate process, and that is deliberate: constructing an
 mpv player (direct3d) while another top-level window is foreground deadlocks
 on Windows. From source each window is its own `.py` script; frozen the scripts
-do not exist on disk, so `shared/environment.launch_command(name)` returns
-`[sys.executable, "--window", name]` and `main.py` dispatches it. `main.py` is
-therefore the only entry point in the spec, and all four windows expose a
-`run()` function that both paths share — so the packaged build cannot drift
-from the source build.
+do not exist on disk, so `shared/environment.launch_command(name, *args)`
+returns `[sys.executable, "--window", name, *args]` and `main.py` dispatches it.
+`main.py` is therefore the only entry point in the spec, and all five windows
+expose a `run()` function that both paths share — so the packaged build cannot
+drift from the source build.
+
+Any `*args` are forwarded verbatim into that window's `run(*args)`, which is
+how the source video reaches the scanner and the editor. Dropping that
+forwarding is silent: the windows would fall back to their default source and
+open a different video than the one that was scanned.
 
 `launch_command` is the only place that knows how to open a window. Do not
 hand-assemble argv elsewhere.
@@ -184,18 +193,46 @@ The spec sets `disable_windowed_traceback=True` for the same reason: the
 default makes the windowed bootloader pop a **modal** traceback dialog that the
 process waits on, so an undismissable error looks exactly like a hang.
 
-### The source video is hardcoded
+### The source video is picked from the import folder
 
-`shared/segments.py:source_video_path()` returns
-`install_root()/import/test.mp4`, and `require_source_video()` raises with the
-exact path to put a video at if it is missing. There is no file dialog: this is
-a smoke-test build. The check exists because a missing video otherwise fails as
-a *codec* problem — ffprobe returns nothing, a placeholder `.cmct` is written
-with `duration=0.0`, and mpv then reports an opaque load failure.
+This is an alpha: the app deliberately does not let anyone point it at an
+arbitrary path. The only videos that can be opened are the ones in the app's
+own `import/` folder, and the user picks one in the **picker** window
+(`picker/picker.py`), which the main menu's **Editor** button opens.
 
-`DEFAULT_SOURCE_NAME` in that module is the single definition; the scanner and
-the editor both go through it so they cannot disagree about which file is the
-source.
+`shared/sources.py` owns the whole policy, and it is deliberately the only way
+to turn an argument into a source path:
+
+- `list_source_videos(folder=None)` — what the picker offers. Filters on
+  `VIDEO_EXTENSIONS`, because `import/` ships a `README.txt` placeholder (empty
+  folders do not survive a zip) and it must never appear as a selectable video.
+  Sorted by name, case-insensitively, and reports `size_bytes` and
+  `has_sidecar`.
+- `resolve_import_video(value, folder)` — the *policy* check: the path must
+  resolve inside `import/` (real paths, so a symlink in the folder cannot reach
+  a file outside it, and `commonpath` so `import_backup` is not "inside"
+  `import`) and must be a video extension. This is what actually enforces the
+  restriction — the picker is only a convenience over it, and a hand-edited
+  `--window scanner <path>` still has to pass.
+- `require_source_video(value, folder)` — the same check plus existence, and it
+  owns the "nothing to open" message. Without it a missing video fails as a
+  *codec* problem: ffprobe returns nothing, a placeholder `.cmct` is written
+  with `duration=0.0`, and mpv then reports an opaque load failure.
+- `DEFAULT_SOURCE_NAME` is the no-argument fallback (`import/test.mp4`) so a
+  direct `python scanner/scanner.py` and any build predating the picker still
+  work. The picker always supplies an explicit path.
+
+**The path is an argument, not shared state.** It travels
+`main menu → picker → scanner → editor`, because each window is its own
+process: `launch_command(name, *args)` appends it, `main.py`'s
+`--window <name> [args]` dispatcher forwards it, and each `run(source=None)`
+passes it to its window constructor (`ScannerWindow(source_path)`,
+`MediaPlayer(media_path)`). `tests/test_source_handoff.py` guards the shapes
+that regressed quietly: a window that resolves its own source instead of using
+the one it was given. The dependency direction is one-way —
+`shared/sources.py` imports `sidecar_path` from `shared/segments.py`; segments
+never imports sources.
+
 
 ## The .cmct sidecar format
 
@@ -389,14 +426,15 @@ window's structure.
 
 Two buttons: **Editor** and **Settings**.
 
-**"Editor" launches the scanner, not the editor.** The scanner is the
-pre-process phase of the Editing Wizard — it detects clip boundaries and then
-hands off to the editor itself — so the two are one journey, not two menu
-items. The window says so in a hint label and a tooltip, since "Editor" alone
-does not.
+**"Editor" launches the picker, not the editor.** The picker chooses which video
+in `import/` to work on; the scanner is then the pre-process phase of the
+Editing Wizard — it detects clip boundaries and hands off to the editor itself
+— so picker, scanner, and editor are one journey, not three menu items. The
+window says so in a hint label and a tooltip, since "Editor" alone does not.
 
-Children are launched with `shared.environment.launch_command(name)`, the
-same mechanism the scanner already uses to hand off to the editor. Three
+Children are launched with `shared.environment.launch_command(name, *args)`, the
+same mechanism the picker uses to hand the chosen video to the scanner and the
+scanner uses to hand it to the editor. Three
 reasons: the menu **stays open in the background** (it never waits on or
 observes the child, so there is no need to reopen it on child exit), each
 window gets its own Qt event loop and its own mpv instance, and it sidesteps
@@ -475,6 +513,9 @@ The shared modules are:
   zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
  - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
    (`sidecar_path`, `probe_duration`).
+ - `shared/sources.py` — the import/ policy: `list_source_videos` (what the
+   picker offers), `resolve_import_video` (what a window will accept),
+   `require_source_video` (both, plus a readable "nothing to open" message).
  - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
    for the simple per-segment transcode; the future home of the smart-cut
    export).
@@ -576,14 +617,19 @@ bracketed lossless copy + partial-keyframe transcode + concat) version.
 
 Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
 `scanner.py`) so preview clips don't accumulate across runs; the 2-minute
-preview is then stream-copied to `temp/` with a deterministic name
-(`test_clip120s.mp4`).
+preview is then stream-copied to `temp/` under a name derived from the source
+(`clip_to_temp` writes `<source>_clip120s.mp4`, so two videos never share one
+preview).
 
 If a `.cmct` sidecar already exists next to the source video, the scanner
-skips itself and launches the Video Editor (`launch_command("editor")`)
-instead, so an existing project is never overwritten. When no `.cmct` exists,
-the Finished button runs `blackdetect` on the full source, writes the midpoint
-boundaries to `<name>.cmct` next to the source, and then launches the editor.
+skips itself and launches the Video Editor (`launch_command("editor", source)`)
+instead, so an existing project is never overwritten. The source there is the
+one the picker handed this process, not a re-resolved default. When no `.cmct`
+exists, the Finished button runs `blackdetect` on the full source, writes the
+midpoint boundaries to `<name>.cmct` next to the source, and then launches the
+editor on that same source. The picker labels an already-scanned video
+"(already scanned - opens in the editor)", so that shortcut is visible before
+it is taken.
 
 ## File Naming Scheme
 
@@ -810,10 +856,14 @@ editor for folder schemes:
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself. The main
   menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 371 passing tests.
+  The full suite currently contains 435 passing tests.
 
 - Import/Export directory fields and Browse buttons are present in the UI but
-  remain unwired.
+  **deliberately locked**: for this alpha both folders are fixed beside
+  `commcut.exe`, and `SettingsWindow._lock_folder_choices()` disables the four
+  widgets and marks the two labels "(coming soon)" rather than removing them,
+  so a tester can see they are not wired yet. Choosing the import folder is
+  the picker's job (it lists `import/`), not a setting.
 
 Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
 `tests/test_settings.py`, alongside the existing `tests/test_naming.py`.
@@ -942,11 +992,22 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     `BoundaryPreview` and the real `MediaPlayer` handlers through the stub's
     `FakeBridge` — it records every seek, which is the only way to assert that
     the playhead *rests on* the boundary rather than merely passing through it.
- - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
-   argv dispatch, and the agreement between the spec's `datas` mapping and
-   `resource_path()` are covered by `tests/test_frozen_mode.py`, which
-   monkeypatches `sys.frozen` / `sys._MEIPASS` / `sys.executable` rather than
-   building an executable.
+  - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
+    argv dispatch, and the agreement between the spec's `datas` mapping and
+    `resource_path()` are covered by `tests/test_frozen_mode.py`, which
+    monkeypatches `sys.frozen` / `sys._MEIPASS` / `sys.executable` rather than
+    building an executable. `test_every_ui_file_in_the_tree_is_listed_and_bundled`
+    walks the source tree for `.ui` files and requires every one of them to be
+    in both the list and the spec: iterating the list alone only checks files
+    it already knows about, so a new window's `.ui` that was never bundled
+    would pass and then fail only in a packaged build.
+  - The import folder (`shared/sources.py`): what the picker offers and what a
+    window will accept, including the `README.txt` placeholder filter, the
+    symlink/`import_backup` containment checks, and the "nothing to open"
+    messages — `tests/test_sources.py`. The picker window itself, offscreen,
+    is in `tests/test_picker.py`; the path surviving both hand-offs between
+    windows is in `tests/test_source_handoff.py`.
+
 
 
 **Next:**
@@ -957,6 +1018,11 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
    keyframe-bracketed smart-cut version replaces/augments `export_named_model`
   when it lands. Also wire export into a background `QThread` (today it runs on
   the GUI thread, which blocks the editor while cutting).
+- **Choosing folders**: import/ and export/ are fixed beside the executable for
+  this alpha, and the Settings rows say so. When they become configurable,
+  `shared/sources.py:import_folder()` and the export root in
+  `shared/exporting.py` are the two places that resolve them, and the picker's
+  folder label follows `import_folder()` automatically.
 
 ## Gaps to be aware of
 

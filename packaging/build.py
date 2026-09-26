@@ -10,7 +10,7 @@ The output is dist/commcut-portable/:
                      temp folder and runs. No Python needed on the target.
     bin/win/         ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- 366 MB, kept
                      beside the exe rather than inside it
-    import/          drop a compilation video in here, named test.mp4
+    import/          drop compilation videos in here; the picker lists them
     export/          named clips are written here
     commcut.log      written on first run
     settings.json    written when you save in Settings
@@ -56,6 +56,7 @@ UI_FILES = (
     'editor/editorwindow.ui',
     'scanner/scannerwindow.ui',
     'settings/settingswindow.ui',
+    'picker/pickerwindow.ui',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
@@ -64,16 +65,17 @@ UI_FILES = (
 PLACEHOLDER_FOLDERS = ('import', 'export')
 
 IMPORT_PLACEHOLDER = """\
-Put a compilation video in this folder and name it:
+Put compilation videos in this folder.
 
-    test.mp4
+Then run commcut.exe and press "Editor". A list of the videos in here opens;
+pick one and commcut scans it for clip boundaries, then lets you tag and
+export the clips.
 
-Then run commcut.exe and press "Editor". That is the only filename the
-smoke-test build looks for; shared/segments.py holds the one definition of it
-(DEFAULT_SOURCE_NAME).
+Most container types work (mp4, mkv, avi, mov and the rest). The video is
+edited in place: a .cmct file with the detected boundaries is written next to
+it, and named clips go to the export folder.
 
-The editor writes test.cmct next to the video, and the same video is what
-the segment scanner reads.
+Videos are picked from this folder only, so it is the only place to put them.
 """
 
 EXPORT_PLACEHOLDER = """\

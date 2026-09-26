@@ -113,6 +113,23 @@ class SettingsWindow(QMainWindow):
         self.ui.lineEditFolderScheme.textChanged.connect(self._update_folder_preview)
         self._update_file_preview()
         self._update_folder_preview()
+        self._lock_folder_choices()
+
+    def _lock_folder_choices(self) -> None:
+        """Keep the import/export folder rows visibly unwired.
+
+        The folders are fixed for this alpha — import/ and export/ beside the
+        executable, chosen by the source picker rather than by hand — so these
+        four widgets are shown but disabled, labelled "coming soon", rather
+        than removed. Disabling them here as well as in the .ui means a
+        re-enabled widget in the .ui cannot quietly imply they work.
+        """
+        for name in ("lineEditImport", "lineEditExport",
+                     "fileBrowseImport", "fileBrowseExport"):
+            getattr(self.ui, name).setEnabled(False)
+        for name in ("labelImport", "labelExport"):
+            label = getattr(self.ui, name)
+            label.setText(f"{label.text().split(' (')[0]} (coming soon)")
 
     def _load_scheme_fields(self, settings: dict) -> None:
         """Load both schemes independently so one bad value cannot block the other."""
@@ -349,8 +366,14 @@ class SettingsWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def run():
-    """Show the settings window and run its event loop. Returns the exit code."""
+def run(*_args):
+    """Show the settings window and run its event loop. Returns the exit code.
+
+    Also the entry point main.py dispatches to for '--window settings'. Any
+    extra command-line argument is ignored and ignored deliberately: main.py
+    forwards arguments to every window uniformly (the source video, for the
+    scanner and the editor), and this window has nothing to open.
+    """
     app = QApplication(sys.argv)
     install_excepthook(app)
     window = SettingsWindow()

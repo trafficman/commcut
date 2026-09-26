@@ -1,20 +1,23 @@
 """Main menu window: the entry point into the rest of the app.
 
-Two destinations for now. "Editor" launches the Segment Scanner, which is the
-pre-process phase of the Editing Wizard: it detects clip boundaries in a source
-video and then hands off to the editor, so the two are one journey rather than
-two menu items. "Settings" opens the standalone scheme editor.
+Three destinations for now. "Editor" opens the source picker, which lists the
+videos in the app's import/ folder; the one chosen is handed to the Segment
+Scanner, the pre-process phase of the Editing Wizard, which detects clip
+boundaries and then hands off to the editor itself — so picker, scanner, and
+editor are one journey rather than three menu items. "Settings" opens the
+standalone scheme editor.
 
 Children are launched as separate processes, matching the scanner's own handoff
-to the editor. That keeps this window alive in the background -- it does not
-wait for or observe them -- and it means each window owns its own mpv instance
-and Qt event loop, which matters on Windows where constructing an mpv player
-while another top-level window is foreground can deadlock.
+to the editor and the picker's to the scanner. That keeps this window alive in
+the background -- it does not wait for or observe them -- and it means each
+window owns its own mpv instance and Qt event loop, which matters on Windows
+where constructing an mpv player while another top-level window is foreground
+can deadlock.
 
 "Launched as separate processes" is a property of the architecture, not of the
 build: in a packaged app there are no .py files on disk, so launch_command()
-re-executes the application binary with a --window flag. See
-shared/environment.py.
+re-executes the application binary with a --window flag, passing the chosen
+source video along as an argument. See shared/environment.py.
 """
 
 import os
@@ -84,8 +87,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, f"{title} could not start", str(error))
 
     def open_editor(self):
-        """Open the segment scanner, which leads into the video editor."""
-        self._open('scanner', "Editor")
+        """Open the source picker, which leads into the scanner and editor."""
+        self._open('picker', "Editor")
 
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""

@@ -94,6 +94,7 @@ _WINDOW_SCRIPTS = {
     'scanner': os.path.join('scanner', 'scanner.py'),
     'editor': os.path.join('editor', 'editor.py'),
     'settings': os.path.join('settings', 'settings.py'),
+    'picker': os.path.join('picker', 'picker.py'),
 }
 
 #: The child-window names launch_command() accepts, sorted for stable display.
@@ -212,7 +213,7 @@ def video_output():
     return MPV_VIDEO_OUTPUT[key]
 
 
-def launch_command(window_name):
+def launch_command(window_name, *args):
     """Return the argv that opens `window_name` in its own process.
 
     Each window is a separate process by design, not by accident: constructing
@@ -223,6 +224,10 @@ def launch_command(window_name):
     scripts do not exist on disk and ``sys.executable`` is the application
     binary itself, so the same binary is re-executed with a ``--window`` flag
     that main.py dispatches on.
+
+    `args` are appended verbatim in both layouts, which is how the picker hands
+    the chosen source video to the scanner and the scanner hands it on to the
+    editor. They arrive in the window's ``run(*args)``.
 
     Raises ValueError for an unknown window, FileNotFoundError when running
     from source and the script is missing.
@@ -236,13 +241,13 @@ def launch_command(window_name):
         ) from None
 
     if is_frozen():
-        return [sys.executable, '--window', window_name]
+        return [sys.executable, '--window', window_name, *args]
 
     script = os.path.join(install_root(), relative)
     if not os.path.exists(script):
         raise FileNotFoundError(
             f"Could not find {window_name} script at {script}")
-    return [sys.executable, script]
+    return [sys.executable, script, *args]
 
 
 #: Writable folders the app expects to exist next to the executable.
