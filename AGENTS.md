@@ -427,18 +427,30 @@ Detection rules:
   spaces *outside* (e.g. ` - (30 Sec)` stays intact).
 - The top-level `render_filename()` strips leading/trailing whitespace.
 
-### README default scheme
+### The shipped default scheme
 
-The README's naming scheme translates to:
+`shared/naming.py:DEFAULT_FILE_NAMING_SCHEME` is the personal default used when
+`settings.json` has no `file_naming_scheme` key:
 
 ```
-{network} - {filler_type} - {year,time_period} - [{block,special} ]{title} [({length}|{information})]
+{network} - {type} - {year,time_period} - [{block}|{special}] {title} [({length}|{info})]
 ```
+
+`{type}`/`{info}` are the short aliases for `filler_type`/`information`, and
+`[{block}|{special}]` is an OR group, so when **both** are set they render
+joined by a space (`Toonami Kids`) rather than the fallback form's first-only
+(`Toonami`). The README's own pattern is the fallback form,
+`{network} - {filler_type} - {year,time_period} - [{block,special} ]{title} [({length}|{information})]`,
+which is still supported and is what `tests/test_naming.py:TestReadmeScheme`
+exercises; it is not the shipped default.
 
 Note: optional sections whose separators should be conditional must have
 their separator **inside** the bracket. Wrapping `{year,time_period}` in
 `[{year,time_period} - ]` prevents stray ` - ` separators when the year
-is absent.
+is absent. The shipped default instead puts the separator *outside* its
+`[{block}|{special}]` group, so when both tags are empty the rendered stem
+keeps two spaces (`... -  <Title>`); only leading/trailing whitespace is
+stripped today. See "Whitespace handling" above.
 
 ### Integration
 
@@ -554,19 +566,21 @@ editor for folder schemes:
   before the event loop starts.
 - Each scheme has an in-app help panel (`textBrowserFileScheme` /
   `textBrowserFolderScheme`) so the window is usable without these docs. The
-  file panel documents the tag set, `{a,b}` fallback, optional `[ ]` groups
-  (including keeping the separator inside the brackets), `[a|b]` OR groups,
-  nesting, backslash escaping, the unconditional top-level `{title}` rule, and
-  the `.mp4` / 255-byte output. **These panels are documentation:** if the
-  parser changes, update them in the same change.
+  file panel documents the tag set, `{a,b}` fallback, optional `[ ]` AND
+  groups (including keeping the separator inside the brackets), `[{a}|{b}]` OR
+  groups, nesting, backslash escaping, and the unconditional top-level
+  `{title}` rule. **These panels are documentation:** if the parser changes,
+  update them in the same change.
   `test_file_help_examples_behave_as_documented` renders every construct the
   file panel names through the real preview, and
   `test_file_help_states_the_title_rule_the_compiler_enforces` checks the
   `{title}` wording against `file_scheme_error`, so the help cannot drift
-  into lying. Both help panels are also given explicit `minimumHeight`s that
-  cover their content at the window's minimum width — text wraps tallest
-  there — so neither is ever clipped; the window is 780x720 for that reason.
-  `test_help_panels_are_tall_enough_for_their_text` guards it.
+  into lying. `test_file_help_documents_the_syntax_and_the_title_requirement`
+  asserts the help *names* each construct but matches on the construct rather
+  than one exact notation, so rewording the help does not fail the suite while
+  dropping a construct does. The window is intentionally compact (780x515), so
+  the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
+  each panel lays out and can still reach text taller than itself.
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
 
