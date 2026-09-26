@@ -98,8 +98,9 @@ filename validation requires Title.
 
 The segment data model and persistence live in
 `shared/segments.py:SegmentModel`. Operations:
-`end_segment(i, pos)`, `start_segment(i, pos)`, `merge_next(i)`,
-plus `placeholder(source, duration)` and `save/load` for `.cmct`.
+`place_end_boundary(i, pos)`, `end_segment(i, pos)`, `start_segment(i, pos)`,
+`merge_next(i)`, plus `placeholder(source, duration)` and `save/load` for
+`.cmct`.
 
 ## The editing state machine
 
@@ -116,7 +117,7 @@ A linear left-to-right walk through the segments. The editor window holds:
 
 | Button            | Effect                                                                                              |
 |-------------------|-----------------------------------------------------------------------------------------------------|
-| **End Seg**       | `end_segment` at playhead. Active stays on the left half; right half becomes a new unedited segment. |
+| **End Seg**       | `place_end_boundary` at the playhead. See "End Seg" below — it either splits the active segment or moves its end boundary forward. |
 | **Start Seg**     | `start_segment` at playhead. Left half marked `ignored=True`; right half becomes the new active segment, inheriting metadata. |
 | **Merge Next**    | `merge_next` — absorb the next segment into the active one. Used for false-positive detections.   |
 | **Skip** (check)  | Toggle `ignored` on the active segment.                                                           |
@@ -163,6 +164,42 @@ stored tags. Title is excluded from the lock system, and a segment created
 by **End Seg** / **Start Seg** inherits **only the locked tag values**
 (`_inherited_tags()`), so the new segment, the form, and the export-time
 materialization in `shared/exporting.py` all agree on what carries over.
+
+## End Seg
+
+A segment's end and the next segment's start are the **same stored value**,
+so "put my end boundary here" has two possible answers.
+`shared/segments.py:SegmentModel.place_end_boundary` decides between them and
+returns one of four outcome codes (`END_BOUNDARY_INSERTED`, `_MOVED`,
+`_NO_CHANGE`, `_BLOCKED`):
+
+| Playhead | Outcome | Effect |
+|----------|---------|--------|
+| Inside the active segment | `INSERTED` | Delegates to `end_segment`; a new segment is created and keeps the active index. |
+| Past the end, still inside the next segment | `MOVED` | Sets `segments[i+1]["start"] = position`. |
+| Exactly on a boundary, or at a video edge | `NO_CHANGE` | Nothing happens. |
+| At or beyond the next segment's end | `BLOCKED` | Nothing happens, **and the editor says so**. |
+
+The guard is `end(i) < position < end(i+1)`, where `end(i+1)` is
+`segments[i+2]["start"]` or `duration` for the last segment. That is what
+stops End Seg from eating several segments: a playhead inside segment `i+2`
+is refused rather than clamped, because absorbing a whole segment is what
+**Add Next Seg** (`merge_next`) is for. `position == end(i+1)` is blocked too,
+since it would leave that segment with no duration at all.
+
+Moving the boundary necessarily resizes both neighbours, because they share
+the value. No tags or `ignored` flags are touched, so an already-staged
+neighbour keeps its record and only its duration changes. The invariant that
+starts strictly increase is preserved by construction.
+
+A position **at or before** the active segment's start is still a no-op; only
+the forward direction is implemented. The backward case (moving the previous
+segment's end back to the playhead) is the natural next addition and is a
+small block in the same method.
+
+The refusal is deliberately loud. Every out-of-range case used to be a silent
+no-op, and that silence is most of what made the flow feel broken; the dialog
+names **Add Next Seg** and points at navigating to the other segment.
 
 ## Required record fields
 
@@ -617,10 +654,12 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     pinned-value semantics, and locked-only segment carry-over are covered by
     `tests/test_editor_locks.py`; front-end required-tag enforcement and the
     refusal-to-write behavior are covered by
-    `tests/test_editor_required_tags.py`. Both drive the real `MediaPlayer`
+    `tests/test_editor_required_tags.py`; and End Seg boundary placement
+    (insert vs. move, and the refusal guards) in
+    `tests/test_end_boundary.py`. All three drive the real `MediaPlayer`
     methods through the shared `tests/editor_stub.py` widget-backed stub, so
     the shipped code is what gets tested. The full suite currently contains
-    246 tests.
+    272 tests.
 
 
 **Next:**
