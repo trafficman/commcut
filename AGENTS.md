@@ -21,8 +21,8 @@ full vision — described in `README.md` — has three pieces:
 The working tree currently contains two Wizard modules — the **Editing
 Wizard** (`editor/`) and the **Segment Scanner** (`scanner/`) — plus the
 standalone **Settings** window and the `shared/` library they build on. The
-Rename Wizard and export integration for named library destinations are not
-yet built.
+Rename Wizard and smart-cut export are not yet built; named library export is
+now wired end to end through the current full-segment transcode.
 
 ## Layout
 
@@ -57,6 +57,7 @@ commcut/
 │   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
 │   ├── naming.py            # Filename scheme policy + render_filename()
 │   ├── paths.py             # Folder scheme validation, sanitization, safe components
+│   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── prototypes/              # Earlier exploration / alternatives
 │   ├── BasicUI/             # First prototype
@@ -174,8 +175,13 @@ The shared modules are:
    `compile_folder_scheme()` validates the path-specific grammar;
    `render_folder_components()` sanitizes tag leaves and returns safe,
    display-cased relative components; `format_folder_components()` is for
-   previews. Portable component sanitation also lives here for later reuse by
+   previews. Portable component sanitation also lives here for reuse by
    filename export.
+ - `shared/exporting.py` — non-Qt settings snapshot and pure named-export
+   planner. It validates the segment model and every destination, enforces the
+   four required tags, compiles both schemes, materializes session tag locks,
+   and rejects duplicate, existing, case-variant, reparse-point, traversal,
+   and byte-limit conflicts before ffmpeg starts.
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.
@@ -234,11 +240,14 @@ user marker), Test Scan (`blackdetect` → midpoint markers in the upper
 source → midpoint boundaries written to a `.cmct`, then the Video Editor
 launched for manual fixes + tags).
 
-What's wired: the simple Export transcode step (`shared/ffmpeg.export_segment_clips`,
-wired to the `exportButton`) — it iterates the `.cmct`, skips ignored segments,
-and frame-accurately re-encodes each keep-segment (libx264/aac) into
-`export/1.mp4 … N.mp4`. Still pending is the smart-cut (keyframe-bracketed
-lossless copy + partial-keyframe transcode + concat) version of that step.
+What's wired: the Export button (`editor/editor.py:on_export` →
+`shared.ffmpeg.export_named_model`) persists the in-memory `.cmct`, applies
+session tag locks to wholly unedited segments, reads both persisted schemes,
+plans every named destination, and frame-accurately re-encodes each
+keep-segment (libx264/aac) beneath `export/`. ffmpeg writes unique temporary
+MP4s and atomically commits them without overwriting; per-clip failures are
+reported as a partial result. Still pending is the smart-cut (keyframe-
+bracketed lossless copy + partial-keyframe transcode + concat) version.
 
 Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
 `scanner.py`) so preview clips don't accumulate across runs; the 2-minute
@@ -337,13 +346,13 @@ is absent.
 
 ### Integration
 
-The export flow (`editor/editor.py:on_export` →
-`shared/ffmpeg.export_segment_clips`) currently still names files
-`1.mp4`, `2.mp4`, etc. The filename and folder resolvers are implemented and
-persisted, but neither is wired into this ffmpeg path yet. A future export
-integration must resolve every destination before starting ffmpeg, create
-parent directories, sanitize filenames, and detect existing/case-insensitive
-destination conflicts.
+The editor export flow (`editor/editor.py:on_export` →
+`shared.ffmpeg.export_named_model` → `shared.exporting.plan_export`) now
+requires an unconditional top-level `{title}`, sanitizes the rendered stem,
+appends `.mp4`, and combines it with the folder scheme's safe components. The
+planner resolves the entire keep-segment batch before starting ffmpeg and
+fails on missing required tags, invalid durations, duplicate normalized paths,
+existing/case-variant destinations, reparse points, or unsafe plan components.
 
 ## Folder Organization Scheme
 
@@ -419,9 +428,12 @@ violations. Runtime empty components caused solely by omitted optional groups
 are collapsed. `FolderScheme` keeps the source text authoritative and detects
 mutation of its public AST nodes via a structural fingerprint.
 
-Filename sanitation is **not** implemented yet. A future filename layer should
-reuse the common component rules while applying filename-specific reserved-name
-and extension policy.
+Filename export uses `shared/naming.py:compile_filename_scheme()`,
+`render_compiled_filename()`, and `sanitize_filename_stem()`. The strict export
+profile requires an unconditional top-level `{title}`, rejects unknown tags
+and malformed syntax, reuses the portable component policy, prefixes reserved
+device names, appends `.mp4`, and includes the extension in the 255-byte
+filename limit. Raw `.cmct` tag values remain unchanged.
 
 ## Settings Scheme UI
 
@@ -501,7 +513,7 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
  - Shared library layer used by the wizards and Settings: `shared/mpv`
    (MpvBridge, create_mpv_player, scan_keyframes), `shared/timeline`,
    `shared/segments`, `shared/ffmpeg`, `shared/environment`, `shared/scheme`,
-   `shared/naming`, `shared/paths`, and `shared/ui_loader`.
+   `shared/naming`, `shared/paths`, `shared/exporting`, and `shared/ui_loader`.
 - Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
   embedded mpv playback, transport + frame/keyframe stepping, Place
   Boundary + Undo on the User Marked timeline (in-memory, no `.cmct`),
@@ -519,12 +531,13 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
    scanner launches `editor/editor.py` and exits, so an existing `.cmct`
    is never overwritten (the source used is `import/test.mp4`, matching
    the editor's hardcoded media path).
-- Export (simple transcode in `shared/ffmpeg.export_segment_clips`, wired to
-   the `exportButton` in `editor/editor.py`): iterates the `.cmct`, skips
-   ignored segments, and frame-accurately re-encodes each keep-segment
-   (libx264/aac, not `-c copy`) into `export/1.mp4 … N.mp4`. The `Export`
-   button persists the active segment's tags to the `.cmct` first so the
-   sidecar is current before cutting.
+ - Named export (full-segment transcode in
+   `shared/ffmpeg.export_named_model`, wired to the `exportButton` in
+   `editor/editor.py`): persists the in-memory model, applies session locks,
+   loads both schemes, plans all keep-segments, creates their directory trees,
+   and frame-accurately re-encodes each named MP4 (libx264/aac, not `-c
+   copy`). Unique temporary files and no-clobber commits prevent overwrites;
+   per-clip failures are returned as a partial result.
  - File naming scheme parser (`shared/scheme.py` + `shared/naming.py`):
    `render_filename(scheme, tags)` produces a filename stem from a template,
    with test coverage in `tests/test_naming.py` and `tests/test_scheme.py`. See
@@ -533,23 +546,23 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
    required Network/Type/Time Period placeholders, optional multi-folder
    groups, tag sanitation, portable component validation, and safe relative
    component output. Covered by `tests/test_paths.py`.
- - Settings (`settings/settings.py`): independent file/folder scheme defaults,
+  - Settings (`settings/settings.py`): independent file/folder scheme defaults,
    validation, production-resolver previews, atomic `QSaveFile` persistence,
    cancel/window-close restoration, and offscreen UI tests in
-   `tests/test_settings.py`. The full suite currently contains 168 tests.
+   `tests/test_settings.py`.
+ - Export planning (`shared/exporting.py`): strict model/settings validation,
+   four-tag requirements, lock materialization, normalized within-batch and
+   existing-destination collision checks, complete relative-path limits, and
+   reparse-point/traversal defenses. Covered by `tests/test_exporting.py` and
+   mocked executor tests in `tests/test_ffmpeg.py`. The full suite currently
+   contains 208 tests.
 
 **Next:**
-- **Named destination integration**: read both persisted schemes before
-  export, render every non-ignored segment, apply the future filename-specific
-  sanitation policy, create the resolved directory hierarchy, and scan all
-  destinations for existing or normalized collisions before starting any
-  ffmpeg process. This is deliberately not part of the completed folder-parser
-  and Settings slices.
 - **Smart-cut export**: per non-ignored segment, find the innermost
   keyframes bracketing the two cut points, lossless-copy between them,
   transcode only the partial-keyframe ends, then concat. The placeholder
   `clip_to_temp` (stream copy) still lives in `shared/ffmpeg.py`; the
-  keyframe-bracketed smart-cut version replaces/augments `export_segment_clips`
+   keyframe-bracketed smart-cut version replaces/augments `export_named_model`
   when it lands. Also wire export into a background `QThread` (today it runs on
   the GUI thread, which blocks the editor while cutting).
 
@@ -561,14 +574,13 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
 - Automated boundary detection is fully wired: Test Scan (preview, in-memory
   midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and
   the Scanner→Editor handoff when a `.cmct` already exists.
-- Export is present as a simple full-segment transcode; the smart-cut
+- Export is present as a named full-segment transcode; the smart-cut
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
-- File/folder schemes are implemented and editable in Settings, but export
-  still writes `export/1.mp4 … N.mp4`; filename sanitation, named destination
-  creation, and batch conflict preflight are not wired into ffmpeg yet.
-- The editor tag form does not yet enforce all four base required fields
-  (Title, Network, Filler Type, and Time Period); current requirements are
-  enforced by the filename/folder resolvers at their respective boundaries.
+  The legacy numeric `export_segment_clips()` helper still exists for
+  compatibility, but Editor export uses the named planner/executor path.
+- The editor tag form still does not proactively enforce all four base required
+  fields (Title, Network, Filler Type, and Time Period); the named-export
+  planner now rejects the complete batch if any keep-segment is missing one.
 - Export runs synchronously on the GUI thread; move to a worker `QThread`
   (see `PreScanWorker`) for the smart-cut step so the editor stays
   responsive.
