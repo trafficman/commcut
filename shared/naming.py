@@ -26,8 +26,8 @@ from shared.scheme import (
 
 REQUIRED_TAG_NAMES: frozenset[str] = frozenset({"title"})
 DEFAULT_FILE_NAMING_SCHEME = (
-    "{network} - {filler_type} - {year,time_period} - "
-    "[{block,special} ]{title} [({length}|{information})]"
+    "{network} - {type} - {year,time_period} - "
+    "[{block}|{special}] {title} [({length}|{info})]"
 )
 MAX_FILENAME_BYTES = 255
 
