@@ -91,9 +91,10 @@ Tag fields (from the readme's scheme): `title`, `network`, `block`,
 `filler_type`, `year`, `time_period`, `show`, `special`, `length`,
 `information`. Title must be unique per segment and has **no lock button**;
 all other tags do. The base required record fields are Title, Network,
-Filler Type, and Time Period; Year is optional. Form-level enforcement of all
-four fields is not wired yet, but folder resolution requires the three
-structure tags and filename validation requires Title.
+Filler Type, and Time Period; Year is optional. Those four are enforced on
+the front end as well as in the export planner — see "Required record
+fields" below. Folder resolution requires the three structure tags and
+filename validation requires Title.
 
 The segment data model and persistence live in
 `shared/segments.py:SegmentModel`. Operations:
@@ -162,6 +163,39 @@ stored tags. Title is excluded from the lock system, and a segment created
 by **End Seg** / **Start Seg** inherits **only the locked tag values**
 (`_inherited_tags()`), so the new segment, the form, and the export-time
 materialization in `shared/exporting.py` all agree on what carries over.
+
+## Required record fields
+
+Title, Network, Filler Type, and Time Period are required on every segment
+that will be exported. The rule lives in one place —
+`shared/exporting.py:missing_required_tags(tags)` returns the canonical keys
+that are absent or whitespace-only — and both the export preflight
+(`_validate_required_tags`) and the editor use it, so the two can't drift.
+
+**Ignored segments are exempt.** `plan_export` skips them entirely
+(`if segment.get("ignored"): continue`), so the editor must not demand tags
+for them either; Skip is how a user discards a false-positive detection, and
+requiring a full record for it would make that workflow impossible.
+
+In the editor, `_missing_required_labels()` reports the gap in *display* order
+(Title, Network, Type, Time Period) from the **form**, not the model, so the
+check reflects what the user is looking at. It gates three things:
+
+- `on_stage` refuses the stage outright — nothing is written to the model, the
+  `.cmct` sidecar is not created or modified, the active index does not
+  advance, and the dialog names the missing fields plus the Skip escape
+  hatch.
+- `on_export` runs the same check *before* persisting, so Export cannot write
+  an incomplete record to the sidecar. (It previously saved first and only
+  discovered the problem inside the preflight, after the bad write.)
+- `_refresh_required_fields()` outlines the missing fields in red. It is
+  recomputed on every keystroke, on the Skip toggle, and on every segment
+  change, so the outline always states what Stage will demand right now.
+
+Note that the `.cmct` is still *expected* to contain empty tags for segments
+the user has never staged — lock materialization happens at export time, not
+at save time. The front-end rule applies to what a user actively stages and to
+the active segment on export, not to the whole file.
 
 ## Architecture
 
@@ -581,9 +615,12 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     reparse-point/traversal defenses. Covered by `tests/test_exporting.py` and
     mocked executor tests in `tests/test_ffmpeg.py`. Editor tag-lock display,
     pinned-value semantics, and locked-only segment carry-over are covered by
-    `tests/test_editor_locks.py`, which binds the real `MediaPlayer` methods
-    onto a widget-backed stub so the shipped code is what gets tested. The full
-    suite currently contains 224 tests.
+    `tests/test_editor_locks.py`; front-end required-tag enforcement and the
+    refusal-to-write behavior are covered by
+    `tests/test_editor_required_tags.py`. Both drive the real `MediaPlayer`
+    methods through the shared `tests/editor_stub.py` widget-backed stub, so
+    the shipped code is what gets tested. The full suite currently contains
+    246 tests.
 
 
 **Next:**
@@ -607,9 +644,6 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
   The legacy numeric `export_segment_clips()` helper still exists for
   compatibility, but Editor export uses the named planner/executor path.
-- The editor tag form still does not proactively enforce all four base required
-  fields (Title, Network, Filler Type, and Time Period); the named-export
-  planner now rejects the complete batch if any keep-segment is missing one.
 - Export runs synchronously on the GUI thread; move to a worker `QThread`
   (see `PreScanWorker`) for the smart-cut step so the editor stays
   responsive.
