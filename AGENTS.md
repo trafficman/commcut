@@ -132,11 +132,36 @@ helper drives both from the single `self.dirty` flag.
 
 ### Locks (tag carry-over)
 
-Locks are session-level: `self.tag_locks[key] = value` when the user toggles
-a lock on. On navigation to an **unedited** segment (all tags empty), the
-form pre-fills from `self.tag_locks` and the lock buttons show as checked.
-On an **edited** segment, all locks disengage (unchecked) and the form shows
-the stored tags. Title is excluded from the lock system.
+Locks are session-level and **pinned**: `self.tag_locks[key] = value` is
+captured when the user checks a toggle, and is deliberately *not* updated by
+field edits. A lock is a value that propagates to later segments, so a field
+that stops matching its pin is a segment deliberately deviating from the
+lock — not a reason to repoint the lock. `_inherited_tags()` filters out
+empty pins, so an empty lock carries nothing and the export-time
+materialization in `shared/exporting.py` skips it the same way.
+
+Lock *button* state is derived, not imperative: `_refresh_lock_buttons()`
+checks a lock iff its key is in `tag_locks` **and** the field currently holds
+the pinned value. `on_tag_edited` re-derives it on every keystroke, so a
+toggle switches off the moment its field stops matching and back on as soon as
+it matches again. The derivation is deliberately independent of whether the
+segment has been edited — deriving it from `_is_segment_edited()` (which
+reads the model, and the model is written on every keystroke) used to force
+all nine buttons unchecked as soon as you typed a tag, and made every
+previously staged segment read as unlocked. A staged segment whose tag still
+matches a pin shows as locked; one whose value deviates shows as unlocked
+while the pin stays held for later segments.
+
+Consequence: editing a field that is currently locked disengages that toggle,
+and clicking the disengaged toggle re-pins the new value. Locking an empty
+field is allowed but disengages as soon as anything is typed into it.
+
+On navigation to an **unedited** segment (all model tags empty), the form
+pre-fills from `self.tag_locks`. On an **edited** segment, the form shows the
+stored tags. Title is excluded from the lock system, and a segment created
+by **End Seg** / **Start Seg** inherits **only the locked tag values**
+(`_inherited_tags()`), so the new segment, the form, and the export-time
+materialization in `shared/exporting.py` all agree on what carries over.
 
 ## Architecture
 
@@ -553,9 +578,13 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
  - Export planning (`shared/exporting.py`): strict model/settings validation,
    four-tag requirements, lock materialization, normalized within-batch and
    existing-destination collision checks, complete relative-path limits, and
-   reparse-point/traversal defenses. Covered by `tests/test_exporting.py` and
-   mocked executor tests in `tests/test_ffmpeg.py`. The full suite currently
-   contains 208 tests.
+    reparse-point/traversal defenses. Covered by `tests/test_exporting.py` and
+    mocked executor tests in `tests/test_ffmpeg.py`. Editor tag-lock display,
+    pinned-value semantics, and locked-only segment carry-over are covered by
+    `tests/test_editor_locks.py`, which binds the real `MediaPlayer` methods
+    onto a widget-backed stub so the shipped code is what gets tested. The full
+    suite currently contains 224 tests.
+
 
 **Next:**
 - **Smart-cut export**: per non-ignored segment, find the innermost

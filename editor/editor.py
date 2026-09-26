@@ -189,7 +189,9 @@ class MediaPlayer(QMainWindow):
         position = self.player.time_pos
         if position is None:
             return
-        if self.segment_model.start_segment(self.current_index, position):
+        if self.segment_model.start_segment(
+            self.current_index, position, self._inherited_tags()
+        ):
             self.current_index += 1
             self.dirty = True
             self._update_stage_button()
@@ -224,24 +226,33 @@ class MediaPlayer(QMainWindow):
         return any(self.segment_model.segments[index]["tags"].values())
 
     def _refresh_lock_buttons(self):
-        """Set lock button checked states to match the computed values.
+        """Sync each lock button against the pinned lock values.
 
-        On an unedited segment, a lock is checked iff its key is in
-        self.tag_locks. On an edited segment, all locks are disengaged.
+        A lock is engaged when its key is in self.tag_locks *and* the field
+        currently holds the pinned value. The pinned value is deliberately
+        *not* updated by field edits: a lock is a value that propagates to
+        later segments, so a field that stops matching it is a segment
+        deliberately deviating from the lock, and the toggle says so.
         """
-        unedited = not self._is_segment_edited(self.current_index)
         for key, attr in _LOCK_BUTTONS.items():
             btn = getattr(self.ui, attr)
-            desired = unedited and key in self.tag_locks
+            locked = self.tag_locks.get(key)
+            current = getattr(self.ui, _TAG_FIELDS[key]).text()
+            desired = locked is not None and locked == current
             btn.blockSignals(True)
             btn.setChecked(desired)
             btn.blockSignals(False)
 
     def on_toggle_lock(self, key, checked):
-        """Record (or clear) a locked tag value, then re-render lock states."""
+        """Pin (or release) the current field value as a lock, then re-render.
+
+        Checking a toggle pins whatever the field currently holds. An already
+        disengaged toggle that matches its pin is re-engaged by restoring the
+        text rather than by clicking it, so a click here always means "pin
+        this value" or "release the pin".
+        """
         if checked:
-            form_attr = _TAG_FIELDS[key]
-            self.tag_locks[key] = getattr(self.ui, form_attr).text()
+            self.tag_locks[key] = getattr(self.ui, _TAG_FIELDS[key]).text()
         else:
             self.tag_locks.pop(key, None)
         self._refresh_lock_buttons()
@@ -251,6 +262,19 @@ class MediaPlayer(QMainWindow):
         self.segment_model.segments[self.current_index]["tags"][key] = text
         self.dirty = True
         self._update_stage_button()
+        # Re-derive the toggles on every keystroke so this field's lock
+        # switches off the moment the text stops matching its pinned value,
+        # and back on as soon as it matches again.
+        self._refresh_lock_buttons()
+
+    def _inherited_tags(self):
+        """Tag values a newly created segment should start with.
+
+        Locked values only. Unlocked tags -- Title included -- deliberately
+        do not carry over, so the new segment, the form, and the export-time
+        lock materialization in shared.exporting all agree.
+        """
+        return {key: value for key, value in self.tag_locks.items() if value}
 
     def _update_stage_button(self):
         """Reflect the dirty state on the Stage and Undo buttons.
@@ -303,7 +327,9 @@ class MediaPlayer(QMainWindow):
         position = self.player.time_pos
         if position is None:
             return
-        if self.segment_model.end_segment(self.current_index, position):
+        if self.segment_model.end_segment(
+            self.current_index, position, self._inherited_tags()
+        ):
             self.dirty = True
             self._update_stage_button()
             self._refresh_timeline()

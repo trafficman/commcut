@@ -105,11 +105,14 @@ class SegmentModel:
 
     # --- editing operations ---
 
-    def end_segment(self, active_index, position):
+    def end_segment(self, active_index, position, tags=None):
         """Split the active segment at position.
 
         The active segment (left part) keeps the active index. A new segment
-        is inserted to its right, inheriting the active segment's metadata.
+        is inserted to its right. That new segment's tags default to a copy of
+        the active segment's tags; pass `tags` to override them (the editor
+        passes its locked tag values so only locked tags carry over).
+
         Returns True if a split was made, False if position was at a boundary.
         """
         seg = self.segments[active_index]
@@ -121,7 +124,7 @@ class SegmentModel:
         new_seg = {
             "start": position,
             "ignored": seg["ignored"],
-            "tags": dict(seg["tags"]),
+            "tags": dict(seg["tags"]) if tags is None else dict(tags),
         }
         self.segments.insert(active_index + 1, new_seg)
         return True
@@ -137,12 +140,14 @@ class SegmentModel:
         del self.segments[active_index + 1]
         return True
 
-    def start_segment(self, active_index, position):
+    def start_segment(self, active_index, position, tags=None):
         """Split the active segment at position, activating the right part.
 
         The left part (behind the cut) is marked ignored. A new segment is
-        inserted to the right, inheriting the active segment's metadata, and
-        becomes the active segment. Returns True if a split was made.
+        inserted to the right and becomes the active segment. Its tags default
+        to a copy of the active segment's tags; pass `tags` to override them
+        (the editor passes its locked tag values so only locked tags carry
+        over). Returns True if a split was made.
         """
         seg = self.segments[active_index]
         start = seg["start"]
@@ -152,11 +157,11 @@ class SegmentModel:
             return False
         # Left part (current active) becomes ignored.
         seg["ignored"] = True
-        # Right part inherits metadata and becomes the new active segment.
+        # Right part becomes the new active segment.
         new_seg = {
             "start": position,
             "ignored": False,
-            "tags": dict(seg["tags"]),
+            "tags": dict(seg["tags"]) if tags is None else dict(tags),
         }
         self.segments.insert(active_index + 1, new_seg)
         return True
