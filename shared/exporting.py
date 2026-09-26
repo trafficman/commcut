@@ -164,12 +164,22 @@ def _canonical_tags(tags: Mapping[str, str], segment_index: int) -> dict[str, st
     return canonical_tags
 
 
+def missing_required_tags(tags: Mapping[str, str]) -> tuple[str, ...]:
+    """Canonical required tag names that are absent or blank, sorted.
+
+    Shared by the export preflight and the editor's front-end form check so
+    both agree on exactly which tags are required and what counts as blank.
+    """
+    missing = []
+    for name in sorted(REQUIRED_EXPORT_TAG_NAMES):
+        value = tags.get(name)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(name)
+    return tuple(missing)
+
+
 def _validate_required_tags(tags: Mapping[str, str], segment_index: int) -> None:
-    missing = [
-        name
-        for name in sorted(REQUIRED_EXPORT_TAG_NAMES)
-        if not tags.get(name, "").strip()
-    ]
+    missing = missing_required_tags(tags)
     if missing:
         raise ExportPlanError(
             f"Segment {segment_index + 1} is missing required tags: "

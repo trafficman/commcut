@@ -11,6 +11,7 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.timeline import TimelineWidget, Segment
 from shared.segments import sidecar_path, probe_duration, SegmentModel
+from shared.exporting import missing_required_tags
 
 # Qt libs
 from PySide6.QtWidgets import (
@@ -70,6 +71,21 @@ _LOCK_BUTTONS = {
     "length":      "lockLength",
     "information": "lockInfo",
 }
+
+# The base record fields every exported clip needs, in form order, mapped to
+# the label the user sees. These are enforced on the front end as well as in
+# shared.exporting: a keep segment cannot be staged or saved without them.
+# Segments marked ignored are exempt — they are excluded from export, so the
+# backend's required-tag rule does not apply to them either.
+_REQUIRED_TAG_FIELDS = {
+    "title": "Title",
+    "network": "Network",
+    "filler_type": "Type",
+    "time_period": "Time Period",
+}
+
+# Inline style for a required field that still needs a value.
+_REQUIRED_FIELD_STYLE = "QLineEdit { border: 1px solid #c0392b; }"
 
 
 class MediaPlayer(QMainWindow):
@@ -141,6 +157,13 @@ class MediaPlayer(QMainWindow):
             getattr(self.ui, attr).textChanged.connect(
                 lambda text, k=key: self.on_tag_edited(k, text))
 
+        # Cache the authored stylesheets so the required-field outline can be
+        # toggled without clobbering anything the .ui file set.
+        self._required_base_styles = {
+            key: getattr(self.ui, _TAG_FIELDS[key]).styleSheet()
+            for key in _REQUIRED_TAG_FIELDS
+        }
+
         # Stage button doubles as the "unsaved changes" indicator: checkable +
         # enabled when dirty, unchecked + disabled when clean. The click action
         # still fires `clicked` so on_stage runs normally.
@@ -159,6 +182,7 @@ class MediaPlayer(QMainWindow):
         self.segment_model.segments[self.current_index]["ignored"] = checked
         self.dirty = True
         self._update_stage_button()
+        self._refresh_required_fields()
         self.ui.timelineWidget.update()
 
     def on_toggle_zoom(self, checked):
@@ -266,6 +290,8 @@ class MediaPlayer(QMainWindow):
         # switches off the moment the text stops matching its pinned value,
         # and back on as soon as it matches again.
         self._refresh_lock_buttons()
+        # Likewise keep the required-field outline in step with the text.
+        self._refresh_required_fields()
 
     def _inherited_tags(self):
         """Tag values a newly created segment should start with.
@@ -275,6 +301,36 @@ class MediaPlayer(QMainWindow):
         lock materialization in shared.exporting all agree.
         """
         return {key: value for key, value in self.tag_locks.items() if value}
+
+    def _missing_required_labels(self):
+        """Display names of the required tags the active segment still lacks.
+
+        Read from the form, so the check reflects what the user is looking at
+        rather than what happens to be in the model. Ignored segments are
+        exempt, matching the export preflight, which skips them entirely.
+        """
+        segment = self.segment_model.segments[self.current_index]
+        if segment["ignored"]:
+            return []
+        missing = set(missing_required_tags(self._read_tags_from_form()))
+        return [
+            label for key, label in _REQUIRED_TAG_FIELDS.items()
+            if key in missing
+        ]
+
+    def _refresh_required_fields(self):
+        """Outline the required fields the active segment is still missing.
+
+        Recomputed on every keystroke, ignore toggle, and segment change, so
+        the outline always states what Stage will demand right now.
+        """
+        missing = set(self._missing_required_labels())
+        for key, label in _REQUIRED_TAG_FIELDS.items():
+            line_edit = getattr(self.ui, _TAG_FIELDS[key])
+            line_edit.setStyleSheet(
+                _REQUIRED_FIELD_STYLE if label in missing
+                else self._required_base_styles[key]
+            )
 
     def _update_stage_button(self):
         """Reflect the dirty state on the Stage and Undo buttons.
@@ -321,6 +377,7 @@ class MediaPlayer(QMainWindow):
         self.ui.clipIgnore.blockSignals(False)
         self._write_tags_to_form(self.segment_model.segments[self.current_index]["tags"])
         self._refresh_lock_buttons()
+        self._refresh_required_fields()
 
     def on_end_segment(self):
         """Split the active segment at the current playhead position."""
@@ -335,7 +392,24 @@ class MediaPlayer(QMainWindow):
             self._refresh_timeline()
 
     def on_stage(self):
-        """Lock in the active segment, advance to the next."""
+        """Lock in the active segment, advance to the next.
+
+        A keep segment missing any of the four base record fields is refused
+        before anything is written, so the .cmct sidecar never receives a
+        staged record that export would later reject.
+        """
+        missing = self._missing_required_labels()
+        if missing:
+            self._refresh_required_fields()
+            QMessageBox.warning(
+                self,
+                "Missing required tags",
+                "This segment needs all four required tags before it can be "
+                "staged:\n\n- " + "\n- ".join(missing) +
+                "\n\nMark the segment as skipped (Skip) if it should not be "
+                "exported.",
+            )
+            return
         self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
         self.segment_model.save(sidecar_path(self.media_path))
         self.dirty = False
@@ -358,14 +432,24 @@ class MediaPlayer(QMainWindow):
             )
             from shared.ffmpeg import export_named_model
 
-            validate_segment_model(self.segment_model)
+            # Check the form before anything is persisted, so an incomplete
+            # record is never written to the .cmct sidecar. validate_segment_model
+            # only covers structure; the required-tag rule is enforced here and
+            # again by the export preflight.
+            missing = self._missing_required_labels()
+            if missing:
+                raise ValueError(
+                    "The active segment needs all four required tags before it "
+                    "can be saved:\n- " + "\n- ".join(missing)
+                )
             if 0 <= self.current_index < self.segment_model.segment_count():
                 self.segment_model.segments[self.current_index]["tags"] = (
                     self._read_tags_from_form()
                 )
-                self.segment_model.save(sidecar_path(self.media_path))
-                self.dirty = False
-                self._update_stage_button()
+            validate_segment_model(self.segment_model)
+            self.segment_model.save(sidecar_path(self.media_path))
+            self.dirty = False
+            self._update_stage_button()
 
             export_model = model_with_tag_locks(
                 self.segment_model,
