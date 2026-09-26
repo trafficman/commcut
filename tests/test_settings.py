@@ -34,12 +34,12 @@ def window_factory(qapp, monkeypatch, tmp_path):
     """Create isolated Settings windows backed by temporary settings files."""
     windows = []
 
-    def create(settings=None):
+    def create(settings=None, encoding="utf-8"):
         settings_path = tmp_path / "settings.json"
         if settings is not None:
             settings_path.write_text(
                 json.dumps(settings, ensure_ascii=False),
-                encoding="utf-8",
+                encoding=encoding,
             )
         monkeypatch.setattr(settings_module, "PROJECT_ROOT", str(tmp_path))
         window = settings_module.SettingsWindow()
@@ -61,6 +61,36 @@ def base_settings(**extra):
         settings_module.FILE_NAMING_SCHEME_KEY: VALID_FILE_SCHEME,
         **extra,
     }
+
+
+def test_settings_written_with_a_byte_order_mark_still_load(window_factory):
+    """A BOM is not the user's mistake to report back to them.
+
+    settings.json is hand-editable user data, and plenty of things write UTF-8
+    with a leading byte-order mark: PowerShell 5.1's Set-Content/Out-File,
+    Notepad, older .NET tooling. Reading it as plain utf-8 raises
+    JSONDecodeError on the BOM, which the window reports as a corrupt file.
+    """
+    window = window_factory(base_settings(), encoding="utf-8-sig")
+
+    assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
+    assert window.ui.lineEditFileScheme.isEnabled()
+
+
+def test_export_snapshot_agrees_about_a_byte_order_mark(tmp_path):
+    """The Settings window and the export planner read the same file, so they
+    have to agree on what is readable."""
+    from shared.exporting import load_export_schemes
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({settings_module.FILE_NAMING_SCHEME_KEY: VALID_FILE_SCHEME}),
+        encoding="utf-8-sig",
+    )
+
+    schemes = load_export_schemes(str(path))
+
+    assert schemes.file_scheme == VALID_FILE_SCHEME
 
 
 def read_saved_settings(tmp_path):

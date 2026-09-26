@@ -1,0 +1,9 @@
+# Build-only dependencies, on top of requirements.txt.
+#
+# PyInstaller is deliberately NOT in requirements.txt: it is not imported at
+# runtime and must not end up a declared dependency of the application.
+#
+# Requires Python 3.11.
+
+pyinstaller==6.22.3
+pytest==9.0.3

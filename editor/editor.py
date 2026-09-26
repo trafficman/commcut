@@ -5,13 +5,15 @@ import sys
 # before importing anything from shared.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.environment import setup_environment
+from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
+from shared.diagnostics import install_excepthook
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.timeline import TimelineWidget, Segment
 from shared.segments import (
-    sidecar_path, probe_duration, SegmentModel,
+    sidecar_path, probe_duration, require_source_video, source_video_path,
+    SegmentModel,
     END_BOUNDARY_BLOCKED, END_BOUNDARY_NO_CHANGE,
 )
 from shared.exporting import missing_required_tags
@@ -96,10 +98,12 @@ class MediaPlayer(QMainWindow):
         super().__init__()
 
         # Define UI file
-        ui_file = QFile(os.path.join(SCRIPT_DIR, "editorwindow.ui"))
+        ui_file = QFile(resource_path("editor", "editorwindow.ui"))
         if not ui_file.open(QFile.ReadOnly):
-            print(f"Failed to open UI File")
-            sys.exit(-1)
+            # Raised rather than printed and exited: in a windowed packaged
+            # build a print goes nowhere.
+            raise FileNotFoundError(
+                f"Could not open the editor UI file: {ui_file.fileName()}")
         
         # Load the UI file created in Qt Designer
         loader = UiLoader()
@@ -115,7 +119,7 @@ class MediaPlayer(QMainWindow):
         # standard mpv options used by both the editor and the scanner.
         # Keep the MPV instance in its own attribute; do NOT overwrite
         # self.ui.videoContainer or you lose the widget reference.
-        self.media_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
+        self.media_path = source_video_path()
         self.player = create_mpv_player(video_frame)
 
         # Start paused so mpv's state and the button agree before any load.
@@ -539,18 +543,28 @@ class MediaPlayer(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-if __name__ == "__main__":
+def run():
+    """Run the editor. Returns the process exit code.
+
+    Also the entry point main.py dispatches to for '--window editor', so a
+    packaged build and a source run share this one code path.
+    """
+    # Checked before the QApplication exists so the "no source video" message
+    # is a clean, readable error rather than a traceback out of an event loop
+    # that is already running.
+    media_path = require_source_video()
+
     # Required for high-DPI scaling on modern Windows displays
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    install_excepthook(app)
 
     pixmap = QPixmap(480, 270)
     pixmap.fill(QColor(30, 30, 30))
     splash = QSplashScreen(pixmap)
     splash.show()
 
-    media_path = os.path.join(PROJECT_ROOT, 'import', 'test.mp4')
     splash.showMessage(f"Now loading {os.path.basename(media_path)}…",
                        Qt.AlignCenter | Qt.AlignBottom, QColor(200, 200, 200))
     app.processEvents()
@@ -562,6 +576,9 @@ if __name__ == "__main__":
         duration = probe_duration(media_path) or 0.0
         SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
 
+    # The splash is closed BEFORE MediaPlayer() constructs the mpv player.
+    # Building a direct3d renderer while another top-level window is the
+    # foreground deadlocks on Windows, and a splash is a top-level window.
     splash.close()
     window = MediaPlayer()
     window.bridge.set_keyframes(keyframes)
@@ -569,4 +586,8 @@ if __name__ == "__main__":
     window.resize(1024, 768)
     window.show()
 
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(run())

@@ -5,14 +5,20 @@ import sys
 # Make the project root importable so 'shared' resolves.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.environment import setup_environment
+from shared.environment import (
+    get_binary_path, launch_command, resource_path, setup_environment,
+)
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
+from shared.diagnostics import install_excepthook, log
 from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
-from shared.segments import sidecar_path, probe_duration, SegmentModel
+from shared.segments import (
+    sidecar_path, probe_duration, require_source_video, source_video_path,
+    SegmentModel,
+)
 from shared.ui_loader import UiLoader
-from marker_timeline import MarkerTimelineWidget
+from scanner.marker_timeline import MarkerTimelineWidget
 
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
@@ -37,15 +43,20 @@ def _clear_temp_clips():
                 pass
 
 
+def _source_path():
+    """The compilation video the scanner and editor both work on."""
+    return source_video_path()
+
+
 def _editor_to_launch(source_path):
-    """Return the editor script path to launch if a .cmct sidecar already
+    """Return the editor window name to launch if a .cmct sidecar already
     exists for the source, else None.
 
     The scanner must never overwrite an existing .cmct, so when one is
     present we hand off to the Video Editor instead of running the scanner.
     """
     if os.path.exists(sidecar_path(source_path)):
-        return os.path.join(PROJECT_ROOT, "editor", "editor.py")
+        return 'editor'
     return None
 
 
@@ -82,10 +93,13 @@ class ScannerWindow(QMainWindow):
         super().__init__()
 
         # Load the .ui file
-        ui_file = QFile(os.path.join(SCRIPT_DIR, "scannerwindow.ui"))
+        ui_file = QFile(resource_path("scanner", "scannerwindow.ui"))
         if not ui_file.open(QFile.ReadOnly):
-            print(f"Failed to open UI File")
-            sys.exit(-1)
+            # Raised rather than printed and exited: in a windowed packaged
+            # build a print goes nowhere, and this runs before the excepthook
+            # in run() would be worth relying on for a clean message.
+            raise FileNotFoundError(
+                f"Could not open the scanner UI file: {ui_file.fileName()}")
 
         loader = UiLoader()
         loader.register_widget(MarkerTimelineWidget)
@@ -147,7 +161,7 @@ class ScannerWindow(QMainWindow):
 
         # Load the clipped test video
         self.clip_path = clip_to_temp(
-            os.path.join(PROJECT_ROOT, "import", "test.mp4"),
+            source_video_path(),
             CLIP_DURATION,
             output_dir=os.path.join(PROJECT_ROOT, "temp"),
         )
@@ -198,7 +212,7 @@ class ScannerWindow(QMainWindow):
         pix_th = level / 100.0
 
         cmd = [
-            "ffmpeg", "-y", "-v", "info",
+            get_binary_path("ffmpeg"), "-y", "-v", "info",
             "-i", self.clip_path,
             "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
             "-an", "-f", "null", "-",
@@ -249,16 +263,16 @@ class ScannerWindow(QMainWindow):
         editor when one is present, so this is only reached when no sidecar
         exists yet.
         """
-        source = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+        source = _source_path()
 
         duration = probe_duration(source)
         if duration is None:
-            print("Finished: could not probe source duration.")
+            log("Finished: could not probe source duration.")
             return
 
         fps = self.bridge.video_fps
         if not fps:
-            print("Finished: frame rate unavailable; seek within the preview first.")
+            log("Finished: frame rate unavailable; seek within the preview first.")
             return
 
         frames = self.ui.horizontalSlider.value()
@@ -267,7 +281,7 @@ class ScannerWindow(QMainWindow):
         pix_th = level / 100.0
 
         cmd = [
-            "ffmpeg", "-y", "-v", "info",
+            get_binary_path("ffmpeg"), "-y", "-v", "info",
             "-i", source,
             "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
             "-an", "-f", "null", "-",
@@ -278,11 +292,11 @@ class ScannerWindow(QMainWindow):
         model = _model_from_midpoints(midpoints, duration, os.path.basename(source))
         sidecar = sidecar_path(source)
         model.save(sidecar)
-        print(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
+        log(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
 
         # Open the editor to review the .cmct we just wrote, then close the scanner.
-        subprocess.Popen([sys.executable, os.path.join(PROJECT_ROOT, "editor", "editor.py")])
-        sys.exit(0)
+        subprocess.Popen(launch_command('editor'))
+        QApplication.quit()
 
     def on_play_pause(self):
         self.bridge.toggle_play()
@@ -302,18 +316,25 @@ class ScannerWindow(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-if __name__ == "__main__":
-    source_path = os.path.join(PROJECT_ROOT, "import", "test.mp4")
+def run():
+    """Run the scanner. Returns the process exit code.
+
+    Also the entry point main.py dispatches to for '--window scanner', so a
+    packaged build and a source run share this one code path.
+    """
+    source_path = require_source_video()
 
     # Never overwrite an existing .cmct: if one already exists for the
-    # source, skip the scanner and open the Video Editor instead.
-    editor_path = _editor_to_launch(source_path)
-    if editor_path is not None:
-        subprocess.Popen([sys.executable, editor_path])
-        sys.exit(0)
+    # source, skip the scanner and open the Video Editor instead. Checked
+    # before the QApplication is built, because this process does nothing
+    # but hand off.
+    if _editor_to_launch(source_path) is not None:
+        subprocess.Popen(launch_command('editor'))
+        return 0
 
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    install_excepthook(app)
 
     # Start fresh: drop any leftover preview clips from prior runs.
     _clear_temp_clips()
@@ -323,6 +344,11 @@ if __name__ == "__main__":
         CLIP_DURATION,
         output_dir=os.path.join(PROJECT_ROOT, "temp"),
     )
+    if media_path is None:
+        raise RuntimeError(
+            f"Could not build a {CLIP_DURATION}s preview of {source_path}. "
+            f"See the log for the ffmpeg error."
+        )
 
     # Splash while ffprobe scans keyframes. The scan runs synchronously
     # on the GUI thread (it's typically fast); the splash gives the user
@@ -348,4 +374,8 @@ if __name__ == "__main__":
     window.resize(1024, 768)
     window.show()
 
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(run())

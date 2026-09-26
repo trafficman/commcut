@@ -34,12 +34,16 @@ commcut/
 │   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
 │   ├── linux/               # Linux binaries (placeholders, none shipped yet)
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
-├── import/                  # Test source videos
-├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
-├── main.py                  # Application entry point: shows the main menu
+├── import/                 # Test source videos
+├── temp/                   # Scratch output (e.g. 2-min scanner preview clips)
+├── main.py                  # Application entry point: argv dispatcher + main menu
 ├── mainwindow.py            # MainWindow: launches the scanner / settings as
 │                            # child processes
 ├── mainwindow.ui            # Qt Designer file for the main menu
+├── packaging/               # PyInstaller build (see "Packaging" below)
+│   ├── commcut.spec         # onefile (default) and onedir modes
+│   ├── build.py             # pre-flight checks + portable folder assembly
+│   └── README.md            # build instructions and the shipped layout
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
@@ -53,7 +57,8 @@ commcut/
 │   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
 ├── shared/                  # Cross-module library (editor + scanner + settings)
-│   ├── environment.py       # setup_environment + get_binary_path (cross-platform)
+│   ├── environment.py       # frozen-aware roots, per-OS binaries, launch_command
+│   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
 │   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
@@ -67,6 +72,130 @@ commcut/
 │   ├── BasicUI/             # First prototype
 │   └── VideoEditor/         # Pre-rename copy of the editor module
 ```
+
+## Packaging
+
+`packaging/build.py` produces `dist/commcut-portable/`:
+
+```
+commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the .ui files)
+bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
+import/             drop a compilation video in here, named test.mp4
+export/             named clips are written here
+```
+
+~412 MB total. It is a **portable smoke-test build**, not a release: no
+installer, no shortcuts, no uninstaller, no signing. See
+`packaging/README.md` for build instructions and the smoke-test checklist.
+
+**`bin/win/` is deliberately not bundled into the exe.** The app opens every
+window as a separate process, and a onefile build re-extracts its whole
+payload per launch, so bundling ~366 MB of binaries would mean re-extracting a
+third of a gigabyte every time a window opened. Kept beside the exe, the
+payload is only ~46 MB and every window reaches ready in **~1.3 s**.
+
+### The two roots
+
+Unfrozen there is one root and the distinction is academic. Frozen there are
+two, and conflating them is the most common way this app breaks in a build:
+
+| | Resolves to (frozen) | Holds |
+|---|---|---|
+| `resource_root()` | `sys._MEIPASS` | the four `.ui` files |
+| `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, `export/`, `temp/`, `commcut.log` |
+
+The payload directory is **wiped on exit**, so it is never the place for
+anything that has to survive. `install_root()` is what `settings.json` and
+every export resolve against.
+
+`_bin_dir()` used to derive from `__file__`, which frozen points into the
+payload — it now branches on `sys.frozen` and resolves against
+`install_root()` instead.
+
+### `contents_directory="."` (onedir only)
+
+PyInstaller 6 onedir splits its output: the exe lands in `dist/commcut/` but
+data goes to `dist/commcut/_internal/`. Since `bin/<os>/` is resolved against
+`dirname(sys.executable)`, the default layout would make the app look for
+ffmpeg next to the exe and not find it. The spec sets `contents_directory="."`
+so the payload sits beside the exe. Onefile has no contents directory and
+ignores it. `packaging/build.py` asserts `_internal/` is absent.
+
+### `.ui` files keep their source subfolders
+
+`resource_path()` takes a project-root-relative path and is called with the
+same expression whether or not the app is frozen — `resource_path("settings",
+"settingswindow.ui")`. Flattening the four `.ui` files into the payload root
+would make that correct only in a packaged build and wrong from source, so the
+spec mirrors the source layout instead.
+`tests/test_frozen_mode.py::test_source_and_payload_layouts_agree` reads the
+spec's `datas` list and compares it against the code's view, so a `.ui` file
+that moves cannot be silently mis-bundled.
+
+**Do not use `SCRIPT_DIR` for a resource.** It is
+`dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen
+it points into the payload. Use `resource_path()`.
+
+### Child windows are re-executions of the same binary
+
+Every window is a separate process, and that is deliberate: constructing an
+mpv player (direct3d) while another top-level window is foreground deadlocks
+on Windows. From source each window is its own `.py` script; frozen the scripts
+do not exist on disk, so `shared/environment.launch_command(name)` returns
+`[sys.executable, "--window", name]` and `main.py` dispatches it. `main.py` is
+therefore the only entry point in the spec, and all four windows expose a
+`run()` function that both paths share — so the packaged build cannot drift
+from the source build.
+
+`launch_command` is the only place that knows how to open a window. Do not
+hand-assemble argv elsewhere.
+
+### Windows DLL loading
+
+`ctypes.util.find_library` — which python-mpv calls at *import* time to find
+libmpv — scans `%PATH%` for each candidate name and returns the first absolute
+hit, which it then loads with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. So
+prepending `bin/<os>` to `%PATH%` is **load-bearing**, and it has to happen
+before `import mpv`. python-mpv's import is deferred inside
+`create_mpv_player` precisely so that ordering can be guaranteed.
+`os.add_dll_directory` is registered too, and its handle is kept in a module
+global — a dropped handle unregisters the directory and surfaces much later as
+a bare `OSError` from ctypes with nothing pointing at the cause.
+
+`mpv`'s `vo` comes from `environment.video_output()` (per-OS), not a literal
+`'direct3d'`. The `WA_NativeWindow` attribute on the video frame exists for
+that Windows driver, so changing it there is a break, not a portability tweak.
+
+### Diagnostics
+
+The build is `console=False`, so there is no console. `shared/diagnostics.py`
+owns reporting:
+
+- `log()` appends to `commcut.log` next to the exe, replacing the bare
+  `print()` calls that were the only channel and were invisible in a packaged
+  build. Override the path with `COMMCUT_LOG`.
+- `install_excepthook()` writes a traceback to the log and shows a
+  `QMessageBox` naming it.
+- `fatal()` handles failures *before* a window exists (missing source video,
+  unwritable install root, bad `--window` argument) and returns a real exit
+  code. `main()` wraps dispatch in it so nothing reaches the bootloader.
+
+The spec sets `disable_windowed_traceback=True` for the same reason: the
+default makes the windowed bootloader pop a **modal** traceback dialog that the
+process waits on, so an undismissable error looks exactly like a hang.
+
+### The source video is hardcoded
+
+`shared/segments.py:source_video_path()` returns
+`install_root()/import/test.mp4`, and `require_source_video()` raises with the
+exact path to put a video at if it is missing. There is no file dialog: this is
+a smoke-test build. The check exists because a missing video otherwise fails as
+a *codec* problem — ffprobe returns nothing, a placeholder `.cmct` is written
+with `duration=0.0`, and mpv then reports an opaque load failure.
+
+`DEFAULT_SOURCE_NAME` in that module is the single definition; the scanner and
+the editor both go through it so they cannot disagree about which file is the
+source.
 
 ## The .cmct sidecar format
 
@@ -221,23 +350,20 @@ hands off to the editor itself — so the two are one journey, not two menu
 items. The window says so in a hint label and a tooltip, since "Editor" alone
 does not.
 
-Children are launched with `subprocess.Popen([sys.executable, script])`, the
+Children are launched with `shared.environment.launch_command(name)`, the
 same mechanism the scanner already uses to hand off to the editor. Three
 reasons: the menu **stays open in the background** (it never waits on or
 observes the child, so there is no need to reopen it on child exit), each
 window gets its own Qt event loop and its own mpv instance, and it sidesteps
 the Windows mpv D3D hazard where constructing a player while another
-top-level window is foreground can deadlock. A launch that fails — including a
-script that is not on disk — is reported with a `QMessageBox` rather than
-allowed to escape into the event loop.
+top-level window is foreground can deadlock. A launch that fails — an unknown
+window name, or a missing script when running from source — is reported with a
+`QMessageBox` rather than allowed to escape into the event loop.
 
-`setup_environment` resolves `PROJECT_ROOT` by checking whether the calling
-script's own folder contains `shared/environment.py`. Root-level scripts
-(`main.py`, `mainwindow.py`) therefore resolve the root correctly, where the
-previous unconditional "go up one level" would have escaped the tree and sent
-every launched path to the wrong place. Subdirectory scripts are unaffected.
-`tests/test_main_window.py` covers both cases plus the launch and failure
-paths.
+`setup_environment` resolves the project root as `install_root()`: the source
+tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
+covers the launcher, the failure paths, and the project-root resolution from
+every entry point.
 
 ## Required record fields
 
@@ -276,16 +402,24 @@ the active segment on export, not to the whole file.
 
 The editor, scanner, and Settings window use the common library under
 `shared/`. Each entry point calls `shared.environment.setup_environment(__file__)`
-near the top — it puts the project root on `sys.path` (so `shared.*` resolves
-when running the script directly) and prepends the per-OS `bin/<os>/` folder to
-`PATH` so mpv, ffprobe, and ffmpeg resolve to the bundled versions.
+near the top — it puts the install root on `sys.path` (so `shared.*` resolves
+when running the script directly) and makes the per-OS `bin/<os>/` folder
+discoverable, which is how mpv finds `libmpv` and how the ffmpeg/ffprobe call
+sites resolve to the bundled versions.
 
 The shared modules are:
 
-- `shared/environment.py` — `setup_environment(script_path)` (sys.path +
-  PATH) and `get_binary_path(name)`, which resolves ffmpeg/ffprobe/mpv per
-  OS under `bin/<os>/` (`.exe` on Windows). This is the cross-platform binary
-  resolution that used to live in `core.py`.
+- `shared/environment.py` — the two roots (`resource_root()` for bundled
+  read-only data, `install_root()` for user data and `bin/<os>/`),
+  `resource_path(*parts)`, `setup_environment(script_path)` (sys.path + making
+  the bundled binaries discoverable), `get_binary_path(name)` (per-OS
+  resolution under `bin/<os>/`, `.exe` on Windows), `launch_command(name)`
+  (argv to open a child window), `video_output()` (per-OS mpv `vo`), and
+  `ensure_app_folders()`. This is the cross-platform binary resolution that
+  used to live in `core.py`.
+- `shared/diagnostics.py` — `log()`, `log_exception()`, `install_excepthook()`,
+  and `fatal()`. Everything diagnostic, because a windowed build has no
+  console.
 - `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel),
   `create_mpv_player` (wraps `mpv.MPV` for a `QFrame`, sets
   `WA_NativeWindow`), and `scan_keyframes(path)` (ffprobe I-frame scan
@@ -389,11 +523,10 @@ preview is then stream-copied to `temp/` with a deterministic name
 (`test_clip120s.mp4`).
 
 If a `.cmct` sidecar already exists next to the source video, the scanner
-skips itself and launches the Video Editor (`editor/editor.py`) instead, so
-an existing project is never overwritten. When no `.cmct` exists, the
-Finished button runs `blackdetect` on the full source, writes the midpoint
-boundaries to `<name>.cmct` next to the source, and then launches the
- editor.
+skips itself and launches the Video Editor (`launch_command("editor")`)
+instead, so an existing project is never overwritten. When no `.cmct` exists,
+the Finished button runs `blackdetect` on the full source, writes the midpoint
+boundaries to `<name>.cmct` next to the source, and then launches the editor.
 
 ## File Naming Scheme
 
@@ -620,7 +753,7 @@ editor for folder schemes:
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself. The main
   menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 291 tests.
+  The full suite currently contains 325 passing tests.
 
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
@@ -675,7 +808,8 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
 - Frame-accurate stepping (silent).
 - Cross-platform binary resolution: `shared/environment.get_binary_path`
   resolves ffmpeg/ffprobe/mpv per OS under `bin/<os>/`; both the editor and
-  the scanner prepend it to `PATH` via `setup_environment`.
+  the scanner reach them through `setup_environment`. Every call site uses the
+  resolved absolute path rather than a bare binary name.
  - Shared library layer used by the wizards and Settings: `shared/mpv`
    (MpvBridge, create_mpv_player, scan_keyframes), `shared/timeline`,
    `shared/segments`, `shared/ffmpeg`, `shared/environment`, `shared/scheme`,
@@ -693,10 +827,11 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
   source video (not the 2-minute preview); midpoint boundaries are written
   as `.cmct` segment starts via `SegmentModel` and the Video Editor is
   launched automatically.
- - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
-   scanner launches `editor/editor.py` and exits, so an existing `.cmct`
-   is never overwritten (the source used is `import/test.mp4`, matching
-   the editor's hardcoded media path).
+  - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
+    scanner launches `launch_command("editor")` and exits, so an existing
+    `.cmct` is never overwritten (the source used is
+    `shared.segments.source_video_path()`, the single definition both the
+    scanner and the editor go through).
  - Named export (full-segment transcode in
    `shared/ffmpeg.export_named_model`, wired to the `exportButton` in
    `editor/editor.py`): persists the in-memory model, applies session locks,
@@ -712,7 +847,15 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
    required Network/Type/Time Period placeholders, optional multi-folder
    groups, tag sanitation, portable component validation, and safe relative
    component output. Covered by `tests/test_paths.py`.
-  - Settings (`settings/settings.py`): independent file/folder scheme defaults,
+  - Portable packaging (`packaging/commcut.spec` + `packaging/build.py`): a
+   self-extracting onefile `commcut.exe` (Python + PySide6 + the app + the
+   `.ui` files) assembled into `dist/commcut-portable/` alongside the
+   `bin/win/` binaries and the `import/`+`export/` placeholders. Child windows
+   are re-executions of the same binary via `--window <name>`. Pre-flight
+   rejects a non-Windows host and Git LFS pointer binaries; post-build asserts
+   the `.ui` layout and that `prototypes/`/`tests/` were not bundled. See
+   "Packaging" above.
+ - Settings (`settings/settings.py`): independent file/folder scheme defaults,
    validation, production-resolver previews, atomic `QSaveFile` persistence,
    cancel/window-close restoration, and offscreen UI tests in
    `tests/test_settings.py`.
@@ -728,8 +871,12 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     (insert vs. move, and the refusal guards) in
     `tests/test_end_boundary.py`. All three drive the real `MediaPlayer`
     methods through the shared `tests/editor_stub.py` widget-backed stub, so
-    the shipped code is what gets tested. The full suite currently contains
-    272 tests.
+    the shipped code is what gets tested.
+ - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
+   argv dispatch, and the agreement between the spec's `datas` mapping and
+   `resource_path()` are covered by `tests/test_frozen_mode.py`, which
+   monkeypatches `sys.frozen` / `sys._MEIPASS` / `sys.executable` rather than
+   building an executable.
 
 
 **Next:**

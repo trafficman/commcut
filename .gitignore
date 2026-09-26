@@ -1,6 +1,13 @@
 # Python
 __pycache__/
 
+# Build output
+build/
+dist/
+
+# Runtime log written next to the executable
+commcut.log
+
 # Testing files
 *.mp4
 *.mkv

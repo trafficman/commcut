@@ -84,7 +84,10 @@ class ExportPlan:
 def load_export_schemes(settings_path: str) -> ExportSchemes:
     """Read and validate one immutable scheme snapshot for a complete export."""
     try:
-        with open(settings_path, encoding="utf-8") as settings_file:
+        # utf-8-sig for the same reason as SettingsWindow._read_settings: a
+        # byte-order mark on a hand-edited settings.json is not an error the
+        # user should be told about, and both readers have to agree.
+        with open(settings_path, encoding="utf-8-sig") as settings_file:
             settings = json.load(settings_file)
     except FileNotFoundError:
         settings = {}

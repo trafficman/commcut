@@ -22,6 +22,43 @@ import json
 import os
 import subprocess
 
+from shared.environment import get_binary_path, install_root
+
+
+#: Filename the smoke-test build looks for inside the app's import/ folder.
+#:
+#: Hardcoded rather than chosen through a file dialog. This build is a smoke
+#: test, and it deliberately drops the source selection in favour of "put a
+#: video here". Keeping the name in one place is what stops the scanner, the
+#: editor, and the .cmct sidecar from disagreeing about which file is the source.
+DEFAULT_SOURCE_NAME = "test.mp4"
+
+
+def source_video_path():
+    """Absolute path of the compilation video this install works on."""
+    return os.path.join(install_root(), "import", DEFAULT_SOURCE_NAME)
+
+
+def require_source_video():
+    """Return source_video_path(), or raise naming the exact file to add.
+
+    Without this check a missing source video fails in a way that looks like a
+    codec problem: ffprobe returns nothing, the placeholder .cmct is written
+    with duration 0.0, and mpv then reports an opaque load failure. The install
+    folder ships with an empty import/, so this is the expected first-run state
+    of a packaged build, not an edge case.
+    """
+    path = source_video_path()
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"No source video found.\n\n"
+            f"Copy a compilation video to:\n{path}\n\n"
+            f"and name it {DEFAULT_SOURCE_NAME!r}. The scanner reads that file "
+            f"and writes its {DEFAULT_SOURCE_NAME.replace('.mp4', '.cmct')} "
+            f"sidecar next to it."
+        )
+    return path
+
 
 def sidecar_path(video_path):
     """Return the .cmct sidecar path for a video (swap the extension)."""
@@ -33,7 +70,7 @@ def probe_duration(path):
     """Duration in seconds via ffprobe, or None on failure."""
     result = subprocess.run(
         [
-            "ffprobe", "-v", "error",
+            get_binary_path("ffprobe"), "-v", "error",
             "-show_entries", "format=duration",
             "-of", "csv=p=0",
             path,

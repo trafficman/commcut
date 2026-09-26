@@ -1,0 +1,11 @@
+# commcut runtime dependencies.
+#
+# Pinned exactly: a PyInstaller build is not portable across PySide6 minor
+# versions, and the Qt DLL/plugin set is what most often breaks a frozen build.
+# Rebuilds must use the same interpreter version documented in
+# packaging/README.md.
+#
+# Requires Python 3.11 (built and verified against 3.11.1).
+
+PySide6==6.11.1
+python-mpv==1.0.8

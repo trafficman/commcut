@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass
 
 from shared.environment import get_binary_path
+from shared.diagnostics import log
 from shared.exporting import (
     ExportPlan,
     ExportPlanError,
@@ -263,8 +264,8 @@ def export_segment_clips(source_path, out_dir=None, crf=18):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"FFmpeg export error for segment {out_index} "
-                  f"(start={start:.3f}s dur={duration:.3f}s):\n{result.stderr}")
+            log(f"FFmpeg export error for segment {out_index} "
+                f"(start={start:.3f}s dur={duration:.3f}s):\n{result.stderr}")
             continue
         written.append(out_path)
     return written
@@ -295,5 +296,5 @@ def clip_to_temp(input_path, duration, output_dir="temp"):
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         return output_path
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg clip error:\n{e.stderr}")
+        log(f"FFmpeg clip error for {input_path}:\n{e.stderr}")
         return None

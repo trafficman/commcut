@@ -89,8 +89,11 @@ def test_editor_button_explains_it_enters_through_the_scanner(window):
 
 
 def test_window_keeps_its_own_size(window):
+    # Tracks the minimumSize declared in mainwindow.ui. The menu is
+    # deliberately compact (two buttons and a hint), so this is the shipped
+    # design rather than a floor the window is allowed to shrink past.
     assert window.ui.minimumSize().width() >= 400
-    assert window.ui.minimumSize().height() >= 240
+    assert window.ui.minimumSize().height() >= 150
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +145,7 @@ def test_window_survives_a_child_process_failure(window, monkeypatch):
 
 
 def test_missing_script_is_reported_not_raised(qapp, monkeypatch):
-    """_launch refuses a path that is not there; the window must warn rather
+    """_launch refuses a window it does not know; the window must warn rather
     than let the exception escape into Qt's event loop."""
     import mainwindow
 
@@ -153,17 +156,35 @@ def test_missing_script_is_reported_not_raised(qapp, monkeypatch):
     )
     instance = mainwindow.MainWindow()
     try:
-        instance._open(os.path.join("nope", "missing.py"), "Settings")
+        instance._open("nope", "Settings")
         assert warnings
-        assert "missing.py" in warnings[0][1]
+        assert "nope" in warnings[0][1]
     finally:
         instance.close()
         instance.deleteLater()
         qapp.processEvents()
 
 
-def test_launch_refuses_a_missing_script(qapp):
-    import mainwindow
+def test_launch_refuses_an_unknown_window():
+    """An unregistered window name is a programming error, and ValueError says so."""
+    from shared.environment import launch_command
 
-    with pytest.raises(FileNotFoundError):
-        mainwindow._launch(os.path.join("nope", "missing.py"))
+    with pytest.raises(ValueError) as error:
+        launch_command("nope")
+
+    # The message must name the valid options: this is the error a developer
+    # hits first when adding a window.
+    assert "scanner" in str(error.value)
+
+
+def test_launch_refuses_a_missing_script(monkeypatch, tmp_path):
+    """A registered window whose script is absent must raise rather than
+    launch a process pointed at nothing."""
+    import shared.environment as environment
+
+    monkeypatch.setattr(environment, "install_root", lambda: str(tmp_path))
+
+    with pytest.raises(FileNotFoundError) as error:
+        environment.launch_command("scanner")
+
+    assert "scanner" in str(error.value)

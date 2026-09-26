@@ -21,6 +21,9 @@ import subprocess
 
 from PySide6.QtCore import QObject, Signal, Qt
 
+from shared.diagnostics import log
+from shared.environment import get_binary_path, video_output
+
 
 # Keyframes closer than this (seconds) to the current position are treated as
 # "the keyframe we're standing on" and skipped, so repeated presses walk
@@ -36,7 +39,7 @@ def scan_keyframes(path):
     """
     result = subprocess.run(
         [
-            "ffprobe", "-v", "error",
+            get_binary_path("ffprobe"), "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "frame=pict_type,pts_time",
             "-of", "csv=p=0",
@@ -63,22 +66,26 @@ def create_mpv_player(video_frame):
     """Build an mpv.MPV embedded in the given QFrame.
 
     Sets the WA_NativeWindow attribute on the frame (required for mpv's
-    direct3d renderer to embed into it), then constructs the player with
-    the standard options used by both the editor and the scanner
+    direct3d renderer to embed into it), then constructs the player with the
+    standard options used by both the editor and the scanner
     (osc/input disabled, keep_open, hr_seek='always'). The caller is
     responsible for wrapping the returned player in an MpvBridge.
 
+    The `vo` driver comes from shared.environment.video_output() rather than
+    being hardcoded: 'direct3d' is a Windows path, and the other platforms use
+    mpv's generic GPU output.
+
     The mpv package is imported here (rather than at module top) so this
     module is importable in contexts that don't need mpv. Callers must
-    have run shared.environment.setup_environment first so the mpv DLL
-    is on PATH.
+    have run shared.environment.setup_environment first, which is what puts
+    libmpv on %PATH% for python-mpv's import-time lookup.
     """
     import mpv  # deferred: see module docstring
 
     video_frame.setAttribute(Qt.WA_NativeWindow, True)
     return mpv.MPV(
         wid=str(int(video_frame.winId())),
-        vo="direct3d",
+        vo=video_output(),
         osc=False,
         input_default_bindings=False,
         input_vo_keyboard=False,
@@ -148,7 +155,7 @@ class MpvBridge(QObject):
     def toggle_play(self):
         p = self.player
         if p.idle_active:
-            print("No media loaded.")
+            log("No media loaded.")
             return
         if p.eof_reached:
             # keep-open froze us on the final frame: restart from the top

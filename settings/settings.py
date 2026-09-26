@@ -4,12 +4,13 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.environment import setup_environment
+from shared.environment import resource_path, setup_environment
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile, QIODevice, QSaveFile, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from shared.diagnostics import install_excepthook, log, log_exception
 from shared.exporting import (
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
@@ -81,15 +82,17 @@ class SettingsWindow(QMainWindow):
         self._saved_folder_scheme: str | None = None
         self._pending_warning: tuple[str, str] | None = None
 
-        ui_file = QFile(os.path.join(SCRIPT_DIR, "settingswindow.ui"))
+        ui_file = QFile(resource_path("settings", "settingswindow.ui"))
         if not ui_file.open(QFile.ReadOnly):
-            raise OSError(ui_file.errorString())
+            raise FileNotFoundError(
+                f"Could not open the settings UI file: {ui_file.fileName()}")
         try:
             self.ui = UiLoader().load(ui_file, self)
         finally:
             ui_file.close()
         if self.ui is None:
-            raise RuntimeError("Failed to load settings UI")
+            raise RuntimeError(
+                f"Failed to load the settings UI: {ui_file.fileName()}")
         self.setCentralWidget(self.ui)
         self.setWindowTitle(self.ui.windowTitle())
 
@@ -165,14 +168,36 @@ class SettingsWindow(QMainWindow):
 
     def _read_settings(self):
         try:
-            with open(self.settings_path, encoding="utf-8") as settings_file:
+            # utf-8-sig, not utf-8: this file is user data that people edit and
+            # that other tools write, and a plain utf-8 read raises
+            # JSONDecodeError on a leading byte-order mark. PowerShell 5.1's
+            # Set-Content/Out-File, Notepad, and anything else that defaults
+            # to "UTF-8 with BOM" all produce one. utf-8-sig reads both that
+            # and BOM-less UTF-8 transparently. _write_settings emits no BOM,
+            # so the two agree.
+            with open(self.settings_path, encoding="utf-8-sig") as settings_file:
                 settings = json.load(settings_file)
         except FileNotFoundError:
+            # Expected on a fresh install: both schemes fall back to their
+            # defaults and the file appears on first save.
+            log(f"no settings file yet at {self.settings_path}; "
+                f"using the default schemes")
             return {}
         except RecursionError as error:
             raise ValueError("settings.json nesting is too deep") from error
+        except (OSError, ValueError) as error:
+            # Logged as well as shown. A dialog is a one-time notification the
+            # user can dismiss without reading the path, and settings.json
+            # holds their naming schemes, so a failed read has to leave a
+            # record. The original ValueError messages are preserved verbatim
+            # because the tests and the dialog both quote them.
+            log_exception(f"could not read {self.settings_path}", error)
+            raise
         if not isinstance(settings, dict):
-            raise ValueError("settings.json must contain a JSON object")
+            error = ValueError("settings.json must contain a JSON object")
+            log_exception(f"could not read {self.settings_path}", error)
+            raise error
+        log(f"read {self.settings_path}")
         return settings
 
     @staticmethod
@@ -247,9 +272,17 @@ class SettingsWindow(QMainWindow):
         try:
             self._write_settings(self.settings_path, settings)
         except (OSError, ValueError) as error:
+            # The likely cause is that the install folder is not writable --
+            # QSaveFile needs write access to the *directory*, not just the
+            # file, so an app dropped somewhere read-only fails here even when
+            # settings.json itself is writable. Log the path so that is
+            # diagnosable after the dialog is dismissed.
+            log_exception(
+                f"could not save to {self.settings_path}", error)
             QMessageBox.warning(self, "Settings could not be saved", str(error))
             return False
 
+        log(f"saved {self.settings_path}")
         if file_enabled:
             self._saved_file_scheme = file_scheme
         if folder_enabled:
@@ -316,8 +349,14 @@ class SettingsWindow(QMainWindow):
         super().closeEvent(event)
 
 
-if __name__ == "__main__":
+def run():
+    """Show the settings window and run its event loop. Returns the exit code."""
     app = QApplication(sys.argv)
+    install_excepthook(app)
     window = SettingsWindow()
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(run())
