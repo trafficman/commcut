@@ -167,4 +167,4 @@ def run(*_args):
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(run(*sys.argv[1:]))

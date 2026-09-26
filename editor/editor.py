@@ -669,4 +669,7 @@ def run(source=None):
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    # sys.argv[1:] is the argument main.py's dispatcher would have passed, so
+    # `python editor/editor.py <video>` and `commcut.exe --window editor
+    # <video>` work on the same code path.
+    sys.exit(run(*sys.argv[1:]))

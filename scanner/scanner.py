@@ -19,7 +19,26 @@ from shared.segments import (
 )
 from shared.sources import require_source_video
 from shared.ui_loader import UiLoader
-from scanner.marker_timeline import MarkerTimelineWidget
+
+# The marker timeline lives beside this file, so it is reachable two different
+# ways and only one of them works per launch mode:
+#
+#   run as a package module (main.py's `--window scanner` dispatch, tests)
+#       -> `scanner` is the scanner/ directory and this is scanner.scanner
+#   run as a script (python scanner/scanner.py, which is how launch_command
+#       starts it from source)
+#       -> sys.path[0] is scanner/ itself, and scanner.py sits in it. A regular
+#          module found anywhere on sys.path outranks a namespace portion
+#          collected elsewhere, so `scanner` resolves to *this file* and
+#          `scanner.marker_timeline` raises "'scanner' is not a package".
+#
+# So import the sibling by name when there is no package, and by path when
+# there is. `__package__` is empty for a top-level script and "scanner" for a
+# module inside the package.
+if __package__:
+    from scanner.marker_timeline import MarkerTimelineWidget
+else:
+    from marker_timeline import MarkerTimelineWidget
 
 from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
@@ -385,4 +404,7 @@ def run(source=None):
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    # sys.argv[1:] is the argument main.py's dispatcher would have passed, so
+    # `python scanner/scanner.py <video>` and `commcut.exe --window scanner
+    # <video>` work on the same code path.
+    sys.exit(run(*sys.argv[1:]))

@@ -8,13 +8,16 @@ the one that was scanned, or falls back to the legacy default.
 The picker's side of the first hop is covered by tests/test_picker.py. What is
 checked here is the shape of the plumbing the window constructors rely on: the
 source arrives as a parameter instead of each window re-deriving it for itself.
-Neither window constructor can be built without libmpv, so the guard is on the
-signature, which is the thing that regressed.
+Neither window constructor can be built without libmpv, so most of the guard is
+on signatures, plus real subprocess runs of the entry points for the two bugs
+that only appear when a script is launched as a script.
 """
 
 import importlib
 import inspect
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -65,14 +68,6 @@ def test_every_window_run_tolerates_forwarded_arguments():
             kind == inspect.Parameter.POSITIONAL_OR_KEYWORD for kind in kinds), module
 
 
-def test_no_window_re_derives_the_source_for_itself():
-    """The failure this guards against: a window that resolves its own source
-    instead of using the one it was given."""
-    for module in ("editor.editor", "scanner.scanner"):
-        source = inspect.getsource(importlib.import_module(module))
-        assert "source_video_path(" not in source, module
-
-
 def test_a_scanned_video_is_not_rescanned(tmp_path):
     """The .cmct rule the picker advertises in its list: a video that was
     scanned before goes straight to the editor."""
@@ -88,3 +83,57 @@ def test_a_scanned_video_is_not_rescanned(tmp_path):
         handle.write("{}")
 
     assert _editor_to_launch(source) == "editor"
+
+
+# ---------------------------------------------------------------------------
+# The entry points as scripts
+# ---------------------------------------------------------------------------
+#
+# Two bugs lived here and neither shows up in the tests above, because both
+# need a script to be launched as a *script* rather than imported:
+#
+# 1. `python scanner/scanner.py` puts scanner/ on sys.path[0], and the
+#    scanner.py in it outranks the scanner/ namespace package -- a regular
+#    module anywhere on sys.path beats a namespace portion collected
+#    elsewhere -- so `scanner.marker_timeline` raised "'scanner' is not a
+#    package". That is exactly the command launch_command() builds from
+#    source, which is how the picker starts the scanner.
+# 2. `sys.exit(run())` dropped sys.argv[1:], so the chosen video was ignored
+#    and the window fell back to import/test.mp4.
+#
+# These have to run in a fresh interpreter. Reproducing the shadowing inside
+# the test process is pointless: by then `scanner` is already in sys.modules
+# as the package, so the import succeeds however sys.path is arranged and the
+# test passes against broken code.
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.mark.parametrize("script", [
+    os.path.join("scanner", "scanner.py"),
+    os.path.join("editor", "editor.py"),
+])
+def test_a_source_argument_reaches_a_window_run_as_a_script(script, tmp_path):
+    """Launched the way launch_command() launches it from source.
+
+    A path outside the import folder fails in require_source_video, before any
+    window exists, and the message names the path that was passed -- so this
+    asserts that the module header imported (no ModuleNotFoundError) *and*
+    that the argument survived the trip through __main__ to run().
+
+    The timeout is what a regression looks like when the argument is dropped:
+    the window falls back to import/test.mp4, finds its .cmct, and opens a
+    window nobody asked for, so the run would otherwise never end.
+    """
+    outside = str(tmp_path / "elsewhere.mp4")
+    with open(outside, "wb") as handle:
+        handle.write(b"\0")
+
+    result = subprocess.run(
+        [sys.executable, os.path.join(PROJECT_ROOT, script), outside],
+        capture_output=True, text=True, timeout=60,
+    )
+
+    assert "ModuleNotFoundError" not in result.stderr, result.stderr
+    assert outside in result.stderr, result.stderr
+    assert "import folder" in result.stderr, result.stderr

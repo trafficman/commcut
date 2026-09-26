@@ -154,10 +154,31 @@ drift from the source build.
 Any `*args` are forwarded verbatim into that window's `run(*args)`, which is
 how the source video reaches the scanner and the editor. Dropping that
 forwarding is silent: the windows would fall back to their default source and
-open a different video than the one that was scanned.
+open a different video than the one that was scanned. A window's own
+`if __name__ == "__main__":` block must therefore pass `sys.argv[1:]` through —
+`sys.exit(run(*sys.argv[1:]))`, which is exactly what `main.py` does with the
+text after `--window <name>`. `sys.exit(run())` throws the argument away, and
+because the fallback is `import/test.mp4` — which usually has a `.cmct` beside
+it — the window silently hands off to the editor on a *different* video rather
+than failing.
 
 `launch_command` is the only place that knows how to open a window. Do not
 hand-assemble argv elsewhere.
+
+**A window folder that shadows its own package.** `scanner/` has no
+`__init__.py`, so `scanner` is only a *namespace* portion, and CPython ranks a
+regular module found **anywhere** on `sys.path` above a namespace portion
+collected elsewhere. Running `python scanner/scanner.py` puts `scanner/` at
+`sys.path[0]`, where `scanner.py` sits — so `scanner` resolves to that file and
+`from scanner.marker_timeline import ...` fails with *"'scanner' is not a
+package"*. That is precisely the command `launch_command` builds from source,
+which is how the picker starts the scanner, and it does not reproduce when the
+same module is imported as `scanner.scanner`. `scanner/scanner.py` therefore
+branches on `__package__` to import its sibling by whichever name is actually
+reachable. Adding a sibling import to any other window needs the same guard, and
+the test has to run in a **fresh interpreter**: once `scanner` is in
+`sys.modules` as the package, an in-process reproduction succeeds against broken
+code.
 
 ### Windows DLL loading
 
@@ -856,7 +877,7 @@ editor for folder schemes:
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself. The main
   menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 435 passing tests.
+  The full suite currently contains 436 passing tests.
 
 - Import/Export directory fields and Browse buttons are present in the UI but
   **deliberately locked**: for this alpha both folders are fixed beside
@@ -1006,7 +1027,10 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     symlink/`import_backup` containment checks, and the "nothing to open"
     messages — `tests/test_sources.py`. The picker window itself, offscreen,
     is in `tests/test_picker.py`; the path surviving both hand-offs between
-    windows is in `tests/test_source_handoff.py`.
+    windows is in `tests/test_source_handoff.py`, which runs each window's
+    script the way `launch_command` launches it — in a **fresh interpreter**,
+    because the folder-shadows-its-package trap above cannot be reproduced
+    in-process once `scanner` is cached in `sys.modules`.
 
 
 
