@@ -1,7 +1,8 @@
-"""Shared environment setup for editor/ and scanner/ scripts.
+"""Shared environment setup for the project's entry-point scripts.
 
-Both scripts live in a subdirectory of the project root (e.g. editor/ or
-scanner/) and need the same two things before anything else:
+Scripts may live at the project root (main.py, mainwindow.py) or in a
+subdirectory (editor/, scanner/, settings/). Either way they need the same two
+things before anything else:
 
   1. The project root on sys.path so `shared.*` imports resolve when the
      script is run directly (e.g. `python editor/editor.py`).
@@ -16,6 +17,12 @@ The bin folder is selected per-OS via ``get_binary_path`` / ``_bin_dir``
 import os
 import platform
 import sys
+
+
+# Presence of this file inside a `shared/` folder is what identifies a folder
+# as the project root, so a script that already lives there (main.py) is not
+# treated as if it were one level below the root.
+_SHARED_MARKER = os.path.join('shared', 'environment.py')
 
 
 def _bin_dir():
@@ -78,6 +85,10 @@ def setup_environment(script_path):
     # points sys.executable at the platform binary in all three cases.
     if getattr(sys, 'frozen', False):
         project_root = os.path.dirname(os.path.abspath(sys.executable))
+    elif os.path.exists(os.path.join(script_dir, _SHARED_MARKER)):
+        # The script already sits at the project root (main.py, mainwindow.py),
+        # so stepping up a level would escape the tree entirely.
+        project_root = script_dir
     else:
         project_root = os.path.abspath(os.path.join(script_dir, '..'))
 
