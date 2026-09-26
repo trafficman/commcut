@@ -1,113 +1,31 @@
 """Tests for the editor's tag-lock display, tracking, and carry-over rules.
 
-The editor window itself needs libmpv and a real video, so these tests bind
-the real ``MediaPlayer`` methods onto a lightweight stub that supplies only
-the ``ui`` namespace and the segment model. That keeps the code under test the
-shipped code rather than a re-implementation.
+Driven through the shared widget-backed `editor_stub.EditorStub`, so the
+behavior under test is the shipped `MediaPlayer` behavior.
 """
 
-import os
-
 import pytest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
-from editor.editor import MediaPlayer, _LOCK_BUTTONS, _TAG_FIELDS
-from shared.segments import SegmentModel
+from editor_stub import EditorStub, ensure_qapp
 
 
 # ---------------------------------------------------------------------------
 # Harness
 # ---------------------------------------------------------------------------
 
-class _EditorStub:
-    """Minimal MediaPlayer surface covering the lock and segment code paths."""
-
-    _is_segment_edited = MediaPlayer._is_segment_edited
-    _write_tags_to_form = MediaPlayer._write_tags_to_form
-    _refresh_lock_buttons = MediaPlayer._refresh_lock_buttons
-    _read_tags_from_form = MediaPlayer._read_tags_from_form
-    _update_stage_button = MediaPlayer._update_stage_button
-    _inherited_tags = MediaPlayer._inherited_tags
-    on_toggle_lock = MediaPlayer.on_toggle_lock
-    on_tag_edited = MediaPlayer.on_tag_edited
-    on_end_segment = MediaPlayer.on_end_segment
-    on_start_segment = MediaPlayer.on_start_segment
-    _move_active = MediaPlayer._move_active
-    _snap_playhead_to_active_start = lambda self: None
-
-    def __init__(self, segments, duration=120.0):
-        self.ui = type("Ui", (), {})()
-        for attr in _TAG_FIELDS.values():
-            setattr(self.ui, attr, QLineEdit())
-        for attr in _LOCK_BUTTONS.values():
-            button = QPushButton()
-            button.setCheckable(True)  # matches checkable=true in editorwindow.ui
-            setattr(self.ui, attr, button)
-        for attr in ("stageButton", "undoButton", "clipIgnore"):
-            setattr(self.ui, attr, QPushButton())
-        for key, attr in _LOCK_BUTTONS.items():
-            getattr(self.ui, attr).toggled.connect(
-                lambda checked, k=key: self.on_toggle_lock(k, checked))
-        for key, attr in _TAG_FIELDS.items():
-            getattr(self.ui, attr).textChanged.connect(
-                lambda text, k=key: self.on_tag_edited(k, text))
-
-        self.segment_model = SegmentModel("test.mp4", duration, segments)
-        self.current_index = 0
-        self.tag_locks = {}
-        self.dirty = False
-        self.player = type("Player", (), {"time_pos": 10.0})()
-        self._refresh_timeline = self._refresh_form_and_locks
-
-    def _refresh_form_and_locks(self):
-        self._write_tags_to_form(
-            self.segment_model.segments[self.current_index]["tags"])
-        self._refresh_lock_buttons()
-
-    # --- helpers ---
-
-    def set_tag(self, key, value):
-        getattr(self.ui, _TAG_FIELDS[key]).setText(value)
-
-    def get_tag(self, key):
-        return getattr(self.ui, _TAG_FIELDS[key]).text()
-
-    def click_lock(self, key):
-        getattr(self.ui, _LOCK_BUTTONS[key]).click()
-
-    def checked_locks(self):
-        return sorted(
-            key for key, attr in _LOCK_BUTTONS.items()
-            if getattr(self.ui, attr).isChecked()
-        )
-
-    def form(self):
-        return {k: getattr(self.ui, v).text() for k, v in _TAG_FIELDS.items()
-                if getattr(self.ui, v).text()}
-
-    def go_to(self, index):
-        self.current_index = index
-        self._refresh_form_and_locks()
-
-
 @pytest.fixture(scope="module")
 def qapp():
-    """One offscreen QApplication for the widget-backed lock tests."""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
+    return ensure_qapp()
 
 
 @pytest.fixture
 def editor(qapp):
     """A stub editor with one empty segment."""
-    return _EditorStub([{"start": 0.0, "ignored": False, "tags": {}}])
+    return EditorStub([{"start": 0.0, "ignored": False, "tags": {}}])
 
 
 def _three_segment_editor(qapp):
-    return _EditorStub([
+    return EditorStub([
         {"start": 0.0, "ignored": False, "tags": {}},
         {"start": 30.0, "ignored": False, "tags": {}},
         {"start": 60.0, "ignored": False, "tags": {}},
@@ -120,7 +38,7 @@ def _three_segment_editor(qapp):
 
 def test_lock_stays_engaged_while_typing(qapp):
     """A lock clicked after typing must not be immediately switched off."""
-    editor = _EditorStub([{"start": 0.0, "ignored": False, "tags": {}}])
+    editor = EditorStub([{"start": 0.0, "ignored": False, "tags": {}}])
     editor.set_tag("network", "Cartoon Network")
     editor.set_tag("filler_type", "Promo")
     editor.set_tag("time_period", "Morning")
@@ -249,7 +167,7 @@ def test_locking_an_empty_field_disengages_once_typed_into(qapp):
 
 def test_staged_segment_shows_lock_when_tags_match(qapp):
     """A previously staged segment should not read as unlocked by default."""
-    editor = _EditorStub([
+    editor = EditorStub([
         {"start": 0.0, "ignored": False,
          "tags": {"title": "First", "network": "Cartoon Network"}},
         {"start": 30.0, "ignored": False, "tags": {}},
@@ -265,7 +183,7 @@ def test_staged_segment_shows_lock_when_tags_match(qapp):
 
 
 def test_staged_segment_shows_unlocked_when_tag_differs(qapp):
-    editor = _EditorStub([
+    editor = EditorStub([
         {"start": 0.0, "ignored": False,
          "tags": {"title": "First", "network": "Nickelodeon"}},
         {"start": 30.0, "ignored": False, "tags": {}},
