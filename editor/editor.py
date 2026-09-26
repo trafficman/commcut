@@ -13,7 +13,9 @@ from shared.timeline import TimelineWidget, Segment
 from shared.segments import sidecar_path, probe_duration, SegmentModel
 
 # Qt libs
-from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
+from PySide6.QtWidgets import (
+    QMainWindow, QApplication, QStyle, QSplashScreen, QMessageBox
+)
 from shared.ui_loader import UiLoader
 from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
 from PySide6.QtGui import QPixmap, QColor
@@ -312,30 +314,70 @@ class MediaPlayer(QMainWindow):
         self.segment_model.save(sidecar_path(self.media_path))
         self.dirty = False
         self._update_stage_button()
-        self.current_index += 1
-        if self.current_index >= self.segment_model.segment_count():
+        if self.current_index + 1 >= self.segment_model.segment_count():
             print("Editing complete.")
             return
+        self.current_index += 1
         self._snap_playhead_to_active_start()
         self._refresh_timeline()
 
     def on_export(self):
-        """Persist current edits to the .cmct sidecar, then transcode each
-        non-ignored segment into <project_root>/export as 1.mp4, 2.mp4, ..."""
-        # Snapshot the active segment's form tags into the in-memory model so
-        # the .cmct on disk reflects everything before we cut frames out. If
-        # the cursor has walked past the last segment (editing finished), there
-        # is no active segment to snapshot — the .cmct is already current.
-        if 0 <= self.current_index < self.segment_model.segment_count():
-            self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
-            self.segment_model.save(sidecar_path(self.media_path))
-            self.dirty = False
-            self._update_stage_button()
+        """Persist edits, plan named destinations, then transcode every keep clip."""
+        self.ui.exportButton.setEnabled(False)
+        try:
+            from shared.exporting import (
+                load_export_schemes,
+                model_with_tag_locks,
+                validate_segment_model,
+            )
+            from shared.ffmpeg import export_named_model
 
-        from shared.ffmpeg import export_segment_clips
-        out_dir = os.path.join(PROJECT_ROOT, "export")
-        written = export_segment_clips(self.media_path, out_dir=out_dir)
-        print(f"Exported {len(written)} clip(s) to {out_dir}")
+            validate_segment_model(self.segment_model)
+            if 0 <= self.current_index < self.segment_model.segment_count():
+                self.segment_model.segments[self.current_index]["tags"] = (
+                    self._read_tags_from_form()
+                )
+                self.segment_model.save(sidecar_path(self.media_path))
+                self.dirty = False
+                self._update_stage_button()
+
+            export_model = model_with_tag_locks(
+                self.segment_model,
+                self.tag_locks,
+            )
+            schemes = load_export_schemes(
+                os.path.join(PROJECT_ROOT, "settings.json")
+            )
+            out_dir = os.path.join(PROJECT_ROOT, "export")
+            _, result = export_named_model(
+                self.media_path,
+                export_model,
+                schemes,
+                out_dir,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Export could not start", str(error))
+            return
+        finally:
+            self.ui.exportButton.setEnabled(True)
+
+        print(
+            f"Exported {result.succeeded} clip(s) to {out_dir}; "
+            f"{result.failed} failed"
+        )
+        if result.failures:
+            details = "\n\n".join(
+                f"Segment {failure.segment_index + 1} — {failure.destination}\n"
+                f"{failure.message}"
+                for failure in result.failures[:3]
+            )
+            if len(result.failures) > 3:
+                details += f"\n\n…and {len(result.failures) - 3} more failure(s)."
+            QMessageBox.warning(
+                self,
+                "Export completed with errors",
+                f"{result.failed} clip(s) failed:\n\n{details}",
+            )
 
     def on_file_loaded(self, path):
         """Called when mpv finishes loading a file: snap to the active segment start."""

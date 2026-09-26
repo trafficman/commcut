@@ -10,7 +10,16 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile, QIODevice, QSaveFile, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from shared.naming import render_filename
+from shared.exporting import (
+    FILE_NAMING_SCHEME_KEY,
+    FOLDER_ORGANIZATION_SCHEME_KEY,
+)
+from shared.naming import (
+    DEFAULT_FILE_NAMING_SCHEME,
+    FilenameSchemeError,
+    compile_filename_scheme,
+    render_filename,
+)
 from shared.paths import (
     DEFAULT_FOLDER_SCHEME,
     FolderRenderError,
@@ -21,12 +30,7 @@ from shared.paths import (
 )
 from shared.ui_loader import UiLoader
 
-FILE_NAMING_SCHEME_KEY = "file_naming_scheme"
-FOLDER_ORGANIZATION_SCHEME_KEY = "folder_organization_scheme"
-DEFAULT_FILE_SCHEME = (
-    "{network} - {filler_type} - {year,time_period} - "
-    "[{block,special} ]{title} [({length}|{information})]"
-)
+DEFAULT_FILE_SCHEME = DEFAULT_FILE_NAMING_SCHEME
 PREVIEW_ERROR_STYLE = "color: red; background-color: #ffebee;"
 
 PREVIEW_TAGS: dict[str, str] = {
@@ -48,9 +52,11 @@ PREVIEW_TAGS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 def file_scheme_error(scheme: str) -> str | None:
-    """Return a validation message for a file naming scheme, or None if valid."""
-    if "{title}" not in scheme:
-        return "The file naming scheme must include {title} to ensure uniqueness."
+    """Return a strict production filename-scheme error, or None if valid."""
+    try:
+        compile_filename_scheme(scheme)
+    except FilenameSchemeError as error:
+        return str(error)
     return None
 
 
