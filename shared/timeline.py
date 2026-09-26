@@ -26,6 +26,14 @@ IGNORED_COLOR = QColor(70, 70, 70)
 # segment; the rest shows the neighboring segments as context.
 ACTIVE_SEGMENT_VIEW_FRACTION = 0.9
 
+# Zoom modes. The widget remembers which one is in effect so a resize
+# re-applies the view the user actually chose instead of forcing
+# zoom-to-active-segment. Without this, widening the window silently snapped
+# the timeline back to the active segment while the zoom toggle still showed
+# the fit state.
+ZOOM_FIT = "fit"
+ZOOM_SEGMENT = "segment"
+
 
 class TimelineWidget(QWidget):
     """Zoom-ready playback timeline.
@@ -49,6 +57,12 @@ class TimelineWidget(QWidget):
         # is how many seconds are scrolled off the left edge.
         self.pixels_per_second = 100.0
         self.scroll_offset = 0.0
+
+        # Remembered zoom mode, so a resize re-applies this rather than
+        # assuming zoom-to-active-segment. zoom_segment_index is the segment
+        # that mode centres on; it tracks active_index.
+        self.zoom_mode = ZOOM_FIT
+        self.zoom_segment_index = 0
 
         self._dragging = False
 
@@ -74,12 +88,33 @@ class TimelineWidget(QWidget):
 
     def set_active_index(self, i):
         self.active_index = i
+        self.zoom_segment_index = i
         self.update()
 
     # --- zoom ---
     def set_pixels_per_second(self, pps):
         self.pixels_per_second = max(1.0, pps)
         self.update()
+
+    def set_zoom_mode(self, mode, segment_index=None):
+        """Remember the zoom mode and apply it immediately.
+
+        This is the only place the mode should change, so the widget's zoom
+        can never disagree with whatever control selects the mode.
+        """
+        if mode not in (ZOOM_FIT, ZOOM_SEGMENT):
+            raise ValueError(f"unknown zoom mode: {mode!r}")
+        self.zoom_mode = mode
+        if segment_index is not None:
+            self.zoom_segment_index = segment_index
+        self.apply_zoom()
+
+    def apply_zoom(self):
+        """Re-apply the remembered zoom mode to the current widget width."""
+        if self.zoom_mode == ZOOM_SEGMENT:
+            self.zoom_to_segment(self.zoom_segment_index)
+        else:
+            self.zoom_fit()
 
     def zoom_fit(self):
         """Fit the whole duration into the current widget width."""
@@ -162,9 +197,11 @@ class TimelineWidget(QWidget):
         self._dragging = False
 
     def resizeEvent(self, event):
-        # Re-zoom to the active segment when the widget is resized.
-        if self.segments:
-            self.zoom_to_segment(self.active_index)
+        # Re-apply the remembered zoom mode: a wider widget re-fits the whole
+        # video, or re-centres the active segment, depending on which view the
+        # user is in. Snapping to the active segment unconditionally is what
+        # made a horizontal resize undo an explicit zoom-out.
+        self.apply_zoom()
         super().resizeEvent(event)
 
     def _clamp_time(self, x):

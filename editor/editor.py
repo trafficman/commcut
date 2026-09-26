@@ -10,7 +10,7 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.diagnostics import install_excepthook
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
-from shared.timeline import TimelineWidget, Segment
+from shared.timeline import TimelineWidget, Segment, ZOOM_FIT, ZOOM_SEGMENT
 from shared.segments import (
     sidecar_path, probe_duration, require_source_video, source_video_path,
     SegmentModel,
@@ -145,13 +145,15 @@ class MediaPlayer(QMainWindow):
         # --- editing state ---
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
         self.current_index = 0
-        self.zoom_active = True
         self.tag_locks = {}  # tag key → locked value, carried across unedited segments
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
         self.ui.exportButton.clicked.connect(self.on_export)
         self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
-        self.ui.toggleZoom.setChecked(self.zoom_active)
+        # Open zoomed to the active segment. The toggle is the single source of
+        # truth for the zoom mode from here on, so the widget can never end up
+        # showing a different view than the button claims.
+        self.ui.toggleZoom.setChecked(True)
         self.ui.activeLeft.clicked.connect(lambda: self._move_active(-1))
         self.ui.activeRight.clicked.connect(lambda: self._move_active(1))
         self.ui.mergeNext.clicked.connect(self.on_merge_next)
@@ -193,12 +195,13 @@ class MediaPlayer(QMainWindow):
         self.ui.timelineWidget.update()
 
     def on_toggle_zoom(self, checked):
-        """Toggle between zoom-to-active-segment and zoom-fit-whole-video."""
-        self.zoom_active = checked
-        if checked:
-            self.ui.timelineWidget.zoom_to_segment(self.current_index)
-        else:
-            self.ui.timelineWidget.zoom_fit()
+        """Toggle between zoom-to-active-segment and zoom-fit-whole-video.
+
+        The mode is handed to the timeline widget, which remembers it and
+        re-applies it on resize, so the view survives a window resize.
+        """
+        self.ui.timelineWidget.set_zoom_mode(
+            ZOOM_SEGMENT if checked else ZOOM_FIT)
 
     def _move_active(self, delta):
         """Move the active segment index by delta, clamped to valid range."""
@@ -375,10 +378,9 @@ class MediaPlayer(QMainWindow):
         self.ui.timelineWidget.set_duration(self.segment_model.duration)
         self.ui.timelineWidget.set_segments(segments)
         self.ui.timelineWidget.set_active_index(self.current_index)
-        if self.zoom_active:
-            self.ui.timelineWidget.zoom_to_segment(self.current_index)
-        else:
-            self.ui.timelineWidget.zoom_fit()
+        self.ui.timelineWidget.set_zoom_mode(
+            ZOOM_SEGMENT if self.ui.toggleZoom.isChecked() else ZOOM_FIT,
+            self.current_index)
         self.ui.clipIgnore.blockSignals(True)
         self.ui.clipIgnore.setChecked(self.segment_model.segments[self.current_index]["ignored"])
         self.ui.clipIgnore.blockSignals(False)

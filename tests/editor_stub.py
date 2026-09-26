@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from editor.editor import MediaPlayer, _LOCK_BUTTONS, _REQUIRED_TAG_FIELDS, _TAG_FIELDS
 from shared.segments import SegmentModel
+from shared.timeline import TimelineWidget
 
 
 def ensure_qapp():
@@ -40,6 +41,8 @@ class EditorStub:
     on_end_segment = MediaPlayer.on_end_segment
     on_start_segment = MediaPlayer.on_start_segment
     on_stage = MediaPlayer.on_stage
+    on_toggle_zoom = MediaPlayer.on_toggle_zoom
+    _refresh_timeline = MediaPlayer._refresh_timeline
     _move_active = MediaPlayer._move_active
     _snap_playhead_to_active_start = lambda self: None
 
@@ -66,6 +69,17 @@ class EditorStub:
         for attr in ("clipEnd", "clipStart"):
             setattr(self.ui, attr, QPushButton())
         self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
+        # The real timeline widget plus the zoom toggle, so the shipped zoom
+        # code (on_toggle_zoom / _refresh_timeline) is what gets exercised.
+        # Shown because Qt delivers resizeEvent to a visible widget only, and
+        # a hidden one would silently skip the zoom re-apply under test.
+        self.ui.timelineWidget = TimelineWidget()
+        self.ui.timelineWidget.resize(800, 60)
+        self.ui.timelineWidget.show()
+        self.ui.toggleZoom = QPushButton()
+        self.ui.toggleZoom.setCheckable(True)
+        self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
+        self.ui.toggleZoom.setChecked(True)  # matches MediaPlayer.__init__
         # Mirrors MediaPlayer.__init__: cache the authored stylesheets so the
         # required-field outline can be toggled without clobbering them.
         self._required_base_styles = {
@@ -79,17 +93,10 @@ class EditorStub:
         self.dirty = False
         self.media_path = media_path or "test.mp4"
         self.player = type("Player", (), {"time_pos": 10.0})()
-        self._refresh_timeline = self._refresh_form_and_locks
         # Mirrors the self._refresh_timeline() call at the end of
-        # MediaPlayer.__init__, so the initial form/lock/outline state matches.
+        # MediaPlayer.__init__, so the initial form/lock/outline/zoom state
+        # matches.
         self._refresh_timeline()
-
-    def _refresh_form_and_locks(self):
-        """Mirrors MediaPlayer._refresh_timeline minus the timeline widget."""
-        self._write_tags_to_form(
-            self.segment_model.segments[self.current_index]["tags"])
-        self._refresh_lock_buttons()
-        self._refresh_required_fields()
 
     # --- helpers ---
 
@@ -133,10 +140,21 @@ class EditorStub:
 
     def go_to(self, index):
         self.current_index = index
-        self._refresh_form_and_locks()
+        self._refresh_timeline()
 
     def set_ignored(self, value):
         self.ui.clipIgnore.setChecked(value)
 
     def set_playhead(self, position):
         self.player.time_pos = position
+
+    def timeline(self):
+        return self.ui.timelineWidget
+
+    def zoom_fit_toggle(self, checked):
+        """Click the zoom toggle to its given state."""
+        self.ui.toggleZoom.setChecked(checked)
+
+    def resize_timeline(self, width):
+        """Resize the timeline widget, as a window resize would."""
+        self.ui.timelineWidget.resize(width, self.ui.timelineWidget.height())

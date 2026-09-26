@@ -259,6 +259,18 @@ A linear left-to-right walk through the segments. The editor window holds:
 | **Toggle Zoom**   | Toggle between zoom-to-active-segment and fit-whole-video.                                         |
 | **Active ←/→**    | Move `current_index` by ±1 (clamped). On any active change, snap the playhead to the new segment's start. |
 
+**Zoom mode is owned by the timeline widget, not the button.** The toggle is
+the only thing that picks a mode: `on_toggle_zoom` hands it to
+`TimelineWidget.set_zoom_mode(ZOOM_SEGMENT | ZOOM_FIT)`, the widget stores it,
+and `resizeEvent` re-applies *that* mode. This is a bug fix, not a
+refactor — `resizeEvent` used to call `zoom_to_segment(active_index)`
+unconditionally, so widening the window silently undid a zoom-to-fit while the
+toggle still showed the fit state, and the only way back was two clicks.
+`set_active_index` also updates the remembered segment, so a resize in segment
+mode re-centres on the segment currently being edited. The editor reads the
+toggle's state in `_refresh_timeline` rather than keeping a second copy of the
+mode, so the button and the view cannot drift apart.
+
 The **dirty indicator**: Stage and Undo are both `QPushButton` with
 `checkable=True`. When `self.dirty` is True, both are `checked=True` and
 `enabled=True` (colored, clickable). When False, both are `checked=False`
@@ -425,7 +437,8 @@ The shared modules are:
   `WA_NativeWindow`), and `scan_keyframes(path)` (ffprobe I-frame scan
   returning sorted timestamps).
 - `shared/timeline.py` — `TimelineWidget`, the editor's zoom/scroll segment
-  timeline (red/green/blue, ignored dimming, active highlight).
+  timeline (red/green/blue, ignored dimming, active highlight). Also owns the
+  zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
  - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
    (`sidecar_path`, `probe_duration`).
  - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
@@ -753,7 +766,7 @@ editor for folder schemes:
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself. The main
   menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 325 passing tests.
+  The full suite currently contains 343 passing tests.
 
 - Import/Export directory fields and Browse buttons are present in the UI but
   remain unwired.
@@ -871,7 +884,12 @@ Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
     (insert vs. move, and the refusal guards) in
     `tests/test_end_boundary.py`. All three drive the real `MediaPlayer`
     methods through the shared `tests/editor_stub.py` widget-backed stub, so
-    the shipped code is what gets tested.
+    the shipped code is what gets tested. Timeline zoom-mode ownership — the
+    remembered mode surviving a resize, and the editor toggle agreeing with it
+    — is covered by `tests/test_timeline_zoom.py`, which exercises the real
+    `TimelineWidget`. Note that Qt delivers `resizeEvent` to a *visible* widget
+    only, so any test that resizes a widget to check zoom behavior has to
+    `show()` it first.
  - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
    argv dispatch, and the agreement between the spec's `datas` mapping and
    `resource_path()` are covered by `tests/test_frozen_mode.py`, which

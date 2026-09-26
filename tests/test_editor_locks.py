@@ -75,7 +75,7 @@ def test_unlocking_one_lock_leaves_the_others_engaged(editor):
 def test_lock_button_survives_a_full_refresh_after_typing(editor):
     editor.set_tag("network", "Cartoon Network")
     editor.click_lock("network")
-    editor._refresh_form_and_locks()
+    editor._refresh_timeline()
 
     assert editor.checked_locks() == ["network"]
 
