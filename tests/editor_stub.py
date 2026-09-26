@@ -137,3 +137,6 @@ class EditorStub:
 
     def set_ignored(self, value):
         self.ui.clipIgnore.setChecked(value)
+
+    def set_playhead(self, position):
+        self.player.time_pos = position
