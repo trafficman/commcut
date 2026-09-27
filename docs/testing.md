@@ -35,9 +35,9 @@ keeps the code under test the *shipped* code.
   lets a test assert the exact playhead *sequence* (the boundary peek is made of
   a sequence, not of a resting position).
 
-Five test files bind the real `MediaPlayer` through `EditorStub`:
+Six test files bind the real `MediaPlayer` through `EditorStub`:
 `test_boundary_preview.py`, `test_editor_locks.py`, `test_editor_required_tags.py`,
-`test_end_boundary.py`, and `test_timeline_zoom.py`.
+`test_end_boundary.py`, `test_timeline_zoom.py`, and `test_editor_export.py`.
 `test_boundary_preview.py` additionally uses `FakeBridge`; `ensure_qapp` is
 imported more widely (`test_main_window.py`, `test_picker.py`).
 
@@ -60,7 +60,7 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
 | `test_paths.py` | strict folder scheme compilation, rendering, and sanitation |
 | `test_exporting.py` | export settings, destination planning, preflight, resume skips |
 | `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting (`Popen` mocked) |
-| `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run |
+| `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run, and the summary screen (window wiring with a substituted dialog, plus the shipped dialog itself) |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels |
 | `test_docs.py` | the documentation guard (see below) |
 
@@ -96,6 +96,14 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
   delivered while the worker is still running. The queued connection is the
   point: a direct one fires without the event loop, so it would pass against the
   original bug.
+- **A modal dialog is substituted, not the method that shows it.**
+  `test_editor_export.py` replaces `ExportSummaryDialog` as a *class* and leaves
+  `MediaPlayer._ask_export_summary` alone, so the shipped ordering still runs —
+  in particular that the dialog is released before the editor closes, which is
+  what stops the process from lingering with a hidden window still counted.
+  Stubbing the method instead would have thrown that away, and the fake records
+  `editor_enabled` at construction time because the answer comes back
+  synchronously and the editor is live again by the time the test could look.
 - **Do not let a `QThread` be collected in a test.** The editor holds the thread
   and the worker on `self` and nulls both from `thread.finished`; a test that
   drops the reference destroys a running thread, which aborts the interpreter

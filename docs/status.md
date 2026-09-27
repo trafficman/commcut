@@ -139,12 +139,24 @@ The full vision in `README.md` has three pieces; two are not started:
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
   The legacy numeric `export_segment_clips()` helper still exists for
   compatibility, but Editor export uses the named planner/executor path.
-- Export runs on a worker `QThread` behind a modal `QProgressDialog`, with a
-  working Cancel and a Resume for a cancelled run — see
-  [naming-and-organization.md](naming-and-organization.md#export-pipeline).
-  The editor is frozen for the duration, so a long batch is legible but not
+- The end of the Editing Wizard is finished: staging the last segment reports
+  that the set is complete and names **Finished - Export**, and the export
+  summary screen then reports what became of it. Both were `print()`s, which
+  go nowhere in a windowed build. Detail in
+  [segment-model.md](segment-model.md#the-end-of-editing) and
+  [naming-and-organization.md](naming-and-organization.md#the-summary-screen).
+- Export runs on a worker `QThread` behind a non-modal `QProgressDialog`, and
+  the editor is disabled for the duration, so a long batch is legible but not
   interruptible by editing; the progress bar counts clips, so it sits still for
-  the length of one long segment. The remaining threading work is the scanner's
+  the length of one long segment. A run that finishes — clean or with per-clip
+  failures — then gets a summary screen saying what was written, where, and what
+  failed, with **Back to main menu** closing the editor and handing the user back
+  to the main menu, which is still running in its own process. **Export the
+  rest** retries a partial run's unwritten clips, which is what makes a
+  per-clip failure recoverable: the preflight refuses a destination that exists,
+  so a retry needs the clips the run already wrote skipped — see
+  [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
+  The remaining threading work is the scanner's
   `scan_keyframes` pre-pass, which is still called inline from `__main__` in
   `editor/editor.py` (the `PreScanWorker` next to it is scaffolding, unwired).
 - The boundary peek has no settings toggle; it is always on at 15 frames /

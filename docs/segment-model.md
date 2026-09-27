@@ -69,7 +69,7 @@ A linear left-to-right walk through the segments. The editor window holds:
 | **Start Seg**     | `start_segment` at playhead. Left half marked `ignored=True`; right half becomes the new active segment, inheriting metadata. |
 | **Merge Next**    | `merge_next` — absorb the next segment into the active one. Used for false-positive detections.   |
 | **Skip** (check)  | Toggle `ignored` on the active segment.                                                           |
-| **Stage**         | Read form tags into the active segment, save the whole model to `.cmct`, clear `dirty`, advance `current_index`. |
+| **Stage**         | Read form tags into the active segment, save the whole model to `.cmct`, clear `dirty`, advance `current_index`. Staging the **last** segment reports that the set is complete and names **Finished - Export** — see "The end of editing" below. |
 | **Undo**          | Reload model from `.cmct` (reverts all unstaged changes), clear `dirty`.                            |
 | **Toggle Zoom**   | Toggle between zoom-to-active-segment and fit-whole-video.                                         |
 | **Active ←/→**    | Move `current_index` by ±1 (clamped). On any active change, snap the playhead to the new segment's start, with the boundary peek described below. |
@@ -193,6 +193,19 @@ small block in the same method.
 The refusal is deliberately loud. Every out-of-range case used to be a silent
 no-op, and that silence is most of what made the flow feel broken; the dialog
 names **Add Next Seg** and points at navigating to the other segment.
+
+## The end of editing
+
+`on_stage` on the last segment has nowhere to advance to, so it says so: a dialog
+that the set is complete and points at **Finished - Export**. The record is still
+written and the `.cmct` still saved first — it is a stage, not a shortcut past one.
+
+This used to be `print("Editing complete.")`, which is the same class of bug the
+export summary screen fixed: a print goes nowhere in a windowed build, so the one
+moment the user learns they are done told them nothing. The two belong together —
+Stage says the editing is finished, Export says what became of it, and the summary
+screen is where the wizard ends and hands the user back to the main menu. See
+[naming-and-organization.md](naming-and-organization.md#the-summary-screen).
 
 ## Required record fields
 

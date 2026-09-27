@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from editor.editor import (
+    ACTION_KEEP_EDITING,
     ExportWorker,
     MediaPlayer,
     _LOCK_BUTTONS,
@@ -228,6 +229,44 @@ class FakeDialog:
         self.canceled.emit()
 
 
+class FakeSummaryDialog:
+    """Stands in for ExportSummaryDialog, whose exec() would block the run.
+
+    Substituted as a class, so the shipped `_ask_export_summary` still runs --
+    including the release-before-close ordering that stops the editor's process
+    from lingering with the dialog's window still counted. Records itself on
+    the stub it is parented to, and reads its answer from that stub's queue.
+    """
+
+    def __init__(self, summary, on_open_folder=None, parent=None):
+        self.summary = summary
+        self.on_open_folder = on_open_folder
+        self.parent = parent
+        self.exec_calls = 0
+        self.deleted = False
+        # The freeze has to be asserted at the moment the screen goes up, since
+        # the answer comes back synchronously here and the editor is live again
+        # by the time a test could look.
+        self.editor_enabled_when_shown = parent.editor_enabled
+        parent.summaries_seen.append(summary)
+        parent.summary_dialogs_seen.append(self)
+
+    def exec(self):
+        self.exec_calls += 1
+        return 1
+
+    def chosen_action(self):
+        answers = self.parent.summary_answers
+        return answers.pop(0) if answers else ACTION_KEEP_EDITING
+
+    def deleteLater(self):
+        self.deleted = True
+
+    def open_export_folder(self):
+        """What the Open export folder button does."""
+        self.on_open_folder(self.summary.out_dir)
+
+
 class EditorStub:
     """Minimal MediaPlayer surface covering the tag and segment code paths."""
 
@@ -258,6 +297,7 @@ class EditorStub:
     # The export path, driven through the same stub: on_export and its handlers
     # are the shipped wiring, and the QThread is the one thing stubbed out.
     on_export = MediaPlayer.on_export
+    _begin_export = MediaPlayer._begin_export
     _prepare_export = MediaPlayer._prepare_export
     _choose_resume_skips = MediaPlayer._choose_resume_skips
     _start_export = MediaPlayer._start_export
@@ -268,6 +308,7 @@ class EditorStub:
     _on_export_stopped = MediaPlayer._on_export_stopped
     _report_export_outcome = MediaPlayer._report_export_outcome
     _show_export_cancelled = MediaPlayer._show_export_cancelled
+    _ask_export_summary = MediaPlayer._ask_export_summary
     closeEvent = MediaPlayer.closeEvent
 
     def __init__(self, segments, duration=120.0, media_path=None):
@@ -329,6 +370,14 @@ class EditorStub:
         self._resume_skips = frozenset()
         self._close_after_export = False
         self._last_export_outcome = None
+        # What the summary screen was shown, what it answered, and the dialogs
+        # themselves so a test can assert on their lifecycle. The dialog is the
+        # one substituted widget, for the same reason QProgressDialog is:
+        # exec() would block the run.
+        self.summaries_seen = []
+        self.summary_dialogs_seen = []
+        self.summary_answers = []
+        self.opened_folders = []
         # setEnabled() is a QWidget method the stub does not inherit, so the
         # export freeze is observable through a recorded flag instead. That is
         # the property the tests care about: the editor is frozen for the run.
@@ -346,6 +395,15 @@ class EditorStub:
 
     def close(self):
         self.closed = True
+
+    # --- summary screen seams ---
+
+    def _open_export_folder(self, out_dir):
+        """Records the request instead of reaching the desktop."""
+        self.opened_folders.append(out_dir)
+
+    def last_summary(self):
+        return self.summaries_seen[-1] if self.summaries_seen else None
 
     # --- helpers ---
 

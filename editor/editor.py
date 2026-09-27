@@ -30,17 +30,20 @@ from shared.exporting import (
 )
 from shared.ffmpeg import (
     execute_export_plan,
+    ExportClipFailure,
     ExportExecutionResult,
     plan_export,
 )
 
 # Qt libs
 from PySide6.QtWidgets import (
-    QMainWindow, QApplication, QProgressDialog, QStyle, QSplashScreen, QMessageBox
+    QMainWindow, QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox,
+    QPlainTextEdit, QProgressDialog, QPushButton, QStyle, QSplashScreen,
+    QVBoxLayout,
 )
 from shared.ui_loader import UiLoader
-from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
-from PySide6.QtGui import QPixmap, QColor
+from PySide6.QtCore import Qt, QFile, QObject, QUrl, Signal, Slot, QThread
+from PySide6.QtGui import QDesktopServices, QPixmap, QColor
 
 
 # scan_keyframes and _KEYFRAME_EPSILON live in shared.mpv now.
@@ -74,11 +77,159 @@ class ExportOutcome:
     that ran and then had per-clip problems is a `result` with failures, not an
     error. `out_dir` is carried rather than recomputed by the window, so the log
     line states the directory the batch actually used.
+
+    `skipped` is how many planned clips the run left alone because an earlier
+    run in this same session had already written them. It is the planner's
+    count, not a window-side guess, and it stays 0 on the paths where no plan
+    exists.
     """
     out_dir: str = ""
     result: ExportExecutionResult | None = None
     cancelled: bool = False
     error: str | None = None
+    skipped: int = 0
+
+
+@dataclass(frozen=True)
+class ExportSummary:
+    """What a finished run accomplished, in the shape the summary screen shows.
+
+    Built from an `ExportOutcome` by `_export_summary` and nothing else, so the
+    numbers on screen are the batch's own rather than a recount. A clean run
+    always has at least one written clip: `plan_export` refuses an empty batch,
+    so "nothing was written and nothing failed" is not an outcome that can
+    reach this screen.
+    """
+    written: int
+    failed: int
+    skipped: int
+    out_dir: str
+    failures: tuple[ExportClipFailure, ...]
+
+
+def _export_summary(outcome):
+    """Describe a finished, non-cancelled run. Pure: no Qt, no filesystem."""
+    result = outcome.result
+    return ExportSummary(
+        written=result.succeeded,
+        failed=result.failed,
+        skipped=outcome.skipped,
+        out_dir=outcome.out_dir,
+        failures=result.failures,
+    )
+
+
+#: What the user chose on the summary screen. `menu` closes the editor, whose
+#: process exit hands the still-open main menu back to the foreground.
+ACTION_MENU = 'menu'
+ACTION_KEEP_EDITING = 'keep_editing'
+ACTION_EXPORT_REST = 'export_rest'
+
+
+def _describe_failures(failures):
+    """One block per failed clip: which segment, which file, and why."""
+    return "\n\n".join(
+        f"Segment {failure.segment_index + 1} — {failure.destination}\n"
+        f"{failure.message}"
+        for failure in failures
+    )
+
+
+class ExportSummaryDialog(QDialog):
+    """What the run accomplished, and what to do next.
+
+    Shown over the editor once a batch has actually run, whether it wrote every
+    clip or only some. It is built in code rather than loaded from a `.ui` file
+    because it is a transient modal with no layout worth designing: no resource
+    path, nothing to add to the packaged `.ui` payload, and the export path
+    already builds its own widget here (the progress dialog).
+
+    The editor stays disabled behind this for as long as it is up, so the
+    buttons are the only live controls on screen and the answer is deliberate.
+    `on_open_folder` is the window's own folder-opening action rather than
+    something this class does itself, which keeps the desktop out of the dialog.
+    """
+
+    def __init__(self, summary, on_open_folder=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export complete")
+        self._action = None
+        self._on_open_folder = on_open_folder
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._headline(summary))
+        if summary.skipped:
+            layout.addWidget(QLabel(
+                f"{summary.skipped} clip(s) were already written and left alone."))
+        layout.addWidget(self._destination_label(summary.out_dir))
+        if summary.failures:
+            layout.addWidget(QLabel(
+                f"{summary.failed} clip(s) failed and were not written:"))
+            layout.addWidget(self._failures_box(summary.failures))
+        layout.addLayout(self._button_row(summary))
+
+    def _headline(self, summary):
+        if summary.failed:
+            text = (f"Exported {summary.written} clip(s). "
+                    f"{summary.failed} failed.")
+        else:
+            text = f"Exported {summary.written} clip(s)."
+        label = QLabel(text)
+        label.setWordWrap(True)
+        return label
+
+    def _destination_label(self, out_dir):
+        """The destination, selectable so it can be copied out of the dialog."""
+        label = QLabel(out_dir)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        return label
+
+    def _failures_box(self, failures):
+        box = QPlainTextEdit(_describe_failures(failures))
+        box.setReadOnly(True)
+        box.setMinimumSize(420, 120)
+        return box
+
+    def _button_row(self, summary):
+        row = QHBoxLayout()
+        if self._on_open_folder is not None:
+            open_folder = QPushButton("Open export folder")
+            open_folder.clicked.connect(
+                lambda: self._on_open_folder(summary.out_dir))
+            row.addWidget(open_folder)
+        row.addStretch(1)
+
+        keep_editing = QPushButton("Keep editing")
+        keep_editing.clicked.connect(lambda: self._choose(ACTION_KEEP_EDITING))
+        row.addWidget(keep_editing)
+
+        # Only worth offering when this run wrote something: with nothing
+        # written there is nothing to skip, and a plain re-export of the same
+        # batch would simply fail the same way.
+        if summary.failed and summary.written:
+            export_rest = QPushButton("Export the rest")
+            export_rest.clicked.connect(
+                lambda: self._choose(ACTION_EXPORT_REST))
+            row.addWidget(export_rest)
+
+        back = QPushButton("Back to main menu")
+        back.setDefault(True)
+        back.clicked.connect(lambda: self._choose(ACTION_MENU))
+        row.addWidget(back)
+        return row
+
+    def _choose(self, action):
+        self._action = action
+        self.accept()
+
+    def chosen_action(self):
+        """The button pressed, or keep-editing if the dialog was dismissed.
+
+        Escape and the window close button land here too, and staying in the
+        editor is the safe reading of an unasked question.
+        """
+        return self._action or ACTION_KEEP_EDITING
 
 
 class ExportWorker(QObject):
@@ -144,6 +295,7 @@ class ExportWorker(QObject):
             out_dir=self.out_dir,
             result=result,
             cancelled=result.cancelled,
+            skipped=len(plan.skipped),
         ))
 
 
@@ -627,7 +779,13 @@ class MediaPlayer(QMainWindow):
         self.dirty = False
         self._update_stage_button()
         if self.current_index + 1 >= self.segment_model.segment_count():
-            print("Editing complete.")
+            QMessageBox.information(
+                self,
+                "Every segment is staged",
+                "That was the last segment.\n\n"
+                "When the tags look right, press Finished - Export to write the "
+                "clips into your library.",
+            )
             return
         self._activate(self.current_index + 1)
 
@@ -638,6 +796,16 @@ class MediaPlayer(QMainWindow):
         planning alone walks the whole export tree and the transcode is a
         blocking subprocess per segment: doing either on the GUI thread leaves
         the editor looking hung for the length of a long source.
+        """
+        self._begin_export()
+
+    def _begin_export(self, skip_destinations=None):
+        """Prepare a batch and start it, asking about a resume only if asked to.
+
+        `skip_destinations` is the already-decided answer, passed by the caller
+        that has just asked the user -- the summary screen's "Export the rest".
+        Going through `on_export` instead would ask the resume question a
+        second time about a run the user had already answered for.
         """
         if self._export_thread is not None:
             return
@@ -650,9 +818,10 @@ class MediaPlayer(QMainWindow):
             return
         model, schemes, out_dir = prepared
 
-        skip_destinations = self._choose_resume_skips()
         if skip_destinations is None:
-            return
+            skip_destinations = self._choose_resume_skips()
+            if skip_destinations is None:
+                return
         self._start_export(model, schemes, out_dir, skip_destinations)
 
     def _prepare_export(self):
@@ -692,21 +861,22 @@ class MediaPlayer(QMainWindow):
             return None
 
     def _choose_resume_skips(self):
-        """Ask whether to resume after a cancelled run, or None to not start.
+        """Ask whether to resume after a run that did not finish, or None to not
+        start.
 
-        The clips already written are still on disk, and the preflight refuses
-        any destination that exists, so a plain retry would fail on every one
-        of them. "Start over" is kept as the honest alternative: it leaves the
-        skip list empty, so the refusal names each existing file and the user
-        can decide what to do with it.
+        A cancelled run and a run left with per-clip failures both leave clips
+        on disk, and the preflight refuses any destination that exists, so a
+        plain retry would fail on every one of them. "Start over" is kept as the
+        honest alternative: it leaves the skip list empty, so the refusal names
+        each existing file and the user can decide what to do with it.
         """
         if not self._resume_skips:
             return ()
         count = len(self._resume_skips)
         answer = QMessageBox.question(
             self,
-            "Resume the cancelled export?",
-            f"{count} clip(s) were written before you cancelled.\n\n"
+            "Skip the clips already written?",
+            f"{count} clip(s) from your last export are already written.\n\n"
             "Export the rest, skipping those?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -813,19 +983,28 @@ class MediaPlayer(QMainWindow):
                 f"export to {outcome.out_dir}: "
                 f"{result.succeeded} written, {result.failed} failed, "
                 f"{'cancelled' if outcome.cancelled else 'complete'}"
+                + (f", {outcome.skipped} skipped" if outcome.skipped else "")
             )
-            # A cancelled run is the only thing worth resuming, and only the
-            # clips it actually committed.
+            # A run that did not finish is the only thing worth resuming, and
+            # only the clips it actually committed -- so a cancelled run and a
+            # run with per-clip failures both arm the list, and a clean one
+            # leaves it empty. Either way the entries are this session's own
+            # committed destinations and nothing else.
             self._resume_skips = (
                 frozenset(result.written_relative_paths)
-                if outcome.cancelled
+                if (outcome.cancelled or result.failures)
                 else frozenset()
             )
         if self._export_thread is not None:
             self._export_thread.quit()
 
     def _on_export_stopped(self):
-        """Tear the run down and report. Reached only from thread.finished."""
+        """Tear the run down and report. Reached only from thread.finished.
+
+        The window is deliberately left disabled here: every way out of
+        `_report_export_outcome` either re-enables it or closes it, so a live
+        looking editor is never sitting behind the summary screen.
+        """
         dialog = self._export_dialog
         if dialog is not None:
             dialog.reset()
@@ -839,40 +1018,83 @@ class MediaPlayer(QMainWindow):
         self._export_thread = None
         self._export_worker = None
         self._export_cancel = None
-        self.setEnabled(True)
 
         if self._close_after_export:
             self._close_after_export = False
+            self.setEnabled(True)
             self.close()
             return
         outcome, self._last_export_outcome = self._last_export_outcome, None
         if outcome is None:
             log("export thread ended without reporting an outcome")
+            self.setEnabled(True)
             return
         self._report_export_outcome(outcome)
 
     def _report_export_outcome(self, outcome):
-        """Say what happened, and only when something did."""
+        """Say what happened, then leave the window in the state it implies.
+
+        A refusal and a cancel have nothing to summarize, so they keep their
+        message boxes and hand the editor straight back. A run that actually
+        transcoded gets the summary screen: what was written, where it went,
+        and what failed, with the choice of what to do next -- because
+        "Finished - Export" is the end of the wizard and the user is owed a way
+        out of it.
+        """
         if outcome.error is not None:
             QMessageBox.warning(self, "Export could not start", outcome.error)
+            self.setEnabled(True)
             return
         result = outcome.result
         if outcome.cancelled:
+            self.setEnabled(True)
             self._show_export_cancelled(result)
             return
-        if result.failures:
-            details = "\n\n".join(
-                f"Segment {failure.segment_index + 1} — {failure.destination}\n"
-                f"{failure.message}"
-                for failure in result.failures[:3]
-            )
-            if len(result.failures) > 3:
-                details += f"\n\n…and {len(result.failures) - 3} more failure(s)."
-            QMessageBox.warning(
-                self,
-                "Export completed with errors",
-                f"{result.failed} clip(s) failed:\n\n{details}",
-            )
+
+        summary = _export_summary(outcome)
+        action = self._ask_export_summary(summary)
+        if action == ACTION_MENU:
+            self.close()
+            return
+        if action == ACTION_EXPORT_REST:
+            # The written clips are the ones this run produced, so they are the
+            # only destinations skipped -- the same invariant a cancelled run
+            # resumes under. The list is cleared because the question it stood
+            # for has been asked and answered.
+            written = tuple(result.written_relative_paths)
+            self._resume_skips = frozenset()
+            self.setEnabled(True)
+            self._begin_export(skip_destinations=written)
+            return
+        self.setEnabled(True)
+
+    def _ask_export_summary(self, summary):
+        """Show the summary and return the button the user pressed.
+
+        The dialog is released before the answer is acted on, so by the time
+        anything else happens it is no longer a top-level window: the editor is
+        then the last one, and closing it ends the process.
+        """
+        dialog = ExportSummaryDialog(
+            summary, on_open_folder=self._open_export_folder, parent=self)
+        dialog.exec()
+        action = dialog.chosen_action()
+        dialog.deleteLater()
+        return action
+
+    def _open_export_folder(self, out_dir):
+        """Reveal the export folder in the desktop's file browser.
+
+        A method on the window rather than something the dialog does itself, so
+        the one place that touches the desktop is also the one a test can drive.
+        """
+        try:
+            opened = QDesktopServices.openUrl(QUrl.fromLocalFile(out_dir))
+        except OSError as error:
+            log_exception(f"could not open {out_dir}", error)
+            return
+        if not opened:
+            log(f"the desktop declined to open {out_dir}")
 
     def _show_export_cancelled(self, result):
         """Name what survived, since those files are the user's to keep."""

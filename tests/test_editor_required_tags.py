@@ -62,6 +62,19 @@ def warnings(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def information(monkeypatch):
+    """Capture QMessageBox.information instead of showing a modal dialog."""
+    calls = []
+
+    def record(parent, title, text, *args, **kwargs):
+        calls.append((title, text))
+
+    monkeypatch.setattr(
+        "editor.editor.QMessageBox.information", staticmethod(record))
+    return calls
+
+
 def _editor(qapp, tmp_path, **segment):
     base = {"start": 0.0, "ignored": False, "tags": {}}
     base.update(segment)
@@ -250,6 +263,28 @@ def test_stage_treats_whitespace_only_as_missing(qapp, tmp_path, warnings):
     assert warnings
     assert "Network" in warnings[0][1]
     assert not (tmp_path / "compilation.cmct").exists()
+
+
+def test_staging_the_last_segment_points_at_export(qapp, tmp_path, information):
+    """The end-of-editing signal used to be a print().
+
+    A print goes nowhere in a windowed build, so staging the final segment --
+    the moment the user finds out they are done -- told them nothing at all.
+    The record still has to be written first: this is a stage, not a shortcut.
+    """
+    editor = _editor(qapp, tmp_path)
+    editor.go_to(1)
+    editor.fill_required()
+
+    editor.on_stage()
+
+    assert information, "the user has to be told they have finished"
+    title, text = information[0]
+    assert title == "Every segment is staged"
+    assert "Finished - Export" in text
+    assert (tmp_path / "compilation.cmct").exists()
+    # The last segment is the last one; there is nowhere to advance to.
+    assert editor.current_index == 1
 
 
 def test_staged_record_round_trips_through_the_sidecar(qapp, tmp_path, warnings):

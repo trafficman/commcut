@@ -14,14 +14,26 @@ import time
 
 import pytest
 from PySide6.QtCore import QObject, Qt, Signal, QThread
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import (
+    QApplication, QLabel, QPlainTextEdit, QPushButton,
+)
 
 import editor.editor as editor_module
-from editor.editor import ExportOutcome, ExportWorker
+from editor.editor import (
+    ACTION_EXPORT_REST,
+    ACTION_KEEP_EDITING,
+    ACTION_MENU,
+    ExportOutcome,
+    ExportSummary,
+    ExportSummaryDialog,
+    ExportWorker,
+    _describe_failures,
+)
 from editor_stub import (
     EditorStub,
     FakeDialog,
     FakeExportWorker,
+    FakeSummaryDialog,
     FakeThread,
     ensure_qapp,
 )
@@ -84,6 +96,10 @@ class FakeMessageBox:
 def no_modal_dialogs(monkeypatch):
     FakeMessageBox.reset()
     monkeypatch.setattr(editor_module, "QMessageBox", FakeMessageBox)
+    # The summary screen is a modal exec() like the message box, so it is
+    # substituted as a class: _ask_export_summary still runs as shipped, which
+    # is what keeps the release-before-close ordering under test.
+    monkeypatch.setattr(editor_module, "ExportSummaryDialog", FakeSummaryDialog)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +149,11 @@ def install_batch(monkeypatch, plan=None, result=None):
     Returns the `seen` dict the stubs append to: the plan_export arguments
     (model, schemes, out_dir, skip destinations) and the execute_export_plan
     arguments.
+
+    The default result writes the one clip the default plan holds, so a test
+    that does not care about the outcome still gets a coherent one -- a batch
+    that wrote nothing and failed nothing is a state `plan_export` refuses to
+    produce, so it must not be what a test asserts on.
     """
     seen = {"plans": [], "calls": []}
 
@@ -143,11 +164,19 @@ def install_batch(monkeypatch, plan=None, result=None):
     def fake_execute(source_path, plan_, crf=18, ffmpeg_path=None,
                      on_progress=None, should_cancel=None):
         seen["calls"].append((plan_, on_progress, should_cancel))
-        return result if result is not None else make_result()
+        if result is not None:
+            return result
+        return make_result(written=("Network/Clip 1.mp4",))
 
     monkeypatch.setattr(editor_module, "plan_export", fake_plan_export)
     monkeypatch.setattr(editor_module, "execute_export_plan", fake_execute)
     return seen
+
+
+@pytest.fixture
+def qapp():
+    """The offscreen QApplication the dialog tests build real widgets with."""
+    return ensure_qapp()
 
 
 @pytest.fixture
@@ -459,7 +488,12 @@ def test_resume_offers_to_skip_and_hands_the_list_to_the_planner(
     run_batch(threads)
 
     assert FakeMessageBox.questions_seen
-    assert "1 clip(s) were written" in FakeMessageBox.questions_seen[0][1]
+    title, text = FakeMessageBox.questions_seen[0]
+    # The list can come from a cancelled run or a partial one, so the wording
+    # cannot name only the first.
+    assert "cancel" not in title.lower()
+    assert "cancel" not in text.lower()
+    assert "1 clip(s) from your last export" in text
     assert seen["plans"][0][3] == ("Network/Clip 1.mp4",)
 
 
@@ -525,22 +559,232 @@ def test_a_planning_refusal_is_reported_not_swallowed(export_editor, monkeypatch
 # Finishing
 # ---------------------------------------------------------------------------
 
-def test_a_clean_export_reports_nothing_and_re_enables_the_editor(
-    export_editor,
-    monkeypatch,
-):
+def test_a_clean_export_summarizes_what_it_wrote(export_editor, monkeypatch):
+    """A clean run used to say nothing at all.
+
+    Not because a quiet success is wrong, but because "Finished - Export" is
+    the end of the wizard: the user pressed it, waited, and was dropped back
+    into a timeline with no word about whether the clips landed or where. The
+    log had the answer and a packaged build has no console.
+    """
     editor, threads = export_editor
-    install_batch(monkeypatch, result=make_result(written=("Network/Clip 1.mp4",)))
+    seen = install_batch(
+        monkeypatch, result=make_result(written=("Network/Clip 1.mp4",))
+    )
 
     editor.on_export()
     run_batch(threads)
 
-    # A modal "done!" on a 40-minute success is noise; the log has it.
+    summary = editor.last_summary()
+    assert summary.written == 1
+    assert summary.failed == 0
+    assert summary.skipped == 0
+    assert summary.out_dir == seen["plans"][0][2]
     assert FakeMessageBox.warnings_seen == []
     assert FakeMessageBox.information_seen == []
-    assert editor.editor_enabled is True
     assert editor._export_thread is None
     assert editor._export_dialog is None
+
+
+def test_the_editor_stays_frozen_behind_the_summary(export_editor, monkeypatch):
+    """A live-looking editor behind a modal is the thing to avoid.
+
+    Re-enabling the window before reporting would leave it greyed only by the
+    dialog, and the dialog's own answer is the only thing that should decide
+    whether the editor comes back.
+    """
+    editor, threads = export_editor
+    install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert editor.summaries_seen
+    dialog = editor.summary_dialogs_seen[-1]
+    assert dialog.editor_enabled_when_shown is False
+    assert editor.closed is False
+
+
+def test_keep_editing_hands_the_editor_back(export_editor, monkeypatch):
+    editor, threads = export_editor
+    editor.summary_answers = [ACTION_KEEP_EDITING]
+    install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert editor.editor_enabled is True
+    assert editor.closed is False
+
+
+def test_back_to_main_menu_closes_the_editor(export_editor, monkeypatch):
+    """The editor is the last window, so closing it ends the process -- which is
+    what brings the main menu, still running in its own process, back to the
+    foreground. Nothing is relaunched and nothing else is closed."""
+    editor, threads = export_editor
+    editor.summary_answers = [ACTION_MENU]
+    install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert editor.closed is True
+
+
+def test_the_summary_is_released_before_the_editor_closes(
+    export_editor,
+    monkeypatch,
+):
+    """Ordering, not cosmetics.
+
+    Qt ends the event loop when the last top-level window goes. A summary
+    dialog that was merely hidden would still count, the editor's process would
+    linger with nothing on screen, and leaving the wizard would look like it had
+    done nothing at all.
+    """
+    editor, threads = export_editor
+    editor.summary_answers = [ACTION_MENU]
+    install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    dialog = editor.summary_dialogs_seen[-1]
+    assert dialog.exec_calls == 1
+    assert dialog.deleted is True
+
+
+def test_the_summary_names_the_clips_a_resume_left_alone(export_editor, monkeypatch):
+    """A resume skipped clips on purpose; the screen has to say so.
+
+    Without the count, "Exported 8 clip(s)" after a 12-clip session reads as
+    four clips having vanished.
+    """
+    editor, threads = export_editor
+    editor._resume_skips = frozenset({"Network/Clip 1.mp4"})
+    FakeMessageBox.reset(FakeMessageBox.Yes)
+    plan = make_plan(1)
+    skipped_plan = ExportPlan(
+        export_root=plan.export_root,
+        clips=plan.clips,
+        skipped=(
+            PlannedExportClip(
+                segment_index=0,
+                start=0.0,
+                duration=2.0,
+                relative_components=("Network", "Clip 1.mp4"),
+            ),
+        ),
+    )
+    install_batch(
+        monkeypatch,
+        plan=skipped_plan,
+        result=make_result(written=("Network/Clip 2.mp4",)),
+    )
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert editor.last_summary().skipped == 1
+    assert editor.last_summary().written == 1
+
+
+def test_per_clip_failures_are_named_in_the_summary(export_editor, monkeypatch):
+    editor, threads = export_editor
+    install_batch(
+        monkeypatch,
+        result=make_result(
+            written=("Network/Clip 1.mp4",),
+            failures=(
+                ExportClipFailure(1, "Network/Clip 2.mp4", "encoder failed"),
+            ),
+        ),
+    )
+
+    editor.on_export()
+    run_batch(threads)
+
+    summary = editor.last_summary()
+    assert summary.written == 1
+    assert summary.failed == 1
+    text = _describe_failures(summary.failures)
+    assert "Segment 2 — Network/Clip 2.mp4" in text
+    assert "encoder failed" in text
+
+
+def test_a_partial_run_can_export_the_rest(export_editor, monkeypatch):
+    """The retry that could not happen before.
+
+    The preflight refuses a destination that exists, and a run with per-clip
+    failures used to stash nothing, so pressing Export again planned the whole
+    batch and refused every clip the last run had already written. The screen
+    offers the retry with the skips already answered, so the resume question is
+    not asked a second time about a run the user has just dealt with.
+    """
+    editor, threads = export_editor
+    editor.summary_answers = [ACTION_EXPORT_REST]
+    seen = install_batch(
+        monkeypatch,
+        plan=make_plan(2),
+        result=make_result(
+            written=("Network/Clip 1.mp4",),
+            failures=(
+                ExportClipFailure(1, "Network/Clip 2.mp4", "encoder failed"),
+            ),
+        ),
+    )
+    FakeMessageBox.reset()
+
+    editor.on_export()
+    run_batch(threads)
+
+    # The retry started on its own rather than waiting to be asked for. The
+    # skips were handed over explicitly, so the resume question -- which the
+    # user has just answered by pressing this button -- is not asked again,
+    # and the list that stood for it is consumed.
+    assert len(threads) == 2
+    assert editor._export_thread is not None
+    assert FakeMessageBox.questions_seen == []
+    assert editor._resume_skips == frozenset()
+
+    run_batch(threads)
+
+    # And it skipped exactly what the run before it wrote.
+    assert len(seen["plans"]) == 2
+    assert seen["plans"][1][3] == ("Network/Clip 1.mp4",)
+
+
+def test_a_partial_run_arms_the_resume_list(export_editor, monkeypatch):
+    editor, threads = export_editor
+    install_batch(
+        monkeypatch,
+        result=make_result(
+            written=("Network/Clip 1.mp4",),
+            failures=(
+                ExportClipFailure(1, "Network/Clip 2.mp4", "encoder failed"),
+            ),
+        ),
+    )
+
+    editor.on_export()
+    run_batch(threads)
+
+    # Even if the user keeps editing instead of retrying, the clips this run
+    # wrote are remembered -- they are the only destinations that may be
+    # skipped, and only because this session wrote them.
+    assert editor._resume_skips == {"Network/Clip 1.mp4"}
+
+
+def test_the_summary_can_open_the_export_folder(export_editor, monkeypatch):
+    editor, threads = export_editor
+    seen = install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    editor.summary_dialogs_seen[-1].open_export_folder()
+
+    assert editor.opened_folders == [seen["plans"][0][2]]
 
 
 def test_a_completed_export_is_recorded_in_the_log(export_editor, monkeypatch):
@@ -561,25 +805,33 @@ def test_a_completed_export_is_recorded_in_the_log(export_editor, monkeypatch):
     assert f"export to {out_dir}: 1 written, 0 failed, complete" in lines
 
 
-def test_per_clip_failures_still_name_the_segments(export_editor, monkeypatch):
+def test_a_completed_run_names_how_many_clips_it_skipped(export_editor, monkeypatch):
     editor, threads = export_editor
+    lines = []
+    monkeypatch.setattr(editor_module, "log", lines.append)
+    plan = make_plan(1)
     install_batch(
         monkeypatch,
-        result=make_result(
-            written=("Network/Clip 1.mp4",),
-            failures=(
-                ExportClipFailure(1, "Network/Clip 2.mp4", "encoder failed"),
+        plan=ExportPlan(
+            export_root=plan.export_root,
+            clips=plan.clips,
+            skipped=(
+                PlannedExportClip(
+                    segment_index=0,
+                    start=0.0,
+                    duration=2.0,
+                    relative_components=("Network", "Clip 0.mp4"),
+                ),
             ),
         ),
+        result=make_result(written=("Network/Clip 1.mp4",)),
     )
 
     editor.on_export()
     run_batch(threads)
 
-    title, text = FakeMessageBox.warnings_seen[0]
-    assert title == "Export completed with errors"
-    assert "Segment 2 — Network/Clip 2.mp4" in text
-    assert "encoder failed" in text
+    assert any(line.endswith("1 written, 0 failed, complete, 1 skipped")
+               for line in lines)
 
 
 def test_the_dialog_is_reset_and_released_when_the_batch_ends(
@@ -601,6 +853,129 @@ def test_the_dialog_is_reset_and_released_when_the_batch_ends(
     assert thread.deleted is True
     assert editor._export_worker is None
     assert editor._export_dialog is None
+
+
+# ---------------------------------------------------------------------------
+# The summary screen itself
+#
+# Everything above drives the window with a substituted dialog, so the shipped
+# one is built here: its layout, and -- the part that actually bites -- the
+# wiring from each button to its action.
+# ---------------------------------------------------------------------------
+
+def _button(dialog, label):
+    """The button with this exact text, or a failure that says what was there."""
+    buttons = dialog.findChildren(QPushButton)
+    for button in buttons:
+        if button.text() == label:
+            return button
+    raise AssertionError(
+        f"no {label!r} button; found {[b.text() for b in buttons]}")
+
+
+def make_summary(written=1, failed=0, skipped=0, out_dir="C:/export"):
+    return ExportSummary(
+        written=written,
+        failed=failed,
+        skipped=skipped,
+        out_dir=out_dir,
+        failures=(
+            (ExportClipFailure(1, "Network/Clip 2.mp4", "encoder failed"),)
+            if failed else ()
+        ),
+    )
+
+
+def test_the_summary_offers_a_way_out_and_a_way_to_stay(qapp):
+    dialog = ExportSummaryDialog(make_summary())
+
+    _button(dialog, "Back to main menu").click()
+    assert dialog.chosen_action() == ACTION_MENU
+
+    dialog = ExportSummaryDialog(make_summary())
+    _button(dialog, "Keep editing").click()
+    assert dialog.chosen_action() == ACTION_KEEP_EDITING
+
+
+def test_a_dismissed_summary_keeps_the_user_in_the_editor(qapp):
+    """Escape and the window close button both land here.
+
+    Leaving the wizard is a decision, not the absence of one.
+    """
+    dialog = ExportSummaryDialog(make_summary())
+
+    assert dialog.chosen_action() == ACTION_KEEP_EDITING
+
+
+def test_a_clean_summary_offers_no_retry(qapp):
+    """There is nothing to retry: every planned clip was written."""
+    dialog = ExportSummaryDialog(make_summary())
+
+    with pytest.raises(AssertionError):
+        _button(dialog, "Export the rest")
+
+
+def test_a_failed_run_offers_the_retry_it_can_actually_perform(qapp):
+    dialog = ExportSummaryDialog(
+        make_summary(written=1, failed=1))
+
+    _button(dialog, "Export the rest").click()
+    assert dialog.chosen_action() == ACTION_EXPORT_REST
+
+
+def test_a_run_that_wrote_nothing_offers_no_retry(qapp):
+    """Nothing was written, so there is nothing to skip.
+
+    Re-exporting the same batch would only fail the same way, and the failure
+    is on screen for the user to act on first.
+    """
+    dialog = ExportSummaryDialog(
+        make_summary(written=0, failed=1))
+
+    with pytest.raises(AssertionError):
+        _button(dialog, "Export the rest")
+
+
+def test_the_summary_shows_where_the_clips_went(qapp):
+    dialog = ExportSummaryDialog(make_summary(out_dir="C:/library/export"))
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "C:/library/export" in labels
+    assert "Exported 1 clip(s)." in labels
+
+
+def test_the_summary_names_the_failures_and_the_skips(qapp):
+    dialog = ExportSummaryDialog(
+        make_summary(written=2, failed=1, skipped=3))
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert any("Exported 2 clip(s)." in text and "1 failed." in text
+               for text in labels)
+    assert any("3 clip(s) were already written" in text for text in labels)
+    body = "".join(box.toPlainText() for box in dialog.findChildren(QPlainTextEdit))
+    assert "Segment 2 — Network/Clip 2.mp4" in body
+    assert "encoder failed" in body
+
+
+def test_open_export_folder_asks_the_window_for_the_runs_directory(qapp):
+    asked = []
+    dialog = ExportSummaryDialog(
+        make_summary(out_dir="C:/library/export"),
+        on_open_folder=asked.append,
+    )
+
+    _button(dialog, "Open export folder").click()
+
+    # Opening the folder is not leaving, so the screen stays up.
+    assert asked == ["C:/library/export"]
+    assert dialog.chosen_action() == ACTION_KEEP_EDITING
+
+
+def test_a_summary_with_no_folder_action_offers_no_folder_button(qapp):
+    dialog = ExportSummaryDialog(make_summary())
+
+    with pytest.raises(AssertionError):
+        _button(dialog, "Open export folder")
 
 
 # ---------------------------------------------------------------------------

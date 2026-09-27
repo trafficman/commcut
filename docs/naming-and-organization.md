@@ -250,9 +250,10 @@ rather than as an `ExportClipFailure`: the user stopped it on purpose, and
 
 ### Cancelling, and resuming
 
-A cancelled run leaves the clips it already committed on disk. The preflight
-refuses any destination that exists, so a plain retry would fail on every one of
-them. The editor therefore remembers the run's own committed destinations
+A run that did not finish — cancelled, or left with per-clip failures — leaves the
+clips it already committed on disk. The preflight refuses any destination that
+exists, so a plain retry would fail on every one of them. The editor therefore
+remembers the run's own committed destinations
 (`ExportExecutionResult.written_relative_paths`) and offers to resume:
 
 - **Export the rest** passes them to `plan_export(..., skip_destinations=...)`,
@@ -266,9 +267,17 @@ them. The editor therefore remembers the run's own committed destinations
 
 The skip list is `MediaPlayer` state, not something derived from the filesystem,
 and that is the invariant: **a destination is only ever skipped if this editing
-session's own cancelled run wrote it.** A skip inferred from "the file is
+session's own unfinished run wrote it.** A skip inferred from "the file is
 already there" would let a re-tagged clip be silently skipped forever, and would
 quietly weaken the no-clobber rule. Reopening the editor discards the list.
+
+A cancelled run stashes the list and points at the Export button; a run with
+per-clip failures gets **Export the rest** on its summary screen. Both arm the
+same list from the same place, because both are the same situation. Only the
+clips that run committed are in it, so the invariant above is untouched by
+treating a partial run like a cancelled one: nothing is skipped that this
+session did not write.
+
 
 Skipping is a *destination* decision and is applied after the segment's tags are
 canonicalized and required-validated, so a skipped clip with an incomplete
@@ -291,9 +300,55 @@ closes itself and emits `canceled` when its value reaches the maximum, which
 would read as the user cancelling a successful export and then offer to resume a
 batch that had nothing to resume.
 
-Every outcome is written to `commcut.log` via `shared.diagnostics.log`. A dialog
-appears only when something needs saying: a refusal, per-clip failures, or a
-cancel. A clean export gets none.
+Every outcome is written to `commcut.log` via `shared.diagnostics.log`. A run that
+actually transcoded gets a summary screen; a refusal and a cancel, which have nothing
+to summarize, keep their message boxes.
+
+### The summary screen
+
+`editor/editor.py:ExportSummaryDialog`, shown from `_report_export_outcome` over an
+editor that stays disabled behind it. It replaced silence on success, which was
+defensible as a default and wrong here: **Finished - Export** is the end of the
+wizard, and a user who pressed it, waited out a long batch, and was dropped back into
+a timeline with no word about whether the clips landed had been told nothing about
+the one thing they asked for.
+
+It is built in code rather than loaded from a `.ui` file, because it is a transient
+modal with no layout worth designing — no `resource_path`, nothing to add to the
+packaged `.ui` payload, and the export path already builds its own widget there
+(the progress dialog).
+
+What it says: how many clips were written, how many failed, the destination folder as
+selectable text, and how many clips a resume left alone. That last one is not
+decoration — "Exported 8 clip(s)" after a 12-clip session otherwise reads as four
+clips having vanished, and the count only exists because `ExportOutcome` now carries
+the planner's `len(plan.skipped)` rather than the window guessing at it.
+
+Three ways out, plus one that is not a way out:
+
+| Button | Effect |
+|---|---|
+| **Back to main menu** | Closes the editor. Its process ends, and the main menu — which has been running in its own process behind the editor the whole time — comes back to the foreground. Nothing is relaunched and no second menu is created. |
+| **Keep editing** | Closes the dialog and hands the editor back. The default for Escape and the window close button, because leaving the wizard should be a decision rather than the absence of one. |
+| **Export the rest** | Retries the clips this run did not write, skipping the ones it did. Offered only when something was both written and failed; with nothing written there is nothing to skip, and a plain re-export would fail identically. |
+| **Open export folder** | Opens the destination in the desktop's file browser, and leaves the summary up. |
+
+The numbers come from `_export_summary(outcome)`, a pure function over the outcome,
+so what is on screen is the batch's own accounting rather than a recount. A clean
+run always has at least one written clip: `plan_export` refuses an empty batch.
+
+**Back to main menu** is the only mechanism for leaving, and it is deliberately just
+`close()`. An editor started from source with no menu behind it still closes; the
+button cannot promise a window it has no way to verify exists.
+
+**The dialog is released before the editor closes.** Qt ends the event loop when the
+last top-level window goes away, so a summary that was only hidden would keep that
+count above zero, the editor's process would linger with nothing on screen, and
+leaving the wizard would look like it had done nothing at all.
+
+The **Export the rest** path passes its skips to `_begin_export(skip_destinations=...)`
+rather than re-entering `on_export`, so the resume question is not asked a second time
+about a run the user has just answered for.
 
 ## Settings Scheme UI
 
