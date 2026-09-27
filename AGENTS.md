@@ -1,1065 +1,157 @@
 # AGENTS.md
 
-Context for AI coding agents working on the **commcut** project. This file
-captures the project scope, current architecture, key data models, and the
-conventions/gotchas you need to be productive here.
+Orientation for AI coding agents working on the **commcut** project: what it is,
+where things live, the rules that silently break a build, and an index into
+`docs/`. The detail lives in `docs/` — start at
+[docs/README.md](docs/README.md) and read the one document that owns the area you
+are changing. Keep this file short; it is loaded into every session.
 
 ## What this project is
 
-**commcut** is a Python/PySide6 desktop app for managing a personal library
-of "filler" clips (commercials, promos, bumps) ripped from television. The
-full vision — described in `README.md` — has three pieces:
+**commcut** is a Python/PySide6 desktop app for managing a personal library of
+"filler" clips (commercials, promos, bumps) ripped from television. The full
+vision, described in [README.md](README.md), has three pieces:
 
 1. **Library organization** — a folder/naming scheme driven by per-clip tags
    (Title, Network, Block, Filler Type, Year, Time Period, Show, Special,
    Length, Information).
-2. **Rename Wizard** — batch-rename already-cut clips using the tag scheme.
-3. **Editing Wizard** — load a compilation video (multiple clips back to
-   back), auto-detect boundaries, let the user review/adjust, and smart-cut
-   each segment out as a separate file.
+2. **Rename Wizard** — batch-rename already-cut clips. Not built.
+3. **Editing Wizard** — load a compilation video, auto-detect boundaries, let the
+   user review/adjust, and cut each segment out as a separate file. This is the
+   current focus.
 
-The working tree currently contains two Wizard modules — the **Editing
-Wizard** (`editor/`) and the **Segment Scanner** (`scanner/`) — plus the
-standalone **Settings** window and the `shared/` library they build on. The
-Rename Wizard and smart-cut export are not yet built; named library export is
-now wired end to end through the current full-segment transcode.
+The tree holds the Editing Wizard (`editor/`), its Segment Scanner pre-process
+(`scanner/`), the source picker that fronts them, the Settings window, and the
+`shared/` library they build on. [docs/status.md](docs/status.md) says exactly
+what exists today and what is next — read it before building something that may
+already exist.
+
+## Commands
+
+Run from the project root.
+
+| Task | Command |
+|---|---|
+| Run the app | `python main.py` |
+| Run one window on its own | `python editor/editor.py <video>`, `python scanner/scanner.py <video>` (each window is its own process; `<video>` is optional) |
+| Tests | `python -m pytest` — one file: `python -m pytest tests/test_paths.py` |
+| Build the portable app | `python packaging/build.py` — see [packaging/README.md](packaging/README.md) |
+
+There is no pytest config: `tests/conftest.py` puts the project root on
+`sys.path` and redirects the log out of the source tree. Widget tests set
+`QT_QPA_PLATFORM=offscreen` themselves.
 
 ## Layout
 
 ```
 commcut/
-├── README.md                # Project spec (source of truth for scope)
-├── AGENTS.md                # This file
-├── bin/                     # Bundled binaries, one subfolder per OS
-│   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
-│   ├── linux/               # Linux binaries (placeholders, none shipped yet)
-│   └── mac/                 # macOS binaries (placeholders, none shipped yet)
-├── import/                 # Source videos; the picker offers what is in here
-├── temp/                   # Scratch output (e.g. 2-min scanner preview clips)
-├── main.py                  # Application entry point: argv dispatcher + main menu
-├── mainwindow.py            # MainWindow: launches the picker / settings as
-│                            # child processes
-├── mainwindow.ui            # Qt Designer file for the main menu
-├── packaging/               # PyInstaller build (see "Packaging" below)
-│   ├── commcut.spec         # onefile (default) and onedir modes
-│   ├── build.py             # pre-flight checks + portable folder assembly
-│   └── README.md            # build instructions and the shipped layout
-├── picker/                  # Source video picker (front door of the wizard)
-│   ├── picker.py            # Lists import/, launches the scanner on the choice
-│   └── pickerwindow.ui      # List + status line + Refresh/Open/Cancel
-├── settings/                # Standalone Settings window
-│   ├── settings.py          # Scheme persistence, validation, previews, atomic save
-│   └── settingswindow.ui    # File/folder scheme editors and live previews
-├── editor/                  # The Editing Wizard (current focus)
-│   ├── editor.py            # Entry point: Editor window, editing state machine,
-│   │                        # splash flow, PreScanWorker scaffolding
-│   └── editorwindow.ui      # Qt Designer file; promoted TimelineWidget
-├── scanner/                 # The Segment Scanner (detector + review)
-│   ├── scanner.py           # Entry point: 2-min preview clip load, mpv playback,
-│   │                        # transport, two marker timelines, detector sliders
-│   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
-│   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
-├── shared/                  # Cross-module library (editor + scanner + settings)
-│   ├── environment.py       # frozen-aware roots, per-OS binaries, launch_command
-│   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
-│   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
-│   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
-│   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
-│   ├── sources.py           # import/ policy: what can be opened, what is offered
-│   ├── ffmpeg.py            # clip_to_temp, export_segment_clips (simple transcode)
-│   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
-│   ├── naming.py            # Filename scheme policy + render_filename()
-│   ├── paths.py             # Folder scheme validation, sanitization, safe components
-│   ├── exporting.py         # Settings snapshot, destination planner, export preflight
-│   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
-├── prototypes/              # Earlier exploration / alternatives
-│   ├── BasicUI/             # First prototype
-│   └── VideoEditor/         # Pre-rename copy of the editor module
+├── main.py                  # entry point: argv dispatcher (--window <name>) + main menu
+├── mainwindow.py/.ui        # main menu (Editor, Settings)
+├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv — never bundled into the exe
+├── import/                  # the only videos that can be opened; user drops them in
+├── export/                  # named clips are written here
+├── temp/                    # scratch (the scanner's 2-minute preview)
+├── commcut.log              # beside the exe; override with COMMCUT_LOG
+├── packaging/               # PyInstaller spec + build script (docs/packaging.md)
+├── picker/                  # source video picker — the front door of the wizard
+├── scanner/                 # Segment Scanner: detect boundaries, hand off
+├── editor/                  # Editing Wizard: segments, tags, export
+├── settings/                # file + folder scheme editors
+├── shared/                  # the library all four windows build on
+├── tests/                   # pytest suite (docs/testing.md)
+├── docs/                    # the documents indexed below
+└── prototypes/              # historical; the active code is editor/ and scanner/
 ```
 
-## Packaging
-
-`packaging/build.py` produces `dist/commcut-portable/`:
-
-```
-commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the .ui files)
-bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
-import/             drop compilation videos in here; the picker lists them
-export/             named clips are written here
-```
-
-~412 MB total. It is a **portable smoke-test build**, not a release: no
-installer, no shortcuts, no uninstaller, no signing. See
-`packaging/README.md` for build instructions and the smoke-test checklist.
-
-**`bin/win/` is deliberately not bundled into the exe.** The app opens every
-window as a separate process, and a onefile build re-extracts its whole
-payload per launch, so bundling ~366 MB of binaries would mean re-extracting a
-third of a gigabyte every time a window opened. Kept beside the exe, the
-payload is only ~46 MB and every window reaches ready in **~1.3 s**.
-
-### The two roots
-
-Unfrozen there is one root and the distinction is academic. Frozen there are
-two, and conflating them is the most common way this app breaks in a build:
-
-| | Resolves to (frozen) | Holds |
-|---|---|---|
-| `resource_root()` | `sys._MEIPASS` | the four `.ui` files |
-| `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, `export/`, `temp/`, `commcut.log` |
-
-The payload directory is **wiped on exit**, so it is never the place for
-anything that has to survive. `install_root()` is what `settings.json` and
-every export resolve against.
-
-`_bin_dir()` used to derive from `__file__`, which frozen points into the
-payload — it now branches on `sys.frozen` and resolves against
-`install_root()` instead.
-
-### `contents_directory="."` (onedir only)
-
-PyInstaller 6 onedir splits its output: the exe lands in `dist/commcut/` but
-data goes to `dist/commcut/_internal/`. Since `bin/<os>/` is resolved against
-`dirname(sys.executable)`, the default layout would make the app look for
-ffmpeg next to the exe and not find it. The spec sets `contents_directory="."`
-so the payload sits beside the exe. Onefile has no contents directory and
-ignores it. `packaging/build.py` asserts `_internal/` is absent.
-
-### `.ui` files keep their source subfolders
-
-`resource_path()` takes a project-root-relative path and is called with the
-same expression whether or not the app is frozen — `resource_path("settings",
-"settingswindow.ui")`. Flattening the four `.ui` files into the payload root
-would make that correct only in a packaged build and wrong from source, so the
-spec mirrors the source layout instead.
-`tests/test_frozen_mode.py::test_source_and_payload_layouts_agree` reads the
-spec's `datas` list and compares it against the code's view, so a `.ui` file
-that moves cannot be silently mis-bundled.
-
-**Do not use `SCRIPT_DIR` for a resource.** It is
-`dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen
-it points into the payload. Use `resource_path()`.
-
-### Child windows are re-executions of the same binary
-
-Every window is a separate process, and that is deliberate: constructing an
-mpv player (direct3d) while another top-level window is foreground deadlocks
-on Windows. From source each window is its own `.py` script; frozen the scripts
-do not exist on disk, so `shared/environment.launch_command(name, *args)`
-returns `[sys.executable, "--window", name, *args]` and `main.py` dispatches it.
-`main.py` is therefore the only entry point in the spec, and all five windows
-expose a `run()` function that both paths share — so the packaged build cannot
-drift from the source build.
-
-Any `*args` are forwarded verbatim into that window's `run(*args)`, which is
-how the source video reaches the scanner and the editor. Dropping that
-forwarding is silent: the windows would fall back to their default source and
-open a different video than the one that was scanned. A window's own
-`if __name__ == "__main__":` block must therefore pass `sys.argv[1:]` through —
-`sys.exit(run(*sys.argv[1:]))`, which is exactly what `main.py` does with the
-text after `--window <name>`. `sys.exit(run())` throws the argument away, and
-because the fallback is `import/test.mp4` — which usually has a `.cmct` beside
-it — the window silently hands off to the editor on a *different* video rather
-than failing.
-
-`launch_command` is the only place that knows how to open a window. Do not
-hand-assemble argv elsewhere.
-
-**A window folder that shadows its own package.** `scanner/` has no
-`__init__.py`, so `scanner` is only a *namespace* portion, and CPython ranks a
-regular module found **anywhere** on `sys.path` above a namespace portion
-collected elsewhere. Running `python scanner/scanner.py` puts `scanner/` at
-`sys.path[0]`, where `scanner.py` sits — so `scanner` resolves to that file and
-`from scanner.marker_timeline import ...` fails with *"'scanner' is not a
-package"*. That is precisely the command `launch_command` builds from source,
-which is how the picker starts the scanner, and it does not reproduce when the
-same module is imported as `scanner.scanner`. `scanner/scanner.py` therefore
-branches on `__package__` to import its sibling by whichever name is actually
-reachable. Adding a sibling import to any other window needs the same guard, and
-the test has to run in a **fresh interpreter**: once `scanner` is in
-`sys.modules` as the package, an in-process reproduction succeeds against broken
-code.
-
-### Windows DLL loading
-
-`ctypes.util.find_library` — which python-mpv calls at *import* time to find
-libmpv — scans `%PATH%` for each candidate name and returns the first absolute
-hit, which it then loads with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. So
-prepending `bin/<os>` to `%PATH%` is **load-bearing**, and it has to happen
-before `import mpv`. python-mpv's import is deferred inside
-`create_mpv_player` precisely so that ordering can be guaranteed.
-`os.add_dll_directory` is registered too, and its handle is kept in a module
-global — a dropped handle unregisters the directory and surfaces much later as
-a bare `OSError` from ctypes with nothing pointing at the cause.
-
-`mpv`'s `vo` comes from `environment.video_output()` (per-OS), not a literal
-`'direct3d'`. The `WA_NativeWindow` attribute on the video frame exists for
-that Windows driver, so changing it there is a break, not a portability tweak.
-
-### Diagnostics
-
-The build is `console=False`, so there is no console. `shared/diagnostics.py`
-owns reporting:
-
-- `log()` appends to `commcut.log` next to the exe, replacing the bare
-  `print()` calls that were the only channel and were invisible in a packaged
-  build. Override the path with `COMMCUT_LOG`.
-- `install_excepthook()` writes a traceback to the log and shows a
-  `QMessageBox` naming it.
-- `fatal()` handles failures *before* a window exists (missing source video,
-  unwritable install root, bad `--window` argument) and returns a real exit
-  code. `main()` wraps dispatch in it so nothing reaches the bootloader.
-
-The spec sets `disable_windowed_traceback=True` for the same reason: the
-default makes the windowed bootloader pop a **modal** traceback dialog that the
-process waits on, so an undismissable error looks exactly like a hang.
-
-### The source video is picked from the import folder
-
-This is an alpha: the app deliberately does not let anyone point it at an
-arbitrary path. The only videos that can be opened are the ones in the app's
-own `import/` folder, and the user picks one in the **picker** window
-(`picker/picker.py`), which the main menu's **Editor** button opens.
-
-`shared/sources.py` owns the whole policy, and it is deliberately the only way
-to turn an argument into a source path:
-
-- `list_source_videos(folder=None)` — what the picker offers. Filters on
-  `VIDEO_EXTENSIONS`, because `import/` ships a `README.txt` placeholder (empty
-  folders do not survive a zip) and it must never appear as a selectable video.
-  Sorted by name, case-insensitively, and reports `size_bytes` and
-  `has_sidecar`.
-- `resolve_import_video(value, folder)` — the *policy* check: the path must
-  resolve inside `import/` (real paths, so a symlink in the folder cannot reach
-  a file outside it, and `commonpath` so `import_backup` is not "inside"
-  `import`) and must be a video extension. This is what actually enforces the
-  restriction — the picker is only a convenience over it, and a hand-edited
-  `--window scanner <path>` still has to pass.
-- `require_source_video(value, folder)` — the same check plus existence, and it
-  owns the "nothing to open" message. Without it a missing video fails as a
-  *codec* problem: ffprobe returns nothing, a placeholder `.cmct` is written
-  with `duration=0.0`, and mpv then reports an opaque load failure.
-- `DEFAULT_SOURCE_NAME` is the no-argument fallback (`import/test.mp4`) so a
-  direct `python scanner/scanner.py` and any build predating the picker still
-  work. The picker always supplies an explicit path.
-
-**The path is an argument, not shared state.** It travels
-`main menu → picker → scanner → editor`, because each window is its own
-process: `launch_command(name, *args)` appends it, `main.py`'s
-`--window <name> [args]` dispatcher forwards it, and each `run(source=None)`
-passes it to its window constructor (`ScannerWindow(source_path)`,
-`MediaPlayer(media_path)`). `tests/test_source_handoff.py` guards the shapes
-that regressed quietly: a window that resolves its own source instead of using
-the one it was given. The dependency direction is one-way —
-`shared/sources.py` imports `sidecar_path` from `shared/segments.py`; segments
-never imports sources.
-
-
-## The .cmct sidecar format
-
-Segments are stored as a JSON sidecar next to the source video with extension
-`.cmct`. The path is derived by swapping the extension (`compilation.mp4`
-→ `compilation.cmct`).
-
-**Transition-point model.** The source video is tiled contiguously by
-segments. Each segment entry is just its start time and metadata; the end
-is derived as the next entry's start (or `duration` for the last one). This
-makes overlaps and gaps structurally impossible.
-
-```json
-{
-  "source": "compilation.mp4",
-  "duration": 120.0,
-  "segments": [
-    {"start": 0.0,   "ignored": false, "tags": {}},
-    {"start": 42.5,  "ignored": true,  "tags": {}},
-    {"start": 78.2,  "ignored": false, "tags": {}}
-  ]
-}
-```
-
-Tag fields (from the readme's scheme): `title`, `network`, `block`,
-`filler_type`, `year`, `time_period`, `show`, `special`, `length`,
-`information`. Title must be unique per segment and has **no lock button**;
-all other tags do. The base required record fields are Title, Network,
-Filler Type, and Time Period; Year is optional. Those four are enforced on
-the front end as well as in the export planner — see "Required record
-fields" below. Folder resolution requires the three structure tags and
-filename validation requires Title.
-
-The segment data model and persistence live in
-`shared/segments.py:SegmentModel`. Operations:
-`place_end_boundary(i, pos)`, `end_segment(i, pos)`, `start_segment(i, pos)`,
-`merge_next(i)`, plus `placeholder(source, duration)` and `save/load` for
-`.cmct`.
-
-## The editing state machine
-
-A linear left-to-right walk through the segments. The editor window holds:
-
-- `self.segment_model: SegmentModel` — the in-memory working state.
-- `self.current_index: int` — the **Active Segment**.
-- `self.tag_locks: dict` — locked tag values that carry across unedited
-  segments (working state, not persisted to `.cmct`).
-- `self.dirty: bool` — True when the in-memory model has changes since the
-  last `Stage` (which writes to `.cmct`).
-
-### Operations on the Active Segment
-
-| Button            | Effect                                                                                              |
-|-------------------|-----------------------------------------------------------------------------------------------------|
-| **End Seg**       | `place_end_boundary` at the playhead. See "End Seg" below — it either splits the active segment or moves its end boundary forward. |
-| **Start Seg**     | `start_segment` at playhead. Left half marked `ignored=True`; right half becomes the new active segment, inheriting metadata. |
-| **Merge Next**    | `merge_next` — absorb the next segment into the active one. Used for false-positive detections.   |
-| **Skip** (check)  | Toggle `ignored` on the active segment.                                                           |
-| **Stage**         | Read form tags into the active segment, save the whole model to `.cmct`, clear `dirty`, advance `current_index`. |
-| **Undo**          | Reload model from `.cmct` (reverts all unstaged changes), clear `dirty`.                            |
-| **Toggle Zoom**   | Toggle between zoom-to-active-segment and fit-whole-video.                                         |
-| **Active ←/→**    | Move `current_index` by ±1 (clamped). On any active change, snap the playhead to the new segment's start, with the boundary peek described below. |
-
-**The boundary peek.** A segment boundary is a transition point and therefore
-usually a black frame, so resting the playhead there is correct but useless to
-look at: stepping through segments with Active ←/→ showed nothing but black. On
-an active-segment change the playhead now seeks to the boundary, seeks
-`SEGMENT_PREVIEW_FRAMES` (15) frames past it, waits `SEGMENT_PREVIEW_DWELL_MS`
-(450), and seeks back to the exact boundary. The resting position is still the
-cut point, which is what **End Seg** and **Start Seg** read, so nothing about
-the editing model changes — the peek only ever lends the picture.
-
-All of that lives in `shared/mpv.py:BoundaryPreview`, which owns the
-single-shot `QTimer`. The editor drives it through
-`MediaPlayer._activate(index, preview=True)`, the single place a *step through
-segments* changes the active segment (`_move_active`, `on_start_segment`,
-`on_stage`); `on_undo` passes `preview=False` and the initial load snaps
-directly. The peek is skipped, leaving a plain seek to the boundary, when
-`frames` is 0/None, when the frame rate is not known yet, or when mpv is
-playing (a seek out and back would stutter mid-playback).
-
-**A pending peek is always given up before the playhead is used for anything
-else**, because a timer that fires 450ms later would otherwise move the
-playhead out from under an action in progress. `cancel()` is called by
-`on_seek_requested` (timeline scrub), `on_step_frames`,
-`on_step_keyframe`, `on_transport_clicked`, `on_end_segment`,
-`on_start_segment`, `on_stage`, `on_undo`, and `on_export`, plus every call to
-`_snap_playhead_to_active_start`. As a second line of defence the return seek
-also skips itself when `bridge.position` has drifted more than
-`_PREVIEW_POSITION_EPSILON` from where the peek left it.
-
-`BoundaryPreview.frames` is the off switch a future settings key would drive —
-assigning `0` restores the original snap-to-boundary behavior — and
-`dwell_ms`/`_timer.setInterval` tune the delay. There is no settings UI for it
-yet; it is always on at the constants above.
-
-**Zoom mode is owned by the timeline widget, not the button.** The toggle is
-the only thing that picks a mode: `on_toggle_zoom` hands it to
-`TimelineWidget.set_zoom_mode(ZOOM_SEGMENT | ZOOM_FIT)`, the widget stores it,
-and `resizeEvent` re-applies *that* mode. This is a bug fix, not a
-refactor — `resizeEvent` used to call `zoom_to_segment(active_index)`
-unconditionally, so widening the window silently undid a zoom-to-fit while the
-toggle still showed the fit state, and the only way back was two clicks.
-`set_active_index` also updates the remembered segment, so a resize in segment
-mode re-centres on the segment currently being edited. The editor reads the
-toggle's state in `_refresh_timeline` rather than keeping a second copy of the
-mode, so the button and the view cannot drift apart.
-
-The **dirty indicator**: Stage and Undo are both `QPushButton` with
-`checkable=True`. When `self.dirty` is True, both are `checked=True` and
-`enabled=True` (colored, clickable). When False, both are `checked=False`
-and `enabled=False` (greyed out, unclickable). The `_update_stage_button`
-helper drives both from the single `self.dirty` flag.
-
-### Locks (tag carry-over)
-
-Locks are session-level and **pinned**: `self.tag_locks[key] = value` is
-captured when the user checks a toggle, and is deliberately *not* updated by
-field edits. A lock is a value that propagates to later segments, so a field
-that stops matching its pin is a segment deliberately deviating from the
-lock — not a reason to repoint the lock. `_inherited_tags()` filters out
-empty pins, so an empty lock carries nothing and the export-time
-materialization in `shared/exporting.py` skips it the same way.
-
-Lock *button* state is derived, not imperative: `_refresh_lock_buttons()`
-checks a lock iff its key is in `tag_locks` **and** the field currently holds
-the pinned value. `on_tag_edited` re-derives it on every keystroke, so a
-toggle switches off the moment its field stops matching and back on as soon as
-it matches again. The derivation is deliberately independent of whether the
-segment has been edited — deriving it from `_is_segment_edited()` (which
-reads the model, and the model is written on every keystroke) used to force
-all nine buttons unchecked as soon as you typed a tag, and made every
-previously staged segment read as unlocked. A staged segment whose tag still
-matches a pin shows as locked; one whose value deviates shows as unlocked
-while the pin stays held for later segments.
-
-Consequence: editing a field that is currently locked disengages that toggle,
-and clicking the disengaged toggle re-pins the new value. Locking an empty
-field is allowed but disengages as soon as anything is typed into it.
-
-On navigation to an **unedited** segment (all model tags empty), the form
-pre-fills from `self.tag_locks`. On an **edited** segment, the form shows the
-stored tags. Title is excluded from the lock system, and a segment created
-by **End Seg** / **Start Seg** inherits **only the locked tag values**
-(`_inherited_tags()`), so the new segment, the form, and the export-time
-materialization in `shared/exporting.py` all agree on what carries over.
-
-## End Seg
-
-A segment's end and the next segment's start are the **same stored value**,
-so "put my end boundary here" has two possible answers.
-`shared/segments.py:SegmentModel.place_end_boundary` decides between them and
-returns one of four outcome codes (`END_BOUNDARY_INSERTED`, `_MOVED`,
-`_NO_CHANGE`, `_BLOCKED`):
-
-| Playhead | Outcome | Effect |
-|----------|---------|--------|
-| Inside the active segment | `INSERTED` | Delegates to `end_segment`; a new segment is created and keeps the active index. |
-| Past the end, still inside the next segment | `MOVED` | Sets `segments[i+1]["start"] = position`. |
-| Exactly on a boundary, or at a video edge | `NO_CHANGE` | Nothing happens. |
-| At or beyond the next segment's end | `BLOCKED` | Nothing happens, **and the editor says so**. |
-
-The guard is `end(i) < position < end(i+1)`, where `end(i+1)` is
-`segments[i+2]["start"]` or `duration` for the last segment. That is what
-stops End Seg from eating several segments: a playhead inside segment `i+2`
-is refused rather than clamped, because absorbing a whole segment is what
-**Add Next Seg** (`merge_next`) is for. `position == end(i+1)` is blocked too,
-since it would leave that segment with no duration at all.
-
-Moving the boundary necessarily resizes both neighbours, because they share
-the value. No tags or `ignored` flags are touched, so an already-staged
-neighbour keeps its record and only its duration changes. The invariant that
-starts strictly increase is preserved by construction.
-
-A position **at or before** the active segment's start is still a no-op; only
-the forward direction is implemented. The backward case (moving the previous
-segment's end back to the playhead) is the natural next addition and is a
-small block in the same method.
-
-The refusal is deliberately loud. Every out-of-range case used to be a silent
-no-op, and that silence is most of what made the flow feel broken; the dialog
-names **Add Next Seg** and points at navigating to the other segment.
-
-## The main menu
-
-`main.py` is the application entry point. It calls
-`shared.environment.setup_environment(__file__)`, constructs `MainWindow` from
-`mainwindow.py`, and runs the event loop. `MainWindow` loads `mainwindow.ui`
-through the shared `UiLoader` and `setCentralWidget`, matching the Settings
-window's structure.
-
-Two buttons: **Editor** and **Settings**.
-
-**"Editor" launches the picker, not the editor.** The picker chooses which video
-in `import/` to work on; the scanner is then the pre-process phase of the
-Editing Wizard — it detects clip boundaries and hands off to the editor itself
-— so picker, scanner, and editor are one journey, not three menu items. The
-window says so in a hint label and a tooltip, since "Editor" alone does not.
-
-Children are launched with `shared.environment.launch_command(name, *args)`, the
-same mechanism the picker uses to hand the chosen video to the scanner and the
-scanner uses to hand it to the editor. Three
-reasons: the menu **stays open in the background** (it never waits on or
-observes the child, so there is no need to reopen it on child exit), each
-window gets its own Qt event loop and its own mpv instance, and it sidesteps
-the Windows mpv D3D hazard where constructing a player while another
-top-level window is foreground can deadlock. A launch that fails — an unknown
-window name, or a missing script when running from source — is reported with a
-`QMessageBox` rather than allowed to escape into the event loop.
-
-`setup_environment` resolves the project root as `install_root()`: the source
-tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
-covers the launcher, the failure paths, and the project-root resolution from
-every entry point.
-
-## Required record fields
-
-Title, Network, Filler Type, and Time Period are required on every segment
-that will be exported. The rule lives in one place —
-`shared/exporting.py:missing_required_tags(tags)` returns the canonical keys
-that are absent or whitespace-only — and both the export preflight
-(`_validate_required_tags`) and the editor use it, so the two can't drift.
-
-**Ignored segments are exempt.** `plan_export` skips them entirely
-(`if segment.get("ignored"): continue`), so the editor must not demand tags
-for them either; Skip is how a user discards a false-positive detection, and
-requiring a full record for it would make that workflow impossible.
-
-In the editor, `_missing_required_labels()` reports the gap in *display* order
-(Title, Network, Type, Time Period) from the **form**, not the model, so the
-check reflects what the user is looking at. It gates three things:
-
-- `on_stage` refuses the stage outright — nothing is written to the model, the
-  `.cmct` sidecar is not created or modified, the active index does not
-  advance, and the dialog names the missing fields plus the Skip escape
-  hatch.
-- `on_export` runs the same check *before* persisting, so Export cannot write
-  an incomplete record to the sidecar. (It previously saved first and only
-  discovered the problem inside the preflight, after the bad write.)
-- `_refresh_required_fields()` outlines the missing fields in red. It is
-  recomputed on every keystroke, on the Skip toggle, and on every segment
-  change, so the outline always states what Stage will demand right now.
-
-Note that the `.cmct` is still *expected* to contain empty tags for segments
-the user has never staged — lock materialization happens at export time, not
-at save time. The front-end rule applies to what a user actively stages and to
-the active segment on export, not to the whole file.
-
-## Architecture
-
-The editor, scanner, and Settings window use the common library under
-`shared/`. Each entry point calls `shared.environment.setup_environment(__file__)`
-near the top — it puts the install root on `sys.path` (so `shared.*` resolves
-when running the script directly) and makes the per-OS `bin/<os>/` folder
-discoverable, which is how mpv finds `libmpv` and how the ffmpeg/ffprobe call
-sites resolve to the bundled versions.
-
-The shared modules are:
-
-- `shared/environment.py` — the two roots (`resource_root()` for bundled
-  read-only data, `install_root()` for user data and `bin/<os>/`),
-  `resource_path(*parts)`, `setup_environment(script_path)` (sys.path + making
-  the bundled binaries discoverable), `get_binary_path(name)` (per-OS
-  resolution under `bin/<os>/`, `.exe` on Windows), `launch_command(name)`
-  (argv to open a child window), `video_output()` (per-OS mpv `vo`), and
-  `ensure_app_folders()`. This is the cross-platform binary resolution that
-  used to live in `core.py`.
-- `shared/diagnostics.py` — `log()`, `log_exception()`, `install_excepthook()`,
-  and `fatal()`. Everything diagnostic, because a windowed build has no
-  console.
-- `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel),
-  `create_mpv_player` (wraps `mpv.MPV` for a `QFrame`, sets
-  `WA_NativeWindow`), `scan_keyframes(path)` (ffprobe I-frame scan
-  returning sorted timestamps), and `BoundaryPreview` (the editor's boundary
-  peek).
-- `shared/timeline.py` — `TimelineWidget`, the editor's zoom/scroll segment
-  timeline (red/green/blue, ignored dimming, active highlight). Also owns the
-  zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
- - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
-   (`sidecar_path`, `probe_duration`).
- - `shared/sources.py` — the import/ policy: `list_source_videos` (what the
-   picker offers), `resolve_import_video` (what a window will accept),
-   `require_source_video` (both, plus a readable "nothing to open" message).
- - `shared/ffmpeg.py` — ffmpeg helpers (`clip_to_temp`, and `export_segment_clips`
-   for the simple per-segment transcode; the future home of the smart-cut
-   export).
- - `shared/scheme.py` — shared tag aliases and canonical-name resolution plus
-   the public AST (`LiteralNode`, `TagNode`, `PipeNode`, `GroupNode`), lenient
-   filename parsing, strict diagnostic parsing for path validation, and
-   conditional node rendering. Existing filename syntax remains tolerant.
- - `shared/naming.py` — filename policy and `render_filename()`. It re-exports
-   the shared tag helpers, keeps `{title}` as the filename requirement, and
-   supports `{a,b}` fallback, `[...]` AND groups, `[{a}|{b}]` OR groups,
-   nested groups, and `\`-escaping.
- - `shared/paths.py` — restricted folder-scheme compiler and resolver.
-   `compile_folder_scheme()` validates the path-specific grammar;
-   `render_folder_components()` sanitizes tag leaves and returns safe,
-   display-cased relative components; `format_folder_components()` is for
-   previews. Portable component sanitation also lives here for reuse by
-   filename export.
- - `shared/exporting.py` — non-Qt settings snapshot and pure named-export
-   planner. It validates the segment model and every destination, enforces the
-   four required tags, compiles both schemes, materializes session tag locks,
-   and rejects duplicate, existing, case-variant, reparse-point, traversal,
-   and byte-limit conflicts before ffmpeg starts.
- - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
-   promoted custom widgets reliably; register a class with
-   `register_widget` before `load()`.
-
-### The MpvBridge pattern
-
-Both the editor and scanner communicate with libmpv through a single
-**`MpvBridge(QObject)`** that owns the mpv player and exposes:
-
-- **Qt signals** (state up): `pauseChanged`, `positionChanged`,
-  `durationChanged`, `fileLoaded`, `playbackEnded`. These are fed by
-  `player.observe_property(...)` callbacks. **Observers fire on mpv's worker
-  thread; emitting Qt signals is thread-safe and lands on the GUI thread.**
-- **Methods** (commands down): `toggle_play`, `seek_exact`, `step_frames`,
-  `set_keyframes`, `next_keyframe`, `prev_keyframe`, `load_file`,
-  `load_and_play`.
-- **Read-only properties** (state up, on demand rather than by signal):
-  `video_fps`, `position`, `paused`, `duration`. These exist so the editor
-  does not have to reach into `player` for a one-off read; `BoundaryPreview`
-  is the first user of `position`/`paused`/`duration`.
-
-The editor/scanner windows and widgets never read mpv state directly — they
-only mirror what the bridge announces via signals.
-
-`shared/mpv.py` also owns **`BoundaryPreview(QObject)`**, the boundary peek
-described in the editing state machine above. It is bridge-driven rather than
-mpv-driven, which keeps its timer and cancel logic testable without libmpv or
-a video — `tests/test_boundary_preview.py` drives it through a `FakeBridge`
-that records the seek sequence.
-
-## Splash flow (pre-work before the window appears)
-
-`__main__` in both the editor and the scanner shows a `QSplashScreen`, then
-runs `scan_keyframes` (via ffprobe) while it's up. The scan is currently
-synchronous on the GUI thread — it's typically sub-second for a 2-minute
-preview. `PreScanWorker` is scaffolding in the editor for future off-thread
-stages, not yet wired into `__main__`.
-
-**Hard-won gotcha:** mpv's Direct3D device initialization hangs when
-another top-level window (the splash) is the active window at construction
-time. Close the splash *before* constructing the mpv-backed widget.
-`app.processEvents()` is called once after `splash.show()` to ensure the
-splash actually paints.
-
-## The Scanner window
-
-The scanner (`scanner/scanner.py`) is the detector + review half of the
-Editing Wizard. It mirrors the editor's splash/mpv flow, and loads a
-2-minute stream-copied preview of the source via `shared/ffmpeg.clip_to_temp`
-into `temp/` (fast, lossless, small clip — the full video isn't loaded until
-"Finished").
-
-Its UI (`scannerwindow.ui`) has: an embedded video frame, two
-`MarkerTimelineWidget`s ("Scanner Preview" and "User Marked"), transport
-controls (play/pause, frame ±, keyframe ±), a segment-controls row
-(Undo, Place Boundary), detector sliders (Minimum Black Frames 0–40,
-Black Levels 0–100), and a scan row (Test Scan, Finished — Scan Full
-Source Video).
-
-What's wired in `ScannerWindow.__init__`: loading the clipped preview,
-transport + frame/keyframe stepping, feeding both timelines the bridge's
-position/duration/seek, the slider value labels, Place Boundary (playhead
-→ lower **User Marked** timeline via `add_marker`), Undo (pops the last
-user marker), Test Scan (`blackdetect` → midpoint markers in the upper
-**Scanner Preview** timeline), and Finished (`blackdetect` on the full
-source → midpoint boundaries written to a `.cmct`, then the Video Editor
-launched for manual fixes + tags).
-
-What's wired: the Export button (`editor/editor.py:on_export` →
-`shared.ffmpeg.export_named_model`) persists the in-memory `.cmct`, applies
-session tag locks to wholly unedited segments, reads both persisted schemes,
-plans every named destination, and frame-accurately re-encodes each
-keep-segment (libx264/aac) beneath `export/`. ffmpeg writes unique temporary
-MP4s and atomically commits them without overwriting; per-clip failures are
-reported as a partial result. Still pending is the smart-cut (keyframe-
-bracketed lossless copy + partial-keyframe transcode + concat) version.
-
-Each scanner run begins by clearing `temp/*.mp4` (`_clear_temp_clips` in
-`scanner.py`) so preview clips don't accumulate across runs; the 2-minute
-preview is then stream-copied to `temp/` under a name derived from the source
-(`clip_to_temp` writes `<source>_clip120s.mp4`, so two videos never share one
-preview).
-
-If a `.cmct` sidecar already exists next to the source video, the scanner
-skips itself and launches the Video Editor (`launch_command("editor", source)`)
-instead, so an existing project is never overwritten. The source there is the
-one the picker handed this process, not a re-resolved default. When no `.cmct`
-exists, the Finished button runs `blackdetect` on the full source, writes the
-midpoint boundaries to `<name>.cmct` next to the source, and then launches the
-editor on that same source. The picker labels an already-scanned video
-"(already scanned - opens in the editor)", so that shortcut is visible before
-it is taken.
-
-## File Naming Scheme
-
-The naming scheme is a user-editable template string stored in
-`settings.json` under the key `file_naming_scheme`. Its public entry point is
-`shared/naming.py:render_filename(scheme, tags)`, which delegates parsing and
-rendering to `shared/scheme.py` and applies filename policy. It takes a tags
-dict keyed by canonical `.cmct` keys (e.g. `filler_type`, not `type`).
-
-### Syntax
-
-| Construct        | Example                     | Meaning                                                        |
-|----------------|------------------------------|----------------------------------------------------------------|
-| Tag            | `{title}`                    | Render the tag's value, or empty if absent.                    |
-| Fallback       | `{year,time_period}`         | Render first non-empty value (left to right).                  |
-| AND group      | `[{block} - ]`              | Render only if **all** tags inside are non-empty; otherwise the entire group (including surrounding literals like separators) is omitted. |
-| OR group       | `[{length}|{info}]`         | Render if **any** tag is non-empty. Non-empty values are joined with single spaces; the pipe is consumed (not rendered). The entire group is omitted when all tags are empty. |
-| Literal parens | `[({length}|{info})]`       | Same as OR group above, with literal `(` and `)` as normal output characters. |
-| Escape         | `\{`, `\}`, `\[`, `\]`, `\,`, `\|`, `\\` | Produce the literal character instead of triggering tag/group/separator parsing. |
-
-### Tag name aliasing
-
-The user-facing syntax uses short names; the `.cmct` format stores canonical
-keys. `TagNode` retains the names written in the scheme, while
-`canonical_tag_name()` and `resolve_tag_value()` resolve aliases during
-validation/rendering.
-
-`resolve_tag_value()` accepts both forms, so a scheme can use either
-`{type}` or `{filler_type}` interchangeably. `VALID_TAG_NAMES` contains the
-short user-facing names, `CANONICAL_TAG_KEYS` contains the stored keys, and
-`shared.naming.REQUIRED_TAG_NAMES` contains the filename-specific requirement
-(`title`). Folder requirements are policy-owned by `shared/paths.py`.
-
-### Parser architecture
-
-`shared/scheme.py` contains one recursive-descent parser (`_parse`) behind two
-entry points:
-
-- `parse_scheme()` preserves the tolerant behavior used by filenames.
-- `parse_scheme_strict()` rejects malformed delimiters, empty tag names,
-  dangling escapes, excessive nesting, and similar syntax defects with
-  source positions. `shared/paths.py` adds the folder-specific semantic rules.
-
-Both produce the same public AST:
-
-- **`LiteralNode(text, escaped)`** — literal output text; strict parsing records
-  whether a literal came from an escape.
-- **`TagNode(names)`** — a tag with left-to-right fallback names.
-- **`PipeNode`** — OR separator token (renders as a single space).
-- **`GroupNode(elements, is_or)`** — a `[]` group with AND (`is_or=False`) or
-  OR (`is_or=True`) semantics.
-
-Detection rules:
-- `_has_top_level_pipe(content)` scans `[]` content for unescaped `|` at
-  depth 0 (outside `{}` and nested `[]`). If found, the group is OR.
-- Escaped pipes (`\|`) are skipped — they become literal `|` characters
-  and the group is treated as AND.
-- Nested groups are parsed recursively; each evaluates its own AND/OR
-  condition independently. The parent group's presence check only
-  considers its **direct** child tags (not tags inside sub-groups), so
-  `[{block} - [({length}|{info})]]` renders `"Toonami -"` when block is
-  set but both length and info are empty.
-
-### Whitespace handling
-
-- OR groups: empty tags leave gaps from the pipe→space substitution.
-  `_cleanup_or_text()` collapses multiple spaces and trims spaces
-  *inside* literal parentheses (e.g. `( Sec)` → `(Sec)`) but preserves
-  spaces *outside* (e.g. ` - (30 Sec)` stays intact).
-- The top-level `render_filename()` strips leading/trailing whitespace.
-
-### The shipped default scheme
-
-`shared/naming.py:DEFAULT_FILE_NAMING_SCHEME` is the personal default used when
-`settings.json` has no `file_naming_scheme` key:
-
-```
-{network} - {type} - {year,time_period} - [{block}|{special}] {title} [({length}|{info})]
-```
-
-`{type}`/`{info}` are the short aliases for `filler_type`/`information`, and
-`[{block}|{special}]` is an OR group, so when **both** are set they render
-joined by a space (`Toonami Kids`) rather than the fallback form's first-only
-(`Toonami`). The README's own pattern is the fallback form,
-`{network} - {filler_type} - {year,time_period} - [{block,special} ]{title} [({length}|{information})]`,
-which is still supported and is what `tests/test_naming.py:TestReadmeScheme`
-exercises; it is not the shipped default.
-
-Note: optional sections whose separators should be conditional must have
-their separator **inside** the bracket. Wrapping `{year,time_period}` in
-`[{year,time_period} - ]` prevents stray ` - ` separators when the year
-is absent. The shipped default instead puts the separator *outside* its
-`[{block}|{special}]` group, so when both tags are empty the rendered stem
-keeps two spaces (`... -  <Title>`); only leading/trailing whitespace is
-stripped today. See "Whitespace handling" above.
-
-### Integration
-
-The editor export flow (`editor/editor.py:on_export` →
-`shared.ffmpeg.export_named_model` → `shared.exporting.plan_export`) now
-requires an unconditional top-level `{title}`, sanitizes the rendered stem,
-appends `.mp4`, and combines it with the folder scheme's safe components. The
-planner resolves the entire keep-segment batch before starting ffmpeg and
-fails on missing required tags, invalid durations, duplicate normalized paths,
-existing/case-variant destinations, reparse points, or unsafe plan components.
-
-## Folder Organization Scheme
-
-The folder organization scheme is a single-line, user-editable path template
-stored in `settings.json` under `folder_organization_scheme`. Its default is:
-
-```text
-{network}/[Blocks/{block}/]{type}/{time_period}/[{special,show}/]
-```
-
-`shared/paths.py` owns the restricted folder grammar. The public flow is:
-
-1. `compile_folder_scheme(text)` validates syntax and static path safety and
-   returns a reusable `FolderScheme`.
-2. `render_folder_components(scheme, tags)` resolves and sanitizes tag values,
-   applies optional fragments, and returns a tuple of safe relative components.
-3. `format_folder_components(components)` produces the preview form with `/`
-   separators and a trailing `/`.
-
-The renderer intentionally does **not** return a raw path. Future export code
-must join the returned components beneath its chosen export root and validate
-that root before writing.
-
-### Folder syntax and policy
-
-| Construct | Example | Meaning |
-|-----------|---------|---------|
-| Path separator | `/` | Structural folder separator; it cannot be escaped. |
-| Tag | `{network}` | Required unless it occurs inside a conditional group. |
-| Fallback | `{year,block}` | Select the first non-empty candidate. |
-| Optional path fragment | `[Blocks/{block}/]` | Include every character in the group when its tag resolves; otherwise omit the complete fragment. |
-| Literal | `Blocks` | Authored safe path text. Invalid/unsafe literals are configuration errors, not silently rewritten. |
-
-Folder groups are stricter than filename groups:
-
-- Exactly one tag expression (which may itself contain fallback names).
-- Zero or more literal characters and path separators; one group can create
-  several folders.
-- No nested groups.
-- No pipe-based OR groups.
-- `{network}`, exact `{type}` or `{filler_type}`, and exact `{time_period}`
-  must each appear as unguarded top-level tags. A required tag cannot be
-  guarded by a group or placed in a fallback expression.
-- Other known shared tags may be used wherever policy allows; users are free
-  to organize beyond the default structure.
-
-A missing/empty bare tag is a render error. A missing/empty group tag omits the
-group. If the first nonempty fallback value sanitizes to empty, rendering
-raises rather than silently trying the next fallback.
-
-### Output sanitation and path safety
-
-Raw tag values remain unchanged in `.cmct`; sanitation happens only when
-rendering a filesystem destination. `sanitize_path_component()` currently
-implements the portable folder policy:
-
-- Normalize Unicode to NFC while preserving display casing.
-- Replace contiguous control, format-control, reserved path, and visually
-  unsafe characters with one `-`.
-- Collapse whitespace, trim surrounding whitespace, and remove trailing dots
-  or spaces.
-- Prefix Windows device names (`CON`, `NUL`, `COM1`, `LPT1`, and superscript
-  variants) with `_`.
-- Reject empty-after-cleanup values and invalid Unicode.
-- Enforce 255 UTF-8 bytes per component and 4096 UTF-8 bytes for the relative
-  path.
-- Provide `normalized_validation_key()` (NFC plus `casefold()`) for future
-  case-insensitive collision checks without lowercasing displayed names.
-
-Authored schemes reject rooted paths, drive-qualified/UNC forms, `.`/`..`,
-empty or repeated components, portable-invalid literals, and path-size
-violations. Runtime empty components caused solely by omitted optional groups
-are collapsed. `FolderScheme` keeps the source text authoritative and detects
-mutation of its public AST nodes via a structural fingerprint.
-
-Filename export uses `shared/naming.py:compile_filename_scheme()`,
-`render_compiled_filename()`, and `sanitize_filename_stem()`. The strict export
-profile requires an unconditional top-level `{title}`, rejects unknown tags
-and malformed syntax, reuses the portable component policy, prefixes reserved
-device names, appends `.mp4`, and includes the extension in the 255-byte
-filename limit. Raw `.cmct` tag values remain unchanged.
-
-## Settings Scheme UI
-
-`settings/settings.py` and `settings/settingswindow.ui` mirror the file-scheme
-editor for folder schemes:
-
-- `file_naming_scheme` defaults to the README file template when absent.
-- `folder_organization_scheme` defaults to the folder template above.
-- Both fields load independently; a malformed stored folder value disables
-  only the folder editor and preserves the rest of the JSON object.
-- File and folder updates are written together through one `QSaveFile`, so a
-  failed validation or filesystem write cannot partially persist one field.
-  Unchanged legacy file values are preserved even if future stricter filename
-  validation would reject them.
-- File preview continues to call `render_filename()`.
-- Folder preview calls the exact production path
-  `compile_folder_scheme()` → `render_folder_components()` →
-  `format_folder_components()` with `PREVIEW_TAGS`; Settings must not duplicate
-  resolver logic.
-- Cancel and window-manager close restore both last-saved values. Constructor
-  warnings are deferred with `QTimer` so headless construction cannot block
-  before the event loop starts.
-- Each scheme has an in-app help panel (`textBrowserFileScheme` /
-  `textBrowserFolderScheme`) so the window is usable without these docs. The
-  file panel documents the tag set, `{a,b}` fallback, optional `[ ]` AND
-  groups (including keeping the separator inside the brackets), `[{a}|{b}]` OR
-  groups, nesting, backslash escaping, and the unconditional top-level
-  `{title}` rule. **These panels are documentation:** if the parser changes,
-  update them in the same change.
-  `test_file_help_examples_behave_as_documented` renders every construct the
-  file panel names through the real preview, and
-  `test_file_help_states_the_title_rule_the_compiler_enforces` checks the
-  `{title}` wording against `file_scheme_error`, so the help cannot drift
-  into lying.   `test_file_help_documents_the_syntax_and_the_title_requirement`
-  asserts the help *names* each construct but matches on the construct rather
-  than one exact notation, so rewording the help does not fail the suite while
-  dropping a construct does. The window is intentionally compact (780x515), so
-  the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
-  each panel lays out and can still reach text taller than itself. The main
-  menu and its launched paths are covered by `tests/test_main_window.py`.
-  The full suite currently contains 436 passing tests.
-
-- Import/Export directory fields and Browse buttons are present in the UI but
-  **deliberately locked**: for this alpha both folders are fixed beside
-  `commcut.exe`, and `SettingsWindow._lock_folder_choices()` disables the four
-  widgets and marks the two labels "(coming soon)" rather than removing them,
-  so a tester can see they are not wired yet. Choosing the import folder is
-  the picker's job (it lists `import/`), not a setting.
-
-Coverage lives in `tests/test_scheme.py`, `tests/test_paths.py`, and
-`tests/test_settings.py`, alongside the existing `tests/test_naming.py`.
-
-## Key conventions and gotchas
-
-- **Bundled binaries.** Both the editor and the scanner call
-  `shared/environment.setup_environment` at startup, which prepends the
-  per-OS `bin/<os>/` folder to `PATH` via `get_binary_path`. mpv, ffprobe,
-  and ffmpeg resolve to the bundled versions. `get_binary_path` raises
-  `FileNotFoundError` if a binary is missing at the expected path.
-- **Promoted widget.** The timeline is a custom `QWidget` promoted in
-  `editorwindow.ui` as `TimelineWidget` / header `timeline`. PySide6's
-  `QUiLoader` does not auto-resolve promoted widgets reliably, so
-  `editor.py` uses a `UiLoader(QUiLoader)` subclass whose `createWidget`
-  is overridden to instantiate `TimelineWidget` directly. Register the
-  class with `loader.register_widget(TimelineWidget)` before `loader.load()`.
-  The scanner does the same for `MarkerTimelineWidget` (header
-  `scanner.marker_timeline`) in `scanner.py`.
-- **Frame-accurate step.** mpv's `frame_step` plays a fraction of a second
-  of audio (the audio decodes before the mute property takes effect).
-  `MpvBridge.step_frames` instead seeks by `1/container_fps` and forces
-  `pause = True`. This is silent.
-- **mpv D3D gotcha.** Already mentioned — close the splash before
-  constructing the player. See "Splash flow" above.
-- **`Position` and seek clamping.** Boundary positions in
-  `end_segment`/`start_segment` are clamped to `(start, end)` of the active
-  segment. A no-op returns `False`.
-- **Tag field programmatic updates.** `_write_tags_to_form` uses
-  `blockSignals(True/False)` around `setText` so the `textChanged`
-  handler (`on_tag_edited`) doesn't fire on initial load and falsely mark
-  the model dirty.
-- **Keyframe nav epsilon.** `_KEYFRAME_EPSILON = 0.05` seconds. Without
-  it, mpv seeking to a keyframe near the current position can re-seek to
-  the same spot and the buttons feel broken. Applied symmetrically in
-  `next_keyframe` / `prev_keyframe`.
-
-## What's built (and what's next)
-
-**Built:**
-- `.cmct` sidecar format and `SegmentModel` (transition-point model).
-- Timeline rendering: alternating red/green/blue segments, ignored
-  segments dimmed, active-segment highlight, zoom-to-active or
-  fit-whole via toggle.
-- Editing state machine: End Seg, Start Seg, Merge Next, Skip, Stage,
-  Undo, Active navigation, Toggle Zoom.
-- Boundary peek: an active-segment change flashes 15 frames past the
-  boundary (450ms) and returns to the exact cut point, so stepping through
-  black boundaries shows the clip. Always on; `BoundaryPreview.frames = 0`
-  is the off switch a future settings key would drive.
-- Tag form with lock system and dirty indicator.
-- Keyframe navigation via ffprobe-scanned I-frames.
-- Frame-accurate stepping (silent).
-- Cross-platform binary resolution: `shared/environment.get_binary_path`
-  resolves ffmpeg/ffprobe/mpv per OS under `bin/<os>/`; both the editor and
-  the scanner reach them through `setup_environment`. Every call site uses the
-  resolved absolute path rather than a bare binary name.
- - Shared library layer used by the wizards and Settings: `shared/mpv`
-   (MpvBridge, create_mpv_player, scan_keyframes), `shared/timeline`,
-   `shared/segments`, `shared/ffmpeg`, `shared/environment`, `shared/scheme`,
-   `shared/naming`, `shared/paths`, `shared/exporting`, and `shared/ui_loader`.
-- Scanner skeleton: 2-minute preview clip load (stream copy into `temp/`),
-  embedded mpv playback, transport + frame/keyframe stepping, Place
-  Boundary + Undo on the User Marked timeline (in-memory, no `.cmct`),
-  and two marker timelines driven by the bridge.
-- Automated boundary detection (Test Scan): `ffmpeg blackdetect` on the
-  2-minute preview, slider-mapped to `d = frames / fps` and
-  `pix_th = level / 100`; skips `black_end:N/A` runs; stamps one midpoint
-  `(T1 + T2) / 2` per black run into the upper Scanner Preview timeline
-  (`timelineWidget1`) via `MarkerTimelineWidget.add_marker`.
-- Finished (full-source scan): the same detector run against the full
-  source video (not the 2-minute preview); midpoint boundaries are written
-  as `.cmct` segment starts via `SegmentModel` and the Video Editor is
-  launched automatically.
-  - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the
-    scanner launches `launch_command("editor")` and exits, so an existing
-    `.cmct` is never overwritten (the source used is
-    `shared.segments.source_video_path()`, the single definition both the
-    scanner and the editor go through).
- - Named export (full-segment transcode in
-   `shared/ffmpeg.export_named_model`, wired to the `exportButton` in
-   `editor/editor.py`): persists the in-memory model, applies session locks,
-   loads both schemes, plans all keep-segments, creates their directory trees,
-   and frame-accurately re-encodes each named MP4 (libx264/aac, not `-c
-   copy`). Unique temporary files and no-clobber commits prevent overwrites;
-   per-clip failures are returned as a partial result.
- - File naming scheme parser (`shared/scheme.py` + `shared/naming.py`):
-   `render_filename(scheme, tags)` produces a filename stem from a template,
-   with test coverage in `tests/test_naming.py` and `tests/test_scheme.py`. See
-   the "File Naming Scheme" section above for the full syntax.
- - Folder organization resolver (`shared/paths.py`): strict folder grammar,
-   required Network/Type/Time Period placeholders, optional multi-folder
-   groups, tag sanitation, portable component validation, and safe relative
-   component output. Covered by `tests/test_paths.py`.
-  - Portable packaging (`packaging/commcut.spec` + `packaging/build.py`): a
-   self-extracting onefile `commcut.exe` (Python + PySide6 + the app + the
-   `.ui` files) assembled into `dist/commcut-portable/` alongside the
-   `bin/win/` binaries and the `import/`+`export/` placeholders. Child windows
-   are re-executions of the same binary via `--window <name>`. Pre-flight
-   rejects a non-Windows host and Git LFS pointer binaries; post-build asserts
-   the `.ui` layout and that `prototypes/`/`tests/` were not bundled. See
-   "Packaging" above.
- - Settings (`settings/settings.py`): independent file/folder scheme defaults,
-   validation, production-resolver previews, atomic `QSaveFile` persistence,
-   cancel/window-close restoration, and offscreen UI tests in
-   `tests/test_settings.py`.
- - Export planning (`shared/exporting.py`): strict model/settings validation,
-   four-tag requirements, lock materialization, normalized within-batch and
-   existing-destination collision checks, complete relative-path limits, and
-    reparse-point/traversal defenses. Covered by `tests/test_exporting.py` and
-    mocked executor tests in `tests/test_ffmpeg.py`. Editor tag-lock display,
-    pinned-value semantics, and locked-only segment carry-over are covered by
-    `tests/test_editor_locks.py`; front-end required-tag enforcement and the
-    refusal-to-write behavior are covered by
-    `tests/test_editor_required_tags.py`; and End Seg boundary placement
-    (insert vs. move, and the refusal guards) in
-    `tests/test_end_boundary.py`. All three drive the real `MediaPlayer`
-    methods through the shared `tests/editor_stub.py` widget-backed stub, so
-    the shipped code is what gets tested. Timeline zoom-mode ownership — the
-    remembered mode surviving a resize, and the editor toggle agreeing with it
-    — is covered by `tests/test_timeline_zoom.py`, which exercises the real
-    `TimelineWidget`. Note that Qt delivers `resizeEvent` to a *visible* widget
-    only, so any test that resizes a widget to check zoom behavior has to
-    `show()` it first. The boundary peek's seek sequence and its cancellation
-    rules are in `tests/test_boundary_preview.py`, which drives the real
-    `BoundaryPreview` and the real `MediaPlayer` handlers through the stub's
-    `FakeBridge` — it records every seek, which is the only way to assert that
-    the playhead *rests on* the boundary rather than merely passing through it.
-  - Frozen-mode path resolution, per-OS binaries and mpv `vo`, the child-window
-    argv dispatch, and the agreement between the spec's `datas` mapping and
-    `resource_path()` are covered by `tests/test_frozen_mode.py`, which
-    monkeypatches `sys.frozen` / `sys._MEIPASS` / `sys.executable` rather than
-    building an executable. `test_every_ui_file_in_the_tree_is_listed_and_bundled`
-    walks the source tree for `.ui` files and requires every one of them to be
-    in both the list and the spec: iterating the list alone only checks files
-    it already knows about, so a new window's `.ui` that was never bundled
-    would pass and then fail only in a packaged build.
-  - The import folder (`shared/sources.py`): what the picker offers and what a
-    window will accept, including the `README.txt` placeholder filter, the
-    symlink/`import_backup` containment checks, and the "nothing to open"
-    messages — `tests/test_sources.py`. The picker window itself, offscreen,
-    is in `tests/test_picker.py`; the path surviving both hand-offs between
-    windows is in `tests/test_source_handoff.py`, which runs each window's
-    script the way `launch_command` launches it — in a **fresh interpreter**,
-    because the folder-shadows-its-package trap above cannot be reproduced
-    in-process once `scanner` is cached in `sys.modules`.
-
-
-
-**Next:**
-- **Smart-cut export**: per non-ignored segment, find the innermost
-  keyframes bracketing the two cut points, lossless-copy between them,
-  transcode only the partial-keyframe ends, then concat. The placeholder
-  `clip_to_temp` (stream copy) still lives in `shared/ffmpeg.py`; the
-   keyframe-bracketed smart-cut version replaces/augments `export_named_model`
-  when it lands. Also wire export into a background `QThread` (today it runs on
-  the GUI thread, which blocks the editor while cutting).
-- **Choosing folders**: import/ and export/ are fixed beside the executable for
-  this alpha, and the Settings rows say so. When they become configurable,
-  `shared/sources.py:import_folder()` and the export root in
-  `shared/exporting.py` are the two places that resolve them, and the picker's
-  folder label follows `import_folder()` automatically.
-
-## Gaps to be aware of
-
-- `prototypes/` contains earlier iterations of the editor. Treat them
-  as historical — the active code is in `editor/` (and the scanner in
-  `scanner/`).
-- Automated boundary detection is fully wired: Test Scan (preview, in-memory
-  midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and
-  the Scanner→Editor handoff when a `.cmct` already exists.
-- Export is present as a named full-segment transcode; the smart-cut
-  (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
-  The legacy numeric `export_segment_clips()` helper still exists for
-  compatibility, but Editor export uses the named planner/executor path.
-- Export runs synchronously on the GUI thread; move to a worker `QThread`
-  (see `PreScanWorker`) for the smart-cut step so the editor stays
-  responsive.
+`shared/` in one line each: `environment` (roots, binaries, `launch_command`),
+`diagnostics` (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`),
+`timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources`
+(the `import/` policy), `ffmpeg` (preview clip + named export), `scheme`/
+`naming`/`paths` (the two schemes), `exporting` (the export planner),
+`ui_loader` (promoted widgets). Per-module detail:
+[docs/architecture.md](docs/architecture.md).
+
+## Documentation
+
+| Document | Read it when you need to know... |
+|---|---|
+| [docs/README.md](docs/README.md) | the doc index and the conventions this set follows |
+| [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, diagnostics |
+| [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
+| [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
+| [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the Settings scheme UI |
+| [docs/packaging.md](docs/packaging.md) | the portable build, the two roots, the `.ui` payload layout, child-window argv, Windows DLL loading |
+| [docs/testing.md](docs/testing.md) | how to run the suite, the widget/`FakeBridge` harness, which test file covers what, the Qt/import gotchas |
+| [docs/status.md](docs/status.md) | what is built, what is next, known gaps |
+| [docs/design_legacy.md](docs/design_legacy.md) | the original scope/design notes |
+| [docs/guides/filler_and_you.md](docs/guides/filler_and_you.md) | user-facing guide to acquiring and organizing filler |
+
+## Non-negotiable invariants
+
+Each of these fails silently in a packaged build or in a way the user cannot
+diagnose. The linked document has the full reasoning.
+
+1. **Resources resolve through `resource_path()`.** Never `SCRIPT_DIR` or
+   `__file__` — frozen they point into the payload, which is wiped on exit.
+   → [docs/packaging.md](docs/packaging.md)
+2. **Frozen has two roots.** `resource_root()` is the read-only payload;
+   `install_root()` is beside the exe and holds `bin/<os>/`, `settings.json`,
+   `import/`, `export/`, `temp/`, `commcut.log`. Nothing that must survive goes
+   in the payload. → [docs/packaging.md](docs/packaging.md)
+3. **`launch_command(name, *args)` is the only way to open a window**, and its
+   `*args` are forwarded verbatim into that window's `run(*args)`. A window's
+   `__main__` must therefore `sys.exit(run(*sys.argv[1:]))`; dropping the
+   argument opens a *different* video. → [docs/packaging.md](docs/packaging.md)
+4. **A window folder can shadow its own package.** `scanner/` has no
+   `__init__.py`, so a sibling import must be guarded on `__package__`, and the
+   test for it must run in a **fresh interpreter**. →
+   [docs/packaging.md](docs/packaging.md)
+5. **`bin/<os>` must be on `PATH` before `import mpv`**, and the
+   `os.add_dll_directory` handle must stay alive (a dropped handle surfaces
+   later as a bare `OSError` from ctypes). → [docs/packaging.md](docs/packaging.md)
+6. **Close the splash before constructing any mpv-backed widget.** mpv's
+   Direct3D init hangs when another top-level window is foreground.
+   → [docs/architecture.md](docs/architecture.md)
+7. **Never construct a second mpv player while another top-level window is
+   foreground.** Every window is its own process for exactly this reason; the
+   main menu stays open in the background rather than hosting a child.
+   → [docs/architecture.md](docs/architecture.md)
+8. **The source video path is an argument, not shared state.** It travels
+   `main menu → picker → scanner → editor` through argv; a window never
+   re-resolves a default of its own. → [docs/architecture.md](docs/architecture.md)
+9. **One owner per rule.** Required tags live in
+   `shared/exporting.py:missing_required_tags`; the filename and folder
+   grammars live in `shared/naming.py` and `shared/paths.py`. Never add a second
+   implementation of a rule that already has one. →
+   [docs/naming-and-organization.md](docs/naming-and-organization.md)
+10. **Editing writes are all-or-nothing.** Stage and Export refuse rather than
+    persist an incomplete record, and ignored segments are exempt from the
+    required tags. → [docs/segment-model.md](docs/segment-model.md)
+
+## Working agreements
+
+- **Run the suite** (`python -m pytest`) before reporting a task done, and say
+  what you ran.
+- **A bug fix ships with a test** that drives the shipped code. For editor
+  behavior that means the real `MediaPlayer` through
+  `tests/editor_stub.py`, not a re-implementation —
+  [docs/testing.md](docs/testing.md) has the harness and the gotchas.
+- **Update the owning document in the same change** as any behavior it
+  describes. If a doc and the code disagree, one of the two is a bug; find out
+  which before editing either.
+- **Do not add comments to code** unless asked. The code documents itself and
+  the docs carry the rationale.
+- **Do not commit** unless asked.
+
+## Documentation conventions
+
+- **Markdown links between documents; backticked repo-root paths for source
+  files.** `tests/test_docs.py` resolves the links (so a moved or renamed
+  document breaks a test) and deliberately does not resolve source paths, so
+  moving a file does not force a documentation edit. `tests/test_*.py` is the
+  one exception: it is a coverage claim, and it is checked.
+- **Each document opens with a purpose line and an `Applies to:` list** of the
+  source paths it describes, so you can tell whether it is the right one before
+  reading it.
+- **`AGENTS.md` stays under 240 lines.** The ceiling is enforced by
+  `tests/test_docs.py`; new detail goes in `docs/`, not here.

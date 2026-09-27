@@ -36,7 +36,7 @@ outside the folder.
 
 The app opens every window as a **separate process** — the main menu stays
 open while the scanner runs, and the scanner launches the editor (this is what
-avoids the Windows mpv Direct3D deadlock; see AGENTS.md).
+avoids the Windows mpv Direct3D deadlock; see [docs/packaging.md](../docs/packaging.md)).
 
 A onefile build re-extracts its entire payload on *every* launch, so that means
 once per window. With `bin/win/` bundled that is ~366 MB of extraction each
@@ -84,7 +84,7 @@ a build that installs cleanly and then fails at runtime:
   ASCII pointer text in their place, which a file copy would ship without
   complaint. Each binary must be over 1 MB.
 
-Post-build, the tree is checked for: the four `.ui` files in the right
+Post-build, the tree is checked for: the five `.ui` files in the right
 subfolders, `prototypes/` and `tests/` absent, and (onedir only) no
 `_internal/` directory.
 
@@ -129,7 +129,7 @@ Two things in the spec are load-bearing. Changing either breaks the app only
 in a packaged build, not from source:
 
 1. **The `.ui` files keep their source-tree subfolders** (`editor/`, `scanner/`,
-   `settings/`), rather than being flattened into the payload root.
+   `settings/`, `picker/`), rather than being flattened into the payload root.
    `shared/environment.resource_path()` is called with one expression whether
    or not the app is frozen, so the payload has to mirror the source layout.
    `tests/test_frozen_mode.py` asserts the spec's `datas` list agrees with the

@@ -71,3 +71,12 @@ Cut large compilations which contain multiple individual filler clips up, dynami
    - The resultant clip is as high quality as it can possibly be, with the interior keyframes being identical to the source
    - Only the first and last, partial keyframe segments, suffer quality loss from transcoding
    - If the Edited Segment only contains *one* keyframe, the entire thing is extracted via transcode
+
+# Documentation
+
+This file is the project spec. The engineering documentation is separate:
+
+- [docs/README.md](docs/README.md) — the documentation index, one entry per document
+- [docs/status.md](docs/status.md) — what is built today, what is next, known gaps
+- [docs/packaging.md](docs/packaging.md) and [packaging/README.md](packaging/README.md) — the portable build
+- [AGENTS.md](AGENTS.md) — orientation and working agreements for coding agents
