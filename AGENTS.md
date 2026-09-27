@@ -36,6 +36,7 @@ Run from the project root.
 | Run one window on its own | `python editor/editor.py <video>`, `python scanner/scanner.py <video>` (each window is its own process; `<video>` is optional) |
 | Tests | `python -m pytest` — one file: `python -m pytest tests/test_paths.py` |
 | Build the portable app | `python packaging/build.py` — Windows only; see [packaging/README.md](packaging/README.md) |
+| Cut a release | set `VERSION` in `shared/version.py`, then `git tag v<version> && git push origin v<version>` — CI builds it and attaches a draft release; see [docs/packaging.md](docs/packaging.md#releases) |
 | Run on macOS or Linux | Same, from a clone, with ffmpeg/mpv installed — see [docs/source-install.md](docs/source-install.md) |
 
 There is no pytest config: `tests/conftest.py` puts the project root on
@@ -54,6 +55,7 @@ commcut/
 ├── temp/                    # scratch (the scanner's 2-minute preview)
 ├── commcut.log              # beside the exe; override with COMMCUT_LOG
 ├── packaging/               # PyInstaller spec + build script (docs/packaging.md)
+├── .github/workflows/       # a pushed tag builds the Windows release zip
 ├── picker/                  # source video picker — the front door of the wizard
 ├── scanner/                 # Segment Scanner: detect boundaries, hand off
 ├── editor/                  # Editing Wizard: segments, tags, export
@@ -65,6 +67,7 @@ commcut/
 ```
 
 `shared/` in one line each: `environment` (roots, binaries, `launch_command`),
+`version` (the release number `packaging/build.py` checks a tag against),
 `diagnostics` (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`),
 `timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources`
 (the `import/` policy), `ffmpeg` (preview clip + named export), `scheme`/
@@ -81,7 +84,7 @@ commcut/
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the Settings scheme UI |
-| [docs/packaging.md](docs/packaging.md) | the portable Windows build, the two roots, the `.ui` payload layout, child-window argv, Windows DLL loading |
+| [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the tag-driven release pipeline |
 | [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |
 | [docs/testing.md](docs/testing.md) | how to run the suite, the widget/`FakeBridge` harness, which test file covers what, the Qt/import gotchas |
 | [docs/status.md](docs/status.md) | what is built, what is next, known gaps |

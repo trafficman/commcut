@@ -5,8 +5,9 @@ is frozen: the two roots, the `.ui` payload layout, child windows as
 re-executions, and per-platform library loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
-`packaging/README.md`, `shared/environment.py`, `main.py`'s `--window`
-dispatch, `tests/test_frozen_mode.py`.
+`packaging/README.md`, `shared/environment.py`, `shared/version.py`,
+`main.py`'s `--window` dispatch, `.github/workflows/release.yml`,
+`tests/test_frozen_mode.py`, `tests/test_release_build.py`.
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
 Linux, which this build does not cover), [architecture.md](architecture.md) (the
@@ -111,6 +112,17 @@ than failing.
 
 `launch_command` is the only place that knows how to open a window. Do not
 hand-assemble argv elsewhere.
+
+**A folder named after an installed library cannot be imported.** `packaging/`
+has no `__init__.py`, and the `packaging` that PyInstaller depends on is a real
+package in site-packages. A regular package beats a namespace portion
+*wherever* it is on `sys.path`, so `import packaging.build` binds to the
+dependency and then reports no `build` inside it — the mirror image of the
+`scanner` case above, and permanent rather than order-dependent, because
+PyInstaller means the installed one is always there. `packaging/build.py` is
+therefore run as a script, and `tests/test_release_build.py` loads it with
+`importlib.util.spec_from_file_location`. PyInstaller's own `import packaging`
+is unaffected and gets the dependency, which is what it wants anyway.
 
 **A window folder that shadows its own package.** `scanner/` has no
 `__init__.py`, so `scanner` is only a *namespace* portion, and CPython ranks a
@@ -221,3 +233,74 @@ Post-build, it asserts `_internal/` is absent, and that `prototypes/` and
 list names only the `.ui` files, so documentation never reaches the payload. The
 `.ui` layout itself cannot be checked on disk for a onefile build (it unpacks at
 run time), so `tests/test_frozen_mode.py` asserts it instead.
+
+`--zip` adds one more check, and it is the only one that looks at a *shipping*
+artifact. `zip_portable` requires the exe, all three `bin/win/` binaries, and
+both placeholder `README.txt` files to be present before it writes anything, and
+refuses with the missing paths named. That is load-bearing for onefile, where
+nothing else inspects the result: an archive missing its binaries installs
+cleanly and then fails the first time it tries to cut a clip, with no useful
+error. It holds for `--onedir` too, so one check covers both.
+
+## Releases
+
+`.github/workflows/release.yml` builds this artifact on a tag push and attaches
+it to a **draft** GitHub release. Windows only; `check_platform()` is what stops
+a build for anything else, and `build.py --version` is the only caller that
+passes a version at all.
+
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Draft, not published, because the exe has not run on a real machine yet and a
+GitHub release cannot be re-cut for a tag that is already published. The assets
+are downloadable from a draft, so smoke testing needs nothing changed. Workflow
+inputs (`workflow_dispatch` with a `tag`) re-cut a release for a tag that
+already exists, and a run that finds a release already there is a green no-op
+rather than a failure — re-running a workflow is a normal thing to do.
+
+**The tag is not trusted to be the version.** `shared/version.py` holds
+`VERSION`, and `build.py --version` refuses anything that disagrees with it, so
+a mistagged release fails before a 400 MB build happens instead of producing a
+release page that contradicts the code inside it. A `v` prefix is stripped, so
+`v0.1.0` and `0.1.0` are the same release; the constant stores the bare number
+and the prefix is a tag convention only. The check is the reason the constant
+exists in the codebase rather than living in the workflow.
+
+**The archive is `commcut-<version>-windows-x64.zip`** plus a `.sha256`
+sidecar, holding a single `commcut-<version>/` folder rather than a flat tree —
+so extracting does not scatter the app across the folder the user extracted
+into, and two releases extracted side by side do not merge each other's
+`settings.json` and `import/`. Without `--version` it is
+`commcut-portable-windows-x64.zip`, which is the local smoke-test form and does
+not require editing the source. `tests/test_release_build.py` covers the layout,
+the required entries, the sidecar, and the version rule.
+
+Deflate is doing real work here: the ~412 MB folder lands at roughly 170 MB,
+just under the 2 GiB per-asset limit, and zipping it takes about twenty
+seconds. The bytes are not reproducible — PyInstaller embeds a build timestamp
+— but the *entry order* is, so two archives of one tree diff on their contents
+rather than on their ordering.
+
+Two things in the workflow are load-bearing. **`lfs: true`**: `bin/win/` is Git
+LFS, ~384 MB, and without it the checkout has pointer text where the binaries
+go — caught loudly by `check_binaries` rather than shipped. **`ref:`**: on a
+manual re-run `github.ref` is the branch the workflow ran from, so without
+`ref: ${{ inputs.tag || github.ref }}` the re-cut would build a different commit
+than the tag it is releasing. The suite runs first and gates the build; it needs
+none of the LFS binaries, since ffmpeg is stubbed and the mpv import is
+deferred and mocked.
+
+What CI does **not** do is run the built exe. It cannot: `build.py`'s layout
+check and the workflow's sha256 comparison say the archive is complete and
+internally consistent, not that the player renders. That is a person on a
+Windows machine, which is the same reason `tests/real_ffmpeg_check.py` is run by
+hand. The runner is `windows-2022` and pinned, deliberately: `windows-latest`
+moves, and a different Visual Studio image means a different bundled
+`vcruntime140.dll` in the exe.
+
+The exe is **unsigned**, so SmartScreen shows "Windows protected your PC" and
+the user has to choose *More info → Run anyway*. Every release until signing is
+added will do this.
+

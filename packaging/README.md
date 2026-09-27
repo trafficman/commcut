@@ -69,12 +69,46 @@ Options:
 | *(none)* | onefile `commcut.exe` — the shipping artifact |
 | `--onedir` | folder form, `dist/commcut/` → assembled into `commcut-portable/`. Starts faster and is the one to debug against. |
 | `--check-only` | run the pre-flight checks and stop |
+| `--zip` | also write the distributable as a zip, with a `.sha256` sidecar |
+| `--version <tag>` | name the archive for a release, e.g. `v0.1.0`. Refused unless it matches `shared/version.py` |
 
 Requires Python **3.11** and Windows. `requirements.txt` is pinned exactly
 because a PyInstaller output is not portable across PySide6 minor versions.
 
 Verified with Python 3.11.1, PySide6 6.11.1, python-mpv 1.0.8,
 PyInstaller 6.22.3, 7-Zip n/a (no longer used).
+
+## The distributable zip
+
+`--zip` writes `dist/commcut-<version>-windows-x64.zip` (or
+`commcut-portable-windows-x64.zip` with no `--version`) beside a `.sha256`
+sidecar. The archive holds a single `commcut-<version>/` folder, not a flat
+tree, so extracting it does not scatter the app across your Downloads folder
+and two releases extracted side by side do not share a `settings.json`.
+
+It is refused rather than written if the portable folder is missing the exe,
+any of the three `bin/win/` binaries, or either placeholder `README.txt`.
+Nothing is left behind when it refuses.
+
+## Cutting a release
+
+```powershell
+# 1. set VERSION in shared/version.py
+# 2. commit, then tag that commit with v<that version>
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` builds and attaches the zip to a **draft**
+release. Download it from the Releases page, extract, and run `commcut.exe` —
+then publish the draft once you are happy with it.
+
+The tag has to match `shared/version.py`, or the build refuses. That check is
+deliberate: a mistagged release is otherwise indistinguishable from a good one
+until somebody reads the page. The workflow re-runnable by hand
+(*Actions → release → Run workflow → tag*) for a tag that already exists, and a
+run that finds a release already there does nothing rather than failing.
+
 
 ## Pre-flight checks
 
@@ -155,3 +189,8 @@ needs to be a real installer, the options are Inno Setup (handles
 `{localappdata}` natively, adds shortcuts and an uninstaller) or a 7-Zip SFX
 built from **`7zSD.sfx`** — note that the plain `7z.sfx` in the standard 7-Zip
 install ignores the whole config and prompts for a folder on every run.
+
+Not being signed means every release warns: Windows SmartScreen says "Windows
+protected your PC" and the run is *More info → Run anyway*. That is expected,
+not a broken download.
+

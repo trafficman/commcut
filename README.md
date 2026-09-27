@@ -74,9 +74,13 @@ Cut large compilations which contain multiple individual filler clips up, dynami
 
 # Documentation
 
+The Windows build is distributed on the
+[Releases page](https://github.com/trafficman/commcut/releases) — download the
+zip, extract it, and run `commcut.exe`. It is portable and unsigned.
+
 This file is the project spec. The engineering documentation is separate:
 
 - [docs/README.md](docs/README.md) — the documentation index, one entry per document
 - [docs/status.md](docs/status.md) — what is built today, what is next, known gaps
-- [docs/packaging.md](docs/packaging.md) and [packaging/README.md](packaging/README.md) — the portable build
+- [docs/packaging.md](docs/packaging.md) and [packaging/README.md](packaging/README.md) — the portable build and the release pipeline
 - [AGENTS.md](AGENTS.md) — orientation and working agreements for coding agents

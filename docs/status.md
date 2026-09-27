@@ -110,7 +110,16 @@ Detail in [architecture.md](architecture.md) and
   binaries and the `import/`+`export/` placeholders. Child windows are
   re-executions of the same binary via `--window <name>`. Pre-flight rejects a
   non-Windows host and Git LFS pointer binaries; post-build asserts the `.ui`
-  layout and that `prototypes/`/`tests/` were not bundled.
+  layout and that `prototypes/`/`tests/` were not bundled. `--zip` adds the
+  distributable archive plus a sha256 sidecar, refused unless the exe, all
+  three `bin/win/` binaries and both placeholders are present.
+- Releases are tag-driven: a `v*` push runs
+  `.github/workflows/release.yml`, which runs the suite, builds, and attaches
+  the archive to a **draft** release. `shared/version.py` holds the version and
+  the tag is refused if it disagrees with it. Windows only, unsigned (SmartScreen
+  warns), and CI does not launch the exe — see
+  [packaging.md](packaging.md#releases).
+
 - **macOS and Linux run from source**, not from a build — see
   [source-install.md](source-install.md). No frozen build exists for them, and
   none is planned: a frozen macOS build would resolve `install_root()` inside a

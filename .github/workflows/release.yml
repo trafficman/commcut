@@ -1,0 +1,150 @@
+# Builds the Windows release and attaches it to a draft GitHub release.
+#
+# Triggered by a tag push, and re-runnable by hand for a tag that already
+# exists. One job, not a build job and a publish job: the archive is ~170 MB
+# and splitting the two would transfer it between runners twice for no gain.
+#
+# Two things here are load-bearing and easy to break:
+#
+#   lfs: true          bin/win/ is Git LFS, ~384 MB. Without it the checkout
+#                     has pointer text where the binaries go. That is caught,
+#                     loudly, by check_binaries() in packaging/build.py -- the
+#                     build refuses rather than shipping pointer files.
+#   ref: inputs.tag    On workflow_dispatch, github.ref is the branch the
+#   || github.ref      workflow ran from, so without this the re-run would
+#                      build a different commit than the tag it is cutting a
+#                      release for.
+#
+# The tag is not trusted to be the version: packaging/build.py --version
+# refuses anything that disagrees with shared/version.py, so a mistagged
+# release fails here instead of shipping a page that contradicts its own code.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)cut a release for, e.g. v0.1.0'
+        required: true
+
+# Least privilege by default; the one job that needs more says so.
+permissions:
+  contents: read
+
+# Two runs of the same tag must not race. Not cancelled on progress: a release
+# halfway through a PyInstaller build is worth letting finish.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: windows release
+    runs-on: windows-2022
+    # PySide6 onefile over ~400 MB of binaries, then a zip. Generous.
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          # The default glob is **/requirements.txt, which does not match
+          # requirements-build.txt -- so bumping PyInstaller, which is the pin
+          # most worth rebuilding for, would not invalidate the cache.
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: install
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      # The gate. The suite needs none of the LFS binaries -- ffmpeg is stubbed
+      # and the mpv import is deferred and mocked -- so a release can be
+      # refused here for a test reason without a rebuild in the way.
+      # QT_QPA_PLATFORM is insurance: a hosted runner has no interactive
+      # desktop, and the widget tests set it themselves anyway.
+      - name: tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest
+
+      # The tag goes in through env, not ${{ }} in the script body. A tag is
+      # reachable input -- anyone who can push one can put text there -- and an
+      # expression interpolated into a shell script is substituted before the
+      # shell ever parses it, so the script would be that text.
+      - name: build
+        id: build
+        env:
+          TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $tag = $env:TAG
+          if (-not $tag) { $tag = $env:REF_NAME }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          python packaging/build.py --zip --version $tag
+
+      # The build already checked the archive's contents. This checks the
+      # other half: that the file which exists is the file whose digest is
+      # published, before either is uploaded.
+      - name: verify the artifact
+        id: verify
+        run: |
+          $version = python -c "from shared.version import VERSION; print(VERSION)"
+          $name = "commcut-$version-windows-x64.zip"
+          "asset=$name" >> $env:GITHUB_OUTPUT
+          if (-not (Test-Path "dist\$name")) { throw "build.py did not write dist\$name" }
+          if (-not (Test-Path "dist\$name.sha256")) { throw "no sha256 sidecar beside it" }
+          $want = (Get-Content "dist\$name.sha256").Split(' ')[0].ToLower()
+          $got = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "sha256 mismatch: sidecar says $want, file is $got" }
+
+      # Re-running a workflow is a normal thing to do, and gh release create
+      # fails hard when a release for the tag exists. A green no-op is more
+      # useful than a red X for "I already did this".
+      - name: does a release already exist for this tag
+        id: existing
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.build.outputs.tag }}
+        run: gh release view "$env:TAG" --json isDraft
+
+      # Draft, not published: the exe has not run on a real machine yet, and
+      # a release cannot be re-cut for a tag that is already published. The
+      # assets are downloadable from a draft, so smoke testing needs no change
+      # to this. The tag and asset name arrive through env for the same reason
+      # as above; ${env:ASSET} is braced so PowerShell cannot read the
+      # ".sha256" as part of the variable name.
+      - name: create the draft release
+        if: steps.existing.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.build.outputs.tag }}
+          ASSET: ${{ steps.verify.outputs.asset }}
+        run: |
+          gh release create "$env:TAG" `
+            "dist/$env:ASSET" `
+            "dist/${env:ASSET}.sha256" `
+            --draft --verify-tag `
+            --title "commcut $env:TAG" `
+            --generate-notes
+
+      # Only on success. With always() this would also print after a failed
+      # build, claiming a release that is not there.
+      - name: summary
+        run: |
+          $version = python -c "from shared.version import VERSION; print(VERSION)"
+          Write-Host "commcut $version (Windows x64) is attached to a draft release."
+          Write-Host "Download the zip from the draft, extract it, and run commcut.exe."
+          Write-Host "It is unsigned, so SmartScreen will warn: More info -> Run anyway."

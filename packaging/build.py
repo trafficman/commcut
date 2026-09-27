@@ -3,6 +3,8 @@
     python packaging/build.py                # onefile commcut.exe (shipping)
     python packaging/build.py --onedir       # folder build, starts faster
     python packaging/build.py --check-only   # pre-flight checks only
+    python packaging/build.py --zip          # ...and zip it for distribution
+    python packaging/build.py --zip --version v0.1.0   # a release
 
 The output is dist/commcut-portable/:
 
@@ -29,20 +31,46 @@ written outside the folder.
 
 Note that empty folders do not survive being zipped, which is why import/ and
 export/ ship with a placeholder file. See PLACEHOLDER_* below.
+
+Releases
+------------------------------------------------------------------------------
+
+--zip writes dist/<name>.zip next to the folder, holding a single top-level
+folder rather than a flat tree, so that extracting it does not scatter the app
+across a folder the user has other files in and so that two releases extracted
+side by side do not merge each other's settings.json and import/. A .sha256
+sidecar is written with it.
+
+--version names that folder and the zip, and is checked against the version in
+shared/version.py: a tag that disagrees is refused. Without it the archive is
+called commcut-portable-windows-x64.zip, which is what you want for a local
+smoke test rather than a release. .github/workflows/release.yml is the only
+caller that passes one.
 """
 
 import argparse
+import hashlib
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import zipfile
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGING_DIR = os.path.join(PROJECT_ROOT, 'packaging')
 SPEC_PATH = os.path.join(PACKAGING_DIR, 'commcut.spec')
 DIST_DIR = os.path.join(PROJECT_ROOT, 'dist')
+
+# This script is run by path, so sys.path[0] is packaging/ and shared/ is not
+# importable without help. Note that `import packaging` itself would resolve to
+# the PyInstaller dependency rather than to this folder: a directory with no
+# __init__.py is only a namespace portion, and a real package elsewhere on the
+# path always wins that.
+sys.path.insert(0, PROJECT_ROOT)
+
+from shared.version import VERSION  # noqa: E402  (needs the sys.path above)
 
 ONEDIR_APP_DIR = os.path.join(DIST_DIR, 'commcut')
 ONEFILE_EXE = os.path.join(DIST_DIR, 'commcut.exe')
@@ -88,6 +116,32 @@ scheme in Settings describes. Nothing else lives in this folder.
 # and shipping one produces a build that installs cleanly and then fails the
 # first time it tries to cut a clip -- with no useful error.
 MIN_BINARY_BYTES = 1024 * 1024
+
+# What the archive calls this platform. Data rather than an if-chain so that
+# the second platform is one edit here. check_platform() is the only way to
+# reach the zip code, so there is nothing to branch on yet.
+ARTIFACT_PLATFORM = 'windows-x64'
+
+# The name used with no --version, for a local smoke test rather than a
+# release. Matches PORTABLE_DIR, so the folder and the zip it becomes agree.
+DEFAULT_ARCHIVE_ROOT = 'commcut-portable'
+
+# What has to be in the archive, as paths relative to the top-level folder and
+# always with forward slashes -- they are zip paths, not OS paths. The onefile
+# build gets no on-disk layout check (its payload unpacks at run time), so this
+# is what verifies a shipping archive at all, and it holds for --onedir too.
+REQUIRED_ARCHIVE_ENTRIES = (
+    'commcut.exe',
+    'bin/win/ffmpeg.exe',
+    'bin/win/ffprobe.exe',
+    'bin/win/libmpv-2.dll',
+    'import/README.txt',
+    'export/README.txt',
+)
+
+# Read the archive's contents in chunks rather than whole: the biggest file in
+# it is a 130 MB ffmpeg.exe, and its hash does not fit in a reason.
+_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class BuildError(Exception):
@@ -142,6 +196,48 @@ def preflight():
     check_platform()
     _say("checking bundled binaries")
     check_binaries()
+
+
+# ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+
+def normalize_version(text):
+    """The bare version in `text`: no whitespace, no leading `v`.
+
+    A tag is `v` followed by the version and the version constant in
+    shared/version.py is neither, so the prefix is stripped here rather than
+    stored twice. `v0.1.0` and `0.1.0` name the same release, and a build that
+    treated them as different would refuse every correctly-formed tag.
+    """
+    return text.strip().lstrip('vV')
+
+
+def check_requested_version(requested):
+    """Refuse a --version that is not the version in shared/version.py.
+
+    This is the whole tag-must-match rule, and it lives here because this is
+    the one place that can refuse before a 400 MB build has happened. A tag is
+    otherwise indistinguishable from a good one until somebody reads the
+    release page.
+
+    Returns the bare version, or None when no version was requested -- a local
+    smoke test does not need one and should not have to bump the code to zip a
+    build it is about to throw away.
+    """
+    if requested is None:
+        return None
+
+    wanted = normalize_version(requested)
+    if wanted != VERSION:
+        raise BuildError(
+            f"Asked for version {requested!r} but shared/version.py says "
+            f"{VERSION!r}.\n"
+            f"A release tag has to match the code it releases. Edit "
+            f"VERSION in shared/version.py, or tag the version that is "
+            f"already there."
+        )
+    return wanted
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +339,104 @@ def assemble_portable(onedir):
     _say(f"  {total / (1024 * 1024):.0f} MB in {PORTABLE_DIR}")
 
 
+# ---------------------------------------------------------------------------
+# Archive
+# ---------------------------------------------------------------------------
+
+def _archive_root(version):
+    """The single top-level folder the archive holds."""
+    return f'commcut-{version}' if version else DEFAULT_ARCHIVE_ROOT
+
+
+def archive_name(version):
+    """The zip's filename, with no directory part."""
+    return f'{_archive_root(version)}-{ARTIFACT_PLATFORM}.zip'
+
+
+def _relative_paths(root):
+    """Every file under `root`, as forward-slash relative paths, sorted.
+
+    Sorted so two runs over the same tree produce the same archive in the same
+    order. The bytes are not reproducible anyway -- PyInstaller embeds a build
+    timestamp -- but a stable order makes a diff of two archives meaningful.
+    """
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(filenames):
+            absolute = os.path.join(dirpath, name)
+            relative = os.path.relpath(absolute, root)
+            found.append(relative.replace(os.sep, '/'))
+    return found
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_sha256_sidecar(zip_path):
+    """Write <zip>.sha256 next to the archive and return the digest.
+
+    Two spaces, the way sha256sum writes it, so `sha256sum -c` accepts the file
+    unmodified on Git Bash and a PowerShell `Get-FileHash` comparison is a
+    substring test. The sidecar is a property of the bytes, so it is written
+    here rather than by whatever ships the archive.
+    """
+    digest = _sha256(zip_path)
+    name = os.path.basename(zip_path)
+    with open(f'{zip_path}.sha256', 'w', encoding='utf-8', newline='\n') as out:
+        out.write(f'{digest}  {name}\n')
+    return digest
+
+
+def zip_portable(version=None):
+    """Zip PORTABLE_DIR and return the path. Refuses if the layout is wrong.
+
+    `version` names the top-level folder and the file; None means
+    commcut-portable-windows-x64.zip, which is the local smoke-test form.
+
+    The layout check is what verifies a shipping archive. A onefile payload is
+    unpacked at run time, so `_verify_payload` cannot see it on disk, and a
+    build that installs cleanly and then cannot find its own ffmpeg is exactly
+    the failure that is easiest to ship and hardest to diagnose.
+    """
+    root = _archive_root(version)
+    present = set(_relative_paths(PORTABLE_DIR))
+    missing = [e for e in REQUIRED_ARCHIVE_ENTRIES if e not in present]
+    if missing:
+        raise BuildError(
+            f"The portable folder is missing {len(missing)} of the "
+            f"{len(REQUIRED_ARCHIVE_ENTRIES)} files a distributable needs, so "
+            f"it will not be zipped:\n\n"
+            + "\n".join(f"  {e}" for e in missing)
+            + f"\n\nin {PORTABLE_DIR}\n\n"
+            f"bin/win/ is the one piece that must be beside the exe and is "
+            f"copied in after PyInstaller runs; a build made without a "
+            f"`git lfs pull` has pointer text there instead of binaries."
+        )
+
+    os.makedirs(DIST_DIR, exist_ok=True)
+    zip_path = os.path.join(DIST_DIR, archive_name(version))
+
+    _say(f"zipping {root}/")
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for relative in sorted(present):
+            archive.write(
+                os.path.join(PORTABLE_DIR, *relative.split('/')),
+                f'{root}/{relative}',
+            )
+
+    digest = write_sha256_sidecar(zip_path)
+    size = os.path.getsize(zip_path)
+    _say(f"  {size / (1024 * 1024):.0f} MB {zip_path}")
+    _say(f"  sha256 {digest}")
+    return zip_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build commcut into a portable folder.")
@@ -253,10 +447,20 @@ def main():
     parser.add_argument(
         "--check-only", action="store_true",
         help="Run the pre-flight checks and stop.")
+    parser.add_argument(
+        "--zip", action="store_true", dest="make_zip",
+        help="Also write the distributable as a zip, with a sha256 sidecar. "
+             "The archive holds one top-level folder, not a flat tree.")
+    parser.add_argument(
+        "--version", metavar="TAG", default=None,
+        help=f"Name the archive for a release, e.g. v{VERSION}. Refused unless "
+             f"it matches shared/version.py, so a mistagged release fails the "
+             f"build. Only .github/workflows/release.yml needs this.")
     args = parser.parse_args()
 
     try:
         preflight()
+        version = check_requested_version(args.version)
     except BuildError as error:
         print(f"\nBUILD FAILED (pre-flight):\n{error}", file=sys.stderr)
         return 1
@@ -268,6 +472,8 @@ def main():
     try:
         run_pyinstaller(args.onedir)
         assemble_portable(args.onedir)
+        if args.make_zip:
+            zip_portable(version)
     except subprocess.CalledProcessError as error:
         print(f"\nBUILD FAILED: {error}", file=sys.stderr)
         return 1
