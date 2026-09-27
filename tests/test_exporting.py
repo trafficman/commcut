@@ -386,3 +386,172 @@ def test_plan_export_normalizes_alias_tag_keys(schemes, required_tags, tmp_path)
     )
 
     assert plan.clips[0].relative_components[-1] == "Worlds Finale.mp4"
+
+
+# ---------------------------------------------------------------------------
+# Resume: skipping what a cancelled run already wrote
+# ---------------------------------------------------------------------------
+
+def planned_path(model, schemes, root, index=0):
+    """The relative path segment `index` resolves to, '/' joined."""
+    plan = plan_export(model, schemes, str(root))
+    return plan.clips[index].relative_path
+
+
+def test_skipped_clips_leave_the_plan_but_are_reported(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """The resume path. A cancelled run's clips are excluded from the work,
+    not dropped silently: the caller names them in the dialog that offers to
+    resume, so they have to come back in plan.skipped."""
+    model = make_model(
+        tags_list=[
+            {**required_tags, "title": "First"},
+            {**required_tags, "title": "Second"},
+        ],
+    )
+    root = tmp_path / "library"
+    first = planned_path(model, schemes, root)
+
+    plan = plan_export(model, schemes, str(root), skip_destinations=[first])
+
+    assert [clip.relative_components[-1] for clip in plan.clips] == ["Second.mp4"]
+    assert [clip.relative_path for clip in plan.skipped] == [first]
+    assert [clip.segment_index for clip in plan.skipped] == [0]
+
+
+def test_a_skipped_destination_may_already_exist(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """The whole reason the skip exists. The clipped-up file from the
+    cancelled run is on disk, and the existing-destination check must not
+    refuse the batch over it -- it is excluded from plan.clips before
+    preflight ever sees it."""
+    model = make_model(
+        tags_list=[
+            {**required_tags, "title": "First"},
+            {**required_tags, "title": "Second"},
+        ],
+    )
+    root = tmp_path / "library"
+    first = planned_path(model, schemes, root)
+    committed = root / first
+    committed.parent.mkdir(parents=True)
+    committed.write_bytes(b"already exported")
+
+    plan = plan_export(model, schemes, str(root), skip_destinations=[first])
+
+    assert [clip.relative_components[-1] for clip in plan.clips] == ["Second.mp4"]
+
+
+def test_an_unskipped_existing_destination_still_refuses(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """Resume must not weaken no-clobber. A file the caller did not claim to
+    have written is still a conflict, so a re-tagged clip can never be
+    silently skipped or silently overwritten."""
+    model = make_model(
+        tags_list=[
+            {**required_tags, "title": "First"},
+            {**required_tags, "title": "Second"},
+        ],
+    )
+    root = tmp_path / "library"
+    first = planned_path(model, schemes, root)
+    committed = root / first
+    committed.parent.mkdir(parents=True)
+    committed.write_bytes(b"already exported")
+
+    with pytest.raises(ExportPlanError, match="already exists"):
+        plan_export(
+            model,
+            schemes,
+            str(root),
+            skip_destinations=["Network/Some Other Clip.mp4"],
+        )
+
+
+def test_a_skip_does_not_suppress_a_validation_error(tmp_path, required_tags):
+    """A skip is a destination decision, not a validation escape.
+
+    One segment is named in the skip list and is fine; the other has an
+    incomplete record. The batch must refuse and name the bad one, rather than
+    quietly planning the segment the skip covered.
+    """
+    schemes = ExportSchemes("{title}", "{network}/{filler_type}/{time_period}")
+    root = tmp_path / "library"
+    skippable = {**required_tags, "title": "First"}
+    incomplete = {
+        key: value
+        for key, value in required_tags.items()
+        if key != "filler_type"
+    }
+    incomplete["title"] = "Second"
+    model = make_model(
+        duration=4.0,
+        tags_list=[skippable, incomplete],
+    )
+    destination = planned_path(make_model(tags_list=[skippable]), schemes, root)
+
+    with pytest.raises(ExportPlanError, match="Segment 2 is missing required tags"):
+        plan_export(model, schemes, str(root), skip_destinations=[destination])
+
+
+def test_a_skip_matches_case_insensitively(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """Skips are matched in the same normalized key space as the conflict
+    check, so a case-variant cannot make a skip miss and re-cut a clip."""
+    model = make_model(
+        tags_list=[
+            {**required_tags, "title": "First"},
+            {**required_tags, "title": "Second"},
+        ],
+    )
+    root = tmp_path / "library"
+    first = planned_path(model, schemes, root)
+
+    plan = plan_export(model, schemes, str(root), skip_destinations=[first.swapcase()])
+
+    assert [clip.relative_components[-1] for clip in plan.clips] == ["Second.mp4"]
+    assert [clip.relative_path for clip in plan.skipped] == [first]
+
+
+def test_skipping_everything_says_why(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """Otherwise the user is told the model has no non-ignored clips, which is
+    false and explains nothing about why the export came back empty."""
+    model = make_model(tags_list=[{**required_tags, "title": "First"}])
+    root = tmp_path / "library"
+    destination = planned_path(model, schemes, root)
+
+    with pytest.raises(ExportPlanError, match="already written"):
+        plan_export(model, schemes, str(root), skip_destinations=[destination])
+
+
+def test_skip_destinations_must_be_relative_paths(
+    schemes,
+    required_tags,
+    tmp_path,
+):
+    """A bare string is iterable, so without the guard every character would
+    become a one-component skip key and silently match nothing."""
+    model = make_model(tags_list=[{**required_tags, "title": "First"}])
+    root = str(tmp_path / "library")
+
+    with pytest.raises(TypeError, match="collection of relative paths"):
+        plan_export(model, schemes, root, skip_destinations="Network/First.mp4")
+
+    with pytest.raises(TypeError, match="non-empty strings"):
+        plan_export(model, schemes, root, skip_destinations=[""])

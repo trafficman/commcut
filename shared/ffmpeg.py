@@ -8,6 +8,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 
 from shared.environment import get_binary_path
@@ -38,10 +39,20 @@ class ExportClipFailure:
     message: str
 
 
+class ExportCancelled(RuntimeError):
+    """A clip was stopped because the run was cancelled, not because it failed.
+
+    Distinct from a plain RuntimeError so the executor can break out of the
+    batch without recording a failure for a clip the user deliberately stopped.
+    """
+
+
 @dataclass(frozen=True)
 class ExportExecutionResult:
     written_paths: tuple[str, ...]
+    written_relative_paths: tuple[str, ...]
     failures: tuple[ExportClipFailure, ...]
+    cancelled: bool
 
     @property
     def succeeded(self) -> int:
@@ -66,6 +77,45 @@ def _commit_temporary_output(temporary_path: str, destination: str) -> None:
         os.rename(temporary_path, destination)
 
 
+#: How often a running ffmpeg is polled for a cancel request. This is the
+#: upper bound on how long a cancel takes to land mid-clip.
+_CANCEL_POLL_SECONDS = 0.05
+
+
+def _run_ffmpeg(command, should_cancel=None) -> tuple[int, str]:
+    """Run one ffmpeg command to completion, honoring a cooperative cancel.
+
+    stderr goes to a temporary file rather than a PIPE on purpose: nothing
+    drains it while the encode runs, and a full pipe buffer stalls ffmpeg
+    dead. It is read back only to report a failure.
+
+    A cancel terminates the encoder instead of waiting it out. On Windows
+    terminate is TerminateProcess, so it is immediate rather than graceful and
+    needs no grace/kill escalation; the caller discards the uncommitted
+    temporary file either way, so a half-written file is never observable.
+    """
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+        )
+        try:
+            while process.poll() is None:
+                if should_cancel is not None and should_cancel():
+                    process.terminate()
+                    process.wait()
+                    raise ExportCancelled()
+                time.sleep(_CANCEL_POLL_SECONDS)
+            process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        errors.seek(0)
+        return process.returncode, errors.read().decode("utf-8", "replace")
+
+
 def _run_planned_clip(
     ffmpeg_path: str,
     source_path: str,
@@ -74,6 +124,7 @@ def _run_planned_clip(
     export_root: str,
     relative_parent: tuple[str, ...],
     crf: int,
+    should_cancel=None,
 ) -> str:
     parent = os.path.dirname(destination)
     validate_export_parent(export_root, relative_parent)
@@ -104,16 +155,10 @@ def _run_planned_clip(
             or (current_stat.st_dev, current_stat.st_ino) != temporary_identity
         ):
             raise RuntimeError("Temporary export path changed before ffmpeg execution")
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if result.returncode != 0:
-            message = (result.stderr or "").strip()
-            raise RuntimeError(message or f"ffmpeg exited with code {result.returncode}")
+        returncode, stderr = _run_ffmpeg(command, should_cancel)
+        if returncode != 0:
+            message = stderr.strip()
+            raise RuntimeError(message or f"ffmpeg exited with code {returncode}")
         validate_export_parent(export_root, relative_parent)
         current_stat = os.stat(temporary_path, follow_symlinks=False)
         if (
@@ -141,8 +186,22 @@ def execute_export_plan(
     plan: ExportPlan,
     crf: int = 18,
     ffmpeg_path: str | None = None,
+    on_progress=None,
+    should_cancel=None,
 ) -> ExportExecutionResult:
-    """Execute a preflighted named-export plan with structured partial results."""
+    """Execute a preflighted named-export plan with structured partial results.
+
+    `on_progress(clips_done, total, current_relative_path)` is called before
+    each clip and once more as (total, total, "") once the batch is done, so a
+    caller can drive a clip-count progress bar without polling. It must not
+    raise: nothing here is prepared for a progress callback to fail.
+
+    `should_cancel()` is a zero-arg predicate checked before every clip and
+    while each one runs. Setting it stops the batch where it stands: the
+    current clip is terminated, its uncommitted temporary file is discarded,
+    and it is recorded as cancelled rather than failed. Clips already
+    committed stay committed.
+    """
     if not isinstance(plan, ExportPlan):
         raise TypeError("plan must be an ExportPlan")
     source_path = os.path.abspath(source_path)
@@ -165,9 +224,17 @@ def execute_export_plan(
 
     preflight_export_plan(plan)
     written: list[str] = []
+    written_relative: list[str] = []
     failures: list[ExportClipFailure] = []
+    cancelled = False
+    total = len(plan.clips)
 
-    for clip in plan.clips:
+    for clips_done, clip in enumerate(plan.clips):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
+        if on_progress is not None:
+            on_progress(clips_done, total, clip.relative_path)
         validate_export_parent(
             plan.export_root,
             clip.relative_components[:-1],
@@ -183,8 +250,13 @@ def execute_export_plan(
                     plan.export_root,
                     clip.relative_components[:-1],
                     crf,
+                    should_cancel=should_cancel,
                 )
             )
+            written_relative.append(clip.relative_path)
+        except ExportCancelled:
+            cancelled = True
+            break
         except (OSError, RuntimeError) as error:
             failures.append(
                 ExportClipFailure(
@@ -194,9 +266,16 @@ def execute_export_plan(
                 )
             )
 
+    # A cancelled batch did not finish, so it does not claim a full bar on its
+    # way out.
+    if on_progress is not None and not cancelled:
+        on_progress(total, total, "")
+
     return ExportExecutionResult(
         written_paths=tuple(written),
+        written_relative_paths=tuple(written_relative),
         failures=tuple(failures),
+        cancelled=cancelled,
     )
 
 
@@ -207,14 +286,28 @@ def export_named_model(
     out_dir: str,
     crf: int = 18,
     ffmpeg_path: str | None = None,
+    skip_destinations=(),
+    on_progress=None,
+    should_cancel=None,
 ):
-    """Plan and execute one complete named export from an in-memory model."""
-    plan = plan_export(model, schemes, out_dir)
+    """Plan and execute one complete named export from an in-memory model.
+
+    `skip_destinations` names planned destinations to leave out, which is how a
+    cancelled export resumes without re-cutting what it already wrote.
+    """
+    plan = plan_export(
+        model,
+        schemes,
+        out_dir,
+        skip_destinations=skip_destinations,
+    )
     result = execute_export_plan(
         source_path,
         plan,
         crf=crf,
         ffmpeg_path=ffmpeg_path,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
     )
     return plan, result
 

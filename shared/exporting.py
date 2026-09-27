@@ -7,7 +7,7 @@ import math
 import os
 import shutil
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Real
 
@@ -75,6 +75,9 @@ class PlannedExportClip:
 class ExportPlan:
     clips: tuple[PlannedExportClip, ...]
     export_root: str
+    #: Clips left out of this run because a cancelled run in the same editing
+    #: session already wrote them. Reported, never silently dropped.
+    skipped: tuple[PlannedExportClip, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +152,24 @@ def _normalized_relative_key(relative_components: Sequence[str]) -> tuple[str, .
         normalized_validation_key(component)
         for component in relative_components
     )
+
+
+def _normalized_skip_keys(
+    skip_destinations: Collection[str],
+) -> set[tuple[str, ...]]:
+    """Normalize the caller's destination list into the planner's key space.
+
+    Matching goes through the same normalized keys the conflict check uses, so
+    a case-variant on disk can neither miss a skip nor match the wrong file.
+    """
+    if isinstance(skip_destinations, (str, bytes)):
+        raise TypeError("skip_destinations must be a collection of relative paths")
+    keys: set[tuple[str, ...]] = set()
+    for value in skip_destinations:
+        if not isinstance(value, str) or not value:
+            raise TypeError("skip_destinations must contain non-empty strings")
+        keys.add(_normalized_relative_key(value.split("/")))
+    return keys
 
 
 def _canonical_tags(tags: Mapping[str, str], segment_index: int) -> dict[str, str]:
@@ -494,12 +515,27 @@ def plan_export(
     model: SegmentModel,
     schemes: ExportSchemes,
     export_root: str,
+    skip_destinations: Collection[str] = (),
 ) -> ExportPlan:
-    """Resolve every keep-segment and preflight the complete batch."""
+    """Resolve every keep-segment and preflight the complete batch.
+
+    `skip_destinations` names planned relative paths
+    (`PlannedExportClip.relative_path`) to leave out of this run, which is how a
+    cancelled export resumes without re-cutting clips it already wrote. The
+    skip is a *destination* decision, so it is applied only after the segment's
+    tags are canonicalized and required-validated: a skipped clip with an
+    incomplete record still refuses the batch, exactly as it would have.
+
+    Skipped clips are excluded from `ExportPlan.clips`, so the preflight's
+    existing-destination check never sees them -- that is the point. They are
+    returned in `ExportPlan.skipped` so the caller can name them rather than
+    silently dropping work.
+    """
     if not isinstance(model, SegmentModel):
         raise TypeError("model must be a SegmentModel")
     if not isinstance(schemes, ExportSchemes):
         raise TypeError("schemes must be an ExportSchemes snapshot")
+    skip_keys = _normalized_skip_keys(skip_destinations)
 
     validate_segment_model(model)
     root = _validate_export_root(export_root)
@@ -507,6 +543,7 @@ def plan_export(
     folder_scheme = compile_folder_scheme(schemes.folder_scheme)
 
     planned: list[PlannedExportClip] = []
+    skipped: list[PlannedExportClip] = []
     errors: list[str] = []
     owners: dict[tuple[str, ...], int] = {}
 
@@ -541,29 +578,41 @@ def plan_export(
             )
             continue
         key = _normalized_relative_key(relative_components)
+        clip = PlannedExportClip(
+            segment_index=segment_index,
+            start=float(start),
+            duration=float(duration),
+            relative_components=relative_components,
+        )
+        if key in skip_keys:
+            skipped.append(clip)
+            continue
         if key in owners:
             errors.append(
                 f"Segments {owners[key] + 1} and {segment_index + 1} resolve to the "
-                f"same destination: {'/'.join(relative_components)}"
+                f"same destination: {relative_text}"
             )
             continue
         owners[key] = segment_index
-        planned.append(
-            PlannedExportClip(
-                segment_index=segment_index,
-                start=float(start),
-                duration=float(duration),
-                relative_components=relative_components,
-            )
-        )
+        planned.append(clip)
 
     if not model.segments:
         errors.append("The segment model is empty")
     elif not planned and not errors:
-        errors.append("The segment model has no non-ignored clips")
+        if skipped:
+            errors.append(
+                f"Every clip in this batch was already written by an earlier "
+                f"export ({len(skipped)} skipped)"
+            )
+        else:
+            errors.append("The segment model has no non-ignored clips")
     if errors:
         raise ExportPlanError("Export preflight failed:\n- " + "\n- ".join(errors))
 
-    plan = ExportPlan(clips=tuple(planned), export_root=root)
+    plan = ExportPlan(
+        clips=tuple(planned),
+        export_root=root,
+        skipped=tuple(skipped),
+    )
     preflight_export_plan(plan)
     return plan

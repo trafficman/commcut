@@ -117,8 +117,10 @@ The full vision in `README.md` has three pieces; two are not started:
   transcode only the partial-keyframe ends, then concat. The placeholder
   `clip_to_temp` (stream copy) still lives in `shared/ffmpeg.py`; the
   keyframe-bracketed smart-cut version replaces/augments `export_named_model`
-  when it lands. Also wire export into a background `QThread` (today it runs on
-  the GUI thread, which blocks the editor while cutting).
+  when it lands. It replaces the transcode inside the existing worker, not the
+  worker itself: `shared/ffmpeg.py:execute_export_plan` already takes
+  `on_progress`/`should_cancel` and `editor/editor.py:ExportWorker` already runs
+  it off the GUI thread behind a progress dialog.
 - **Choosing folders**: import/ and export/ are fixed beside the executable for
   this alpha, and the Settings rows say so. When they become configurable,
   `shared/sources.py:import_folder()` and the export root in
@@ -137,9 +139,14 @@ The full vision in `README.md` has three pieces; two are not started:
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
   The legacy numeric `export_segment_clips()` helper still exists for
   compatibility, but Editor export uses the named planner/executor path.
-- Export runs synchronously on the GUI thread; move to a worker `QThread`
-  (see `PreScanWorker` in `editor/editor.py`) for the smart-cut step so the
-  editor stays responsive.
+- Export runs on a worker `QThread` behind a modal `QProgressDialog`, with a
+  working Cancel and a Resume for a cancelled run — see
+  [naming-and-organization.md](naming-and-organization.md#export-pipeline).
+  The editor is frozen for the duration, so a long batch is legible but not
+  interruptible by editing; the progress bar counts clips, so it sits still for
+  the length of one long segment. The remaining threading work is the scanner's
+  `scan_keyframes` pre-pass, which is still called inline from `__main__` in
+  `editor/editor.py` (the `PreScanWorker` next to it is scaffolding, unwired).
 - The boundary peek has no settings toggle; it is always on at 15 frames /
   450ms.
 - `End Seg` only works forward. Moving the *previous* segment's end back to the

@@ -8,9 +8,16 @@ code rather than a re-implementation.
 
 import os
 
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
-from editor.editor import MediaPlayer, _LOCK_BUTTONS, _REQUIRED_TAG_FIELDS, _TAG_FIELDS
+from editor.editor import (
+    ExportWorker,
+    MediaPlayer,
+    _LOCK_BUTTONS,
+    _REQUIRED_TAG_FIELDS,
+    _TAG_FIELDS,
+)
 from shared.mpv import BoundaryPreview
 from shared.segments import SegmentModel
 from shared.timeline import TimelineWidget
@@ -66,6 +73,161 @@ class FakeBridge:
         return seeks
 
 
+class FakeSignal:
+    """A stand-in for a Qt signal: collect the slots, then fire them in order.
+
+    Signals rather than hand-called methods, so the shipped wiring
+    (`thread.started.connect(worker.run)`) runs exactly as written instead of
+    being re-implemented to fit the fake.
+    """
+
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, *args):
+        for slot in self.slots:
+            slot(*args)
+
+
+class FakeExportWorker:
+    """Stands in for ExportWorker so the window's wiring runs synchronously.
+
+    It forwards to a real, un-moved ExportWorker, so the shipped `run()` and its
+    signals still execute. The substitute is needed because the shipped code
+    calls `moveToThread` on the worker: a QObject moved to a thread that never
+    started delivers its signals *queued*, so a stubbed thread would quietly
+    turn every wiring test into a no-op that asserts nothing. The real worker
+    against a real QThread is covered by the responsiveness test.
+    """
+
+    def __init__(self, source_path, model, schemes, out_dir,
+                 skip_destinations=(), cancel_event=None):
+        self.planned = FakeSignal()
+        self.advanced = FakeSignal()
+        self.finished = FakeSignal()
+        self.thread = None
+        self.deleted = False
+        self._real = ExportWorker(
+            source_path,
+            model,
+            schemes,
+            out_dir,
+            skip_destinations=skip_destinations,
+            cancel_event=cancel_event,
+        )
+
+    def moveToThread(self, thread):
+        self.thread = thread
+
+    def run(self):
+        self._real.planned.connect(self.planned.emit)
+        self._real.advanced.connect(self.advanced.emit)
+        self._real.finished.connect(self.finished.emit)
+        self._real.run()
+
+    def deleteLater(self):
+        self.deleted = True
+
+
+class FakeThread(QThread):
+    """A QThread that never starts, so the export wiring runs synchronously.
+
+    A real thread would make these tests wait on an event loop, which is how a
+    test file starts flaking. This is still a real QThread, because the shipped
+    code hands one to `QObject.moveToThread`; it simply emits the same signals a
+    running one would, in the same order, from the calling thread. With
+    `auto_run=False` the batch is left parked, so a test can inspect the frozen
+    editor while the run is nominally in flight.
+    """
+
+    def __init__(self, parent=None):
+        # The window is not a QObject in the stub, so `parent` cannot be used.
+        super().__init__()
+        self.quit_calls = 0
+        self.running = False
+        self.deleted = False
+        self.auto_run = True
+
+    def start(self):
+        self.running = True
+        if not self.auto_run:
+            return
+        self.started.emit()
+        # What the real thread does once its event loop ends. The worker has
+        # already called quit() by now, so this is the shipped order.
+        self.running = False
+        self.finished.emit()
+
+    def quit(self):
+        self.quit_calls += 1
+
+    def deleteLater(self):
+        self.deleted = True
+
+
+class FakeDialog:
+    """The QProgressDialog surface the export handlers drive."""
+
+    def __init__(self, *args, **kwargs):
+        self.title = ""
+        self.label = ""
+        self.minimum = 0
+        self.maximum = 0
+        self.value = 0
+        self.cancel_button = "Cancel"
+        self.reset_calls = 0
+        self.deleted = False
+        self.shown = False
+        self.canceled = FakeSignal()
+
+    def setWindowTitle(self, title):
+        self.title = title
+
+    def setLabelText(self, text):
+        self.label = text
+
+    def setRange(self, minimum, maximum):
+        self.minimum = minimum
+        self.maximum = maximum
+
+    def setValue(self, value):
+        self.value = value
+
+    def setCancelButtonText(self, text):
+        self.cancel_button = text
+
+    def setCancelButton(self, button):
+        self.cancel_button = button
+
+    def setMinimumDuration(self, _milliseconds):
+        pass
+
+    def setAutoClose(self, _enabled):
+        pass
+
+    def setAutoReset(self, _enabled):
+        pass
+
+    def setWindowModality(self, _modality):
+        pass
+
+    def show(self):
+        self.shown = True
+
+    def reset(self):
+        self.reset_calls += 1
+
+    def deleteLater(self):
+        self.deleted = True
+
+    def press_cancel(self):
+        """What clicking Cancel does."""
+        self.canceled.emit()
+
+
 class EditorStub:
     """Minimal MediaPlayer surface covering the tag and segment code paths."""
 
@@ -93,6 +255,20 @@ class EditorStub:
     on_step_keyframe = MediaPlayer.on_step_keyframe
     on_transport_clicked = MediaPlayer.on_transport_clicked
     on_file_loaded = MediaPlayer.on_file_loaded
+    # The export path, driven through the same stub: on_export and its handlers
+    # are the shipped wiring, and the QThread is the one thing stubbed out.
+    on_export = MediaPlayer.on_export
+    _prepare_export = MediaPlayer._prepare_export
+    _choose_resume_skips = MediaPlayer._choose_resume_skips
+    _start_export = MediaPlayer._start_export
+    _on_export_planned = MediaPlayer._on_export_planned
+    _on_export_advanced = MediaPlayer._on_export_advanced
+    _on_export_cancel_requested = MediaPlayer._on_export_cancel_requested
+    _on_export_finished = MediaPlayer._on_export_finished
+    _on_export_stopped = MediaPlayer._on_export_stopped
+    _report_export_outcome = MediaPlayer._report_export_outcome
+    _show_export_cancelled = MediaPlayer._show_export_cancelled
+    closeEvent = MediaPlayer.closeEvent
 
     def __init__(self, segments, duration=120.0, media_path=None):
         ensure_qapp()
@@ -114,7 +290,7 @@ class EditorStub:
         for key, attr in _TAG_FIELDS.items():
             getattr(self.ui, attr).textChanged.connect(
                 lambda text, k=key: self.on_tag_edited(k, text))
-        for attr in ("clipEnd", "clipStart"):
+        for attr in ("clipEnd", "clipStart", "exportButton"):
             setattr(self.ui, attr, QPushButton())
         self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
         # The real timeline widget plus the zoom toggle, so the shipped zoom
@@ -145,10 +321,31 @@ class EditorStub:
         # bridge, and the boundary peek rides on it.
         self.bridge = FakeBridge(duration=duration)
         self.boundary_preview = BoundaryPreview(self.bridge)
-        # Mirrors the self._refresh_timeline() call at the end of
+        # The export lifecycle, in the state MediaPlayer.__init__ leaves it in.
+        self._export_thread = None
+        self._export_worker = None
+        self._export_dialog = None
+        self._export_cancel = None
+        self._resume_skips = frozenset()
+        self._close_after_export = False
+        self._last_export_outcome = None
+        # setEnabled() is a QWidget method the stub does not inherit, so the
+        # export freeze is observable through a recorded flag instead. That is
+        # the property the tests care about: the editor is frozen for the run.
+        self.editor_enabled = True
+        self.closed = False
+        # Mirrors the _refresh_timeline() call at the end of
         # MediaPlayer.__init__, so the initial form/lock/outline/zoom state
         # matches.
         self._refresh_timeline()
+
+    # --- export seams ---
+
+    def setEnabled(self, enabled):
+        self.editor_enabled = enabled
+
+    def close(self):
+        self.closed = True
 
     # --- helpers ---
 

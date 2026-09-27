@@ -192,11 +192,11 @@ filename limit. Raw `.cmct` tag values remain unchanged.
 ## Export pipeline
 
 The editor export flow is `editor/editor.py:on_export` →
-`shared.ffmpeg.export_named_model` → `shared.exporting.plan_export`. It
-persists the in-memory `.cmct`, applies session tag locks to wholly unedited
-segments, reads both persisted schemes, plans every named destination, and
-frame-accurately re-encodes each keep-segment (libx264/aac, **not** `-c copy`)
-beneath `export/`.
+`editor/editor.py:ExportWorker.run` → `shared.exporting.plan_export` →
+`shared.ffmpeg.execute_export_plan`. It persists the in-memory `.cmct`, applies
+session tag locks to wholly unedited segments, reads both persisted schemes,
+plans every named destination, and frame-accurately re-encodes each
+keep-segment (libx264/aac, **not** `-c copy`) beneath `export/`.
 
 `plan_export` requires an unconditional top-level `{title}`, sanitizes the
 rendered stem, appends `.mp4`, and combines it with the folder scheme's safe
@@ -210,6 +210,90 @@ failures are returned as a partial result (`ExportExecutionResult` with
 
 Still pending is the smart-cut (keyframe-bracketed lossless copy +
 partial-keyframe transcode + concat) version — see [status.md](status.md).
+
+### The export runs off the GUI thread
+
+`on_export` splits in two. `_prepare_export` stays on the GUI thread, because it
+touches the form and the live model and must report a refusal immediately: it
+validates the required tags, writes the `.cmct`, and hands the worker a **model
+snapshot** from `model_with_tag_locks` (a new `SegmentModel`, never the live
+one) plus the two schemes and the export root. Everything after that —
+`plan_export` and `execute_export_plan` — runs on `ExportWorker` in a `QThread`,
+so neither the event loop nor mpv stops for the length of the batch.
+
+While a run is in flight the window is disabled and mpv is paused. The whole
+window rather than just the export button, because the worker holds a snapshot:
+an edit made during a run would silently not reach the files, and a control that
+appears live but does nothing is worse than one that is visibly frozen. The
+snapshot boundary is the reason the freeze is honest rather than a workaround.
+
+Two callbacks connect the executor to the dialog. `on_progress(clips_done,
+total, current_relative_path)` fires before every clip and once more as
+`(total, total, "")`, which is all a clip-count bar needs — the bar advances per
+clip, not per frame, so it sits still for the length of one long segment. The
+dialog is indeterminate while planning, because `plan_export` walks the whole
+export tree twice before ffmpeg starts. `should_cancel()` is checked before
+every clip and while each one runs.
+
+`execute_export_plan` drives ffmpeg through `subprocess.Popen` rather than
+`subprocess.run`, for two reasons. `stderr` goes to a `tempfile.TemporaryFile`
+instead of a `PIPE` because nothing drains a pipe while the encode runs and a
+full 64 KB buffer stalls ffmpeg; it is read back only to report a failure, so
+the `RuntimeError` message is unchanged. And the process handle is what a cancel
+terminates. On Windows `terminate()` is `TerminateProcess` — immediate rather
+than graceful, so no grace/kill escalation follows it — and the clip's
+uncommitted temporary file is discarded by the same `finally` that has always
+handled a failed encode. A cancelled clip therefore leaves neither a destination
+nor a temp file, and is recorded as cancelled (`ExportExecutionResult.cancelled`)
+rather than as an `ExportClipFailure`: the user stopped it on purpose, and
+`ffmpeg exited with code -15` is not an error to report.
+
+### Cancelling, and resuming
+
+A cancelled run leaves the clips it already committed on disk. The preflight
+refuses any destination that exists, so a plain retry would fail on every one of
+them. The editor therefore remembers the run's own committed destinations
+(`ExportExecutionResult.written_relative_paths`) and offers to resume:
+
+- **Export the rest** passes them to `plan_export(..., skip_destinations=...)`,
+  which excludes them from `ExportPlan.clips` — so the existing-destination
+  check never sees them — and returns them in `ExportPlan.skipped` for the
+  dialog to name. Skips are matched in the same normalized key space as the
+  conflict check, so a case-variant cannot make one miss.
+- **Start over** clears the list, so the batch is planned normally and the
+  preflight refusal names each existing file. This is the honest outcome when
+  the user has re-tagged a clip and wants it written under a new name.
+
+The skip list is `MediaPlayer` state, not something derived from the filesystem,
+and that is the invariant: **a destination is only ever skipped if this editing
+session's own cancelled run wrote it.** A skip inferred from "the file is
+already there" would let a re-tagged clip be silently skipped forever, and would
+quietly weaken the no-clobber rule. Reopening the editor discards the list.
+
+Skipping is a *destination* decision and is applied after the segment's tags are
+canonicalized and required-validated, so a skipped clip with an incomplete
+record still refuses the whole batch.
+
+### Closing the window mid-run
+
+`MediaPlayer.closeEvent` ignores the close while a run is in flight and asks
+whether to cancel it and close. Confirming sets the cancel event and a
+close-after flag; the window closes from `_on_export_stopped`, i.e. once the
+thread has actually stopped. Destroying a `QThread` that is still running aborts
+the process, so there is no path that lets the window go first. The progress
+dialog is deliberately **parentless** — `setEnabled(False)` cascades to child
+widgets, and a disabled dialog's Cancel button does nothing — and deliberately
+not application-modal, so the window's own close button still reaches
+`closeEvent`.
+
+`setAutoClose`/`setAutoReset` are both off for the same reason: a `QProgressDialog`
+closes itself and emits `canceled` when its value reaches the maximum, which
+would read as the user cancelling a successful export and then offer to resume a
+batch that had nothing to resume.
+
+Every outcome is written to `commcut.log` via `shared.diagnostics.log`. A dialog
+appears only when something needs saying: a refusal, per-clip failures, or a
+cancel. A clean export gets none.
 
 ## Settings Scheme UI
 
@@ -261,5 +345,7 @@ editor for folder schemes:
 `tests/test_scheme.py` (strict parsing), `tests/test_paths.py` (folder grammar
 and sanitation), `tests/test_naming.py` (filename rendering, including the
 README pattern), `tests/test_settings.py` (the window, previews, atomic save,
-and the help panels), `tests/test_exporting.py` (settings, planning, preflight),
-and `tests/test_ffmpeg.py` (plan execution and partial failures).
+and the help panels), `tests/test_exporting.py` (settings, planning, preflight,
+resume skips), `tests/test_ffmpeg.py` (plan execution, progress, cancel,
+partial failures), and `tests/test_editor_export.py` (the worker, the progress
+dialog, cancel, resume, and closing mid-run).

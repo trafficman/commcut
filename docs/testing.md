@@ -58,8 +58,9 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
 | `test_scheme.py` | strict scheme parsing |
 | `test_naming.py` | filename rendering, including the README pattern |
 | `test_paths.py` | strict folder scheme compilation, rendering, and sanitation |
-| `test_exporting.py` | export settings, destination planning, and preflight |
-| `test_ffmpeg.py` | plan-based ffmpeg execution and partial-failure reporting (executor mocked) |
+| `test_exporting.py` | export settings, destination planning, preflight, resume skips |
+| `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting (`Popen` mocked) |
+| `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels |
 | `test_docs.py` | the documentation guard (see below) |
 
@@ -87,6 +88,30 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
 - **Documentation claims are testable.** `test_file_help_states_the_title_rule_the_compiler_enforces`
   checks the in-app help against `file_scheme_error`, so the help cannot drift
   into lying. The same idea guards these docs (below).
+- **A stubbed thread is not enough to prove off-thread work.** The export tests
+  substitute `QThread` and `ExportWorker` so the wiring runs synchronously and
+  cannot flake. That combination cannot distinguish "runs elsewhere" from
+  "returns fast", so `test_the_gui_thread_is_not_blocked_by_the_batch` uses a
+  real `QThread` and a real blocking executor, and asserts a *queued* signal is
+  delivered while the worker is still running. The queued connection is the
+  point: a direct one fires without the event loop, so it would pass against the
+  original bug.
+- **Do not let a `QThread` be collected in a test.** The editor holds the thread
+  and the worker on `self` and nulls both from `thread.finished`; a test that
+  drops the reference destroys a running thread, which aborts the interpreter
+  rather than failing an assertion.
+- **`FakePopen` replaces `subprocess.run`.** `shared/ffmpeg.py:_run_ffmpeg`
+  drives ffmpeg through `Popen` so a cancel can terminate it, which means the
+  mock seam in `test_ffmpeg.py` is a fake process class, not a fake
+  `CompletedProcess`. `Encoding.poll_count` models a clip that is still running,
+  which is what makes a mid-clip cancel reachable. `_CANCEL_POLL_SECONDS` is
+  monkeypatched to 0 so the poll loop does not put 50 ms in the suite.
+- **The suite mocks ffmpeg, so it cannot catch a broken `Popen`.**
+  `tests/real_ffmpeg_check.py` (not named `test_*.py`, so pytest skips it) runs
+  the export against the bundled binary: a clean batch, a cancel part-way
+  through, the resume that follows, and a failing clip. It is the only thing
+  that executes the terminate path against a live encoder. Run it by hand after
+  touching `shared/ffmpeg.py`.
 
 ## The documentation guard
 

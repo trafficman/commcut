@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+from dataclasses import dataclass
 
 # Make the project root importable so 'shared' resolves. This must happen
 # before importing anything from shared.
@@ -8,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.diagnostics import install_excepthook, log
+from shared.diagnostics import install_excepthook, log, log_exception
 from shared.mpv import (
     BoundaryPreview, MpvBridge, SEGMENT_PREVIEW_DWELL_MS,
     SEGMENT_PREVIEW_FRAMES, create_mpv_player, scan_keyframes,
@@ -20,11 +22,21 @@ from shared.segments import (
     END_BOUNDARY_BLOCKED, END_BOUNDARY_NO_CHANGE,
 )
 from shared.sources import require_source_video
-from shared.exporting import missing_required_tags
+from shared.exporting import (
+    load_export_schemes,
+    missing_required_tags,
+    model_with_tag_locks,
+    validate_segment_model,
+)
+from shared.ffmpeg import (
+    execute_export_plan,
+    ExportExecutionResult,
+    plan_export,
+)
 
 # Qt libs
 from PySide6.QtWidgets import (
-    QMainWindow, QApplication, QStyle, QSplashScreen, QMessageBox
+    QMainWindow, QApplication, QProgressDialog, QStyle, QSplashScreen, QMessageBox
 )
 from shared.ui_loader import UiLoader
 from PySide6.QtCore import Qt, QFile, QObject, Signal, Slot, QThread
@@ -51,6 +63,88 @@ class PreScanWorker(QObject):
     def run(self):
         keyframes = scan_keyframes(self.path)
         self.finished.emit(keyframes)
+
+
+@dataclass(frozen=True)
+class ExportOutcome:
+    """How a named export ended, in the one shape the window handles.
+
+    `error` covers the failures that stop a run before or outside the batch --
+    an unreadable settings file, a refused preflight, a missing source. A batch
+    that ran and then had per-clip problems is a `result` with failures, not an
+    error. `out_dir` is carried rather than recomputed by the window, so the log
+    line states the directory the batch actually used.
+    """
+    out_dir: str = ""
+    result: ExportExecutionResult | None = None
+    cancelled: bool = False
+    error: str | None = None
+
+
+class ExportWorker(QObject):
+    """Runs one named export off the GUI thread.
+
+    Planning and transcoding both happen here, because planning walks the whole
+    export tree twice and is as slow as the batch looks. The worker holds only
+    plain data -- a model snapshot, the two schemes, a destination root -- and
+    never a widget, so nothing it does can re-enter the editor.
+
+    `finished` is emitted exactly once on every path, including a refused
+    preflight, so the window has one place that tears the export down. The
+    broad `except Exception` is deliberate: an unhandled exception in a QThread
+    slot reaches PySide6's abort path, and install_excepthook does not stop it.
+    """
+    #: total clips, and how many of them this run is skipping
+    planned = Signal(int, int)
+    #: clips already finished, total, relative path of the clip now running
+    advanced = Signal(int, int, str)
+    finished = Signal(object)
+
+    def __init__(self, source_path, model, schemes, out_dir,
+                 skip_destinations=(), cancel_event=None):
+        super().__init__()
+        self.source_path = source_path
+        self.model = model
+        self.schemes = schemes
+        self.out_dir = out_dir
+        self.skip_destinations = tuple(skip_destinations)
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            plan = plan_export(
+                self.model,
+                self.schemes,
+                self.out_dir,
+                skip_destinations=self.skip_destinations,
+            )
+        except Exception as error:
+            log_exception("export planning failed", error)
+            self.finished.emit(ExportOutcome(out_dir=self.out_dir, error=str(error)))
+            return
+
+        if plan.skipped:
+            log(f"export skipping {len(plan.skipped)} already-written clip(s)")
+        self.planned.emit(len(plan.clips), len(plan.skipped))
+
+        try:
+            result = execute_export_plan(
+                self.source_path,
+                plan,
+                on_progress=self.advanced.emit,
+                should_cancel=self.cancel_event.is_set,
+            )
+        except Exception as error:
+            log_exception("export execution failed", error)
+            self.finished.emit(ExportOutcome(out_dir=self.out_dir, error=str(error)))
+            return
+
+        self.finished.emit(ExportOutcome(
+            out_dir=self.out_dir,
+            result=result,
+            cancelled=result.cancelled,
+        ))
 
 
 # Tag key → attribute name on self.ui for the corresponding QLineEdit.
@@ -167,6 +261,22 @@ class MediaPlayer(QMainWindow):
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
         self.current_index = 0
         self.tag_locks = {}  # tag key → locked value, carried across unedited segments
+
+        # --- export state ---
+        # All four stay non-None only while a batch is running, and all four
+        # exist so the running QThread is never garbage collected underneath
+        # itself. _resume_skips is the destinations this session's own cancelled
+        # run committed: the only thing that may be offered as a skip, since a
+        # skip found by looking at the filesystem would silently stop a
+        # re-tagged clip from ever being written again.
+        self._export_thread = None
+        self._export_worker = None
+        self._export_dialog = None
+        self._export_cancel = None
+        self._resume_skips = frozenset()
+        self._close_after_export = False
+        self._last_export_outcome = None
+
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
         self.ui.exportButton.clicked.connect(self.on_export)
@@ -522,19 +632,38 @@ class MediaPlayer(QMainWindow):
         self._activate(self.current_index + 1)
 
     def on_export(self):
-        """Persist edits, plan named destinations, then transcode every keep clip."""
+        """Validate and persist edits, then transcode every keep clip off-thread.
+
+        The window is frozen and the batch runs on a worker thread, because
+        planning alone walks the whole export tree and the transcode is a
+        blocking subprocess per segment: doing either on the GUI thread leaves
+        the editor looking hung for the length of a long source.
+        """
+        if self._export_thread is not None:
+            return
         # Export runs for minutes; a peek firing during it would move the
         # playhead for no reason.
         self.boundary_preview.cancel()
-        self.ui.exportButton.setEnabled(False)
-        try:
-            from shared.exporting import (
-                load_export_schemes,
-                model_with_tag_locks,
-                validate_segment_model,
-            )
-            from shared.ffmpeg import export_named_model
 
+        prepared = self._prepare_export()
+        if prepared is None:
+            return
+        model, schemes, out_dir = prepared
+
+        skip_destinations = self._choose_resume_skips()
+        if skip_destinations is None:
+            return
+        self._start_export(model, schemes, out_dir, skip_destinations)
+
+    def _prepare_export(self):
+        """Check the form, persist the sidecar, and snapshot the batch.
+
+        Returns (model snapshot, schemes, export root), or None after showing
+        the reason it could not. This stays on the GUI thread: it touches the
+        form and the live model, and it is fast, so the user still gets an
+        immediate "Export could not start" instead of waiting on a worker.
+        """
+        try:
             # Check the form before anything is persisted, so an incomplete
             # record is never written to the .cmct sidecar. validate_segment_model
             # only covers structure; the required-tag rule is enforced here and
@@ -553,31 +682,184 @@ class MediaPlayer(QMainWindow):
             self.segment_model.save(sidecar_path(self.media_path))
             self.dirty = False
             self._update_stage_button()
-
-            export_model = model_with_tag_locks(
-                self.segment_model,
-                self.tag_locks,
-            )
-            schemes = load_export_schemes(
-                os.path.join(PROJECT_ROOT, "settings.json")
-            )
-            out_dir = os.path.join(PROJECT_ROOT, "export")
-            _, result = export_named_model(
-                self.media_path,
-                export_model,
-                schemes,
-                out_dir,
+            return (
+                model_with_tag_locks(self.segment_model, self.tag_locks),
+                load_export_schemes(os.path.join(PROJECT_ROOT, "settings.json")),
+                os.path.join(PROJECT_ROOT, "export"),
             )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Export could not start", str(error))
-            return
-        finally:
-            self.ui.exportButton.setEnabled(True)
+            return None
 
-        print(
-            f"Exported {result.succeeded} clip(s) to {out_dir}; "
-            f"{result.failed} failed"
+    def _choose_resume_skips(self):
+        """Ask whether to resume after a cancelled run, or None to not start.
+
+        The clips already written are still on disk, and the preflight refuses
+        any destination that exists, so a plain retry would fail on every one
+        of them. "Start over" is kept as the honest alternative: it leaves the
+        skip list empty, so the refusal names each existing file and the user
+        can decide what to do with it.
+        """
+        if not self._resume_skips:
+            return ()
+        count = len(self._resume_skips)
+        answer = QMessageBox.question(
+            self,
+            "Resume the cancelled export?",
+            f"{count} clip(s) were written before you cancelled.\n\n"
+            "Export the rest, skipping those?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
+        if answer == QMessageBox.Yes:
+            return tuple(self._resume_skips)
+        self._resume_skips = frozenset()
+        return ()
+
+    def _start_export(self, model, schemes, out_dir, skip_destinations):
+        """Freeze the editor and hand the batch to a worker thread."""
+        # mpv's renderer would otherwise decode against libx264 for the length
+        # of the batch. pauseChanged re-syncs the Play button from this.
+        self.player.pause = True
+
+        self._export_cancel = threading.Event()
+        self._export_worker = ExportWorker(
+            self.media_path,
+            model,
+            schemes,
+            out_dir,
+            skip_destinations=skip_destinations,
+            cancel_event=self._export_cancel,
+        )
+        self._export_thread = QThread(self)
+        self._export_worker.moveToThread(self._export_thread)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.planned.connect(self._on_export_planned)
+        self._export_worker.advanced.connect(self._on_export_advanced)
+        self._export_worker.finished.connect(self._on_export_finished)
+        self._export_thread.finished.connect(self._on_export_stopped)
+
+        self.setEnabled(False)
+        # Deliberately parentless: setEnabled(False) above cascades to child
+        # widgets, and a disabled QProgressDialog's Cancel button does nothing.
+        # self._export_dialog keeps it alive instead. The freeze, not the
+        # dialog's modality, is what blocks input -- it is left non-modal so the
+        # window's own close button still reaches closeEvent and can ask about
+        # cancelling the run.
+        dialog = QProgressDialog()
+        dialog.setWindowTitle("Exporting clips")
+        dialog.setLabelText("Planning destinations…")
+        dialog.setRange(0, 0)
+        dialog.setCancelButtonText("Cancel")
+        dialog.setMinimumDuration(0)
+        # Both default to closing (and emitting canceled) the moment the value
+        # reaches the maximum, which would read as the user cancelling a
+        # successful export.
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._on_export_cancel_requested)
+        dialog.show()
+        self._export_dialog = dialog
+
+        self._export_thread.start()
+
+    def _on_export_planned(self, total, skipped):
+        dialog = self._export_dialog
+        if dialog is None:
+            return
+        dialog.setRange(0, max(total, 1))
+        dialog.setValue(0)
+        if skipped:
+            dialog.setLabelText(
+                f"Skipping {skipped} already-written clip(s). "
+                f"Exporting 0 of {total}…"
+            )
+        else:
+            dialog.setLabelText(f"Clip 1 of {total}…")
+
+    def _on_export_advanced(self, clips_done, total, current):
+        dialog = self._export_dialog
+        if dialog is None:
+            return
+        if not current:
+            dialog.setValue(total)
+            dialog.setLabelText(f"Wrote {total} of {total} clip(s).")
+            return
+        dialog.setValue(clips_done)
+        dialog.setLabelText(
+            f"Clip {min(clips_done + 1, total)} of {total} — {current}"
+        )
+
+    def _on_export_cancel_requested(self):
+        """Ask the worker to stop. The encoder is terminated at its next check."""
+        if self._export_cancel is not None:
+            self._export_cancel.set()
+        dialog = self._export_dialog
+        if dialog is not None:
+            # The button has already done its job; leaving it looking live is how
+            # a cancel turns into "did that work?".
+            dialog.setCancelButton(None)
+            dialog.setLabelText("Cancelling…")
+
+    def _on_export_finished(self, outcome):
+        """Log the batch and stash what a resume would need. One code path."""
+        self._last_export_outcome = outcome
+        if outcome.error is not None:
+            log(f"export failed to run: {outcome.error}")
+            self._resume_skips = frozenset()
+        else:
+            result = outcome.result
+            log(
+                f"export to {outcome.out_dir}: "
+                f"{result.succeeded} written, {result.failed} failed, "
+                f"{'cancelled' if outcome.cancelled else 'complete'}"
+            )
+            # A cancelled run is the only thing worth resuming, and only the
+            # clips it actually committed.
+            self._resume_skips = (
+                frozenset(result.written_relative_paths)
+                if outcome.cancelled
+                else frozenset()
+            )
+        if self._export_thread is not None:
+            self._export_thread.quit()
+
+    def _on_export_stopped(self):
+        """Tear the run down and report. Reached only from thread.finished."""
+        dialog = self._export_dialog
+        if dialog is not None:
+            dialog.reset()
+            dialog.deleteLater()
+        thread = self._export_thread
+        if thread is not None:
+            thread.deleteLater()
+        if self._export_worker is not None:
+            self._export_worker.deleteLater()
+        self._export_dialog = None
+        self._export_thread = None
+        self._export_worker = None
+        self._export_cancel = None
+        self.setEnabled(True)
+
+        if self._close_after_export:
+            self._close_after_export = False
+            self.close()
+            return
+        outcome, self._last_export_outcome = self._last_export_outcome, None
+        if outcome is None:
+            log("export thread ended without reporting an outcome")
+            return
+        self._report_export_outcome(outcome)
+
+    def _report_export_outcome(self, outcome):
+        """Say what happened, and only when something did."""
+        if outcome.error is not None:
+            QMessageBox.warning(self, "Export could not start", outcome.error)
+            return
+        result = outcome.result
+        if outcome.cancelled:
+            self._show_export_cancelled(result)
+            return
         if result.failures:
             details = "\n\n".join(
                 f"Segment {failure.segment_index + 1} — {failure.destination}\n"
@@ -591,6 +873,39 @@ class MediaPlayer(QMainWindow):
                 "Export completed with errors",
                 f"{result.failed} clip(s) failed:\n\n{details}",
             )
+
+    def _show_export_cancelled(self, result):
+        """Name what survived, since those files are the user's to keep."""
+        written = result.succeeded
+        body = (
+            f"Export cancelled after {written} clip(s).\n\n"
+            "The clips already written were kept."
+        )
+        if result.failed:
+            body += f"\n\n{result.failed} clip(s) also failed; see commcut.log."
+        if written:
+            body += (
+                "\n\nPress Export again and it will ask whether to skip those "
+                "and write the rest."
+            )
+        QMessageBox.information(self, "Export cancelled", body)
+
+    def closeEvent(self, event):
+        """Never destroy a running QThread: ask, then cancel and close."""
+        if self._export_thread is None:
+            event.accept()
+            return
+        event.ignore()
+        answer = QMessageBox.question(
+            self,
+            "Export in progress",
+            "An export is in progress.\n\nCancel it and close?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self._close_after_export = True
+            self._on_export_cancel_requested()
 
     def on_file_loaded(self, path):
         """Called when mpv finishes loading a file: snap to the active segment start."""

@@ -38,6 +38,91 @@ def make_plan(root, clips):
 
 
 # ---------------------------------------------------------------------------
+# The fake encoder
+# ---------------------------------------------------------------------------
+
+class Encoding:
+    """What the stand-in encoder does for one clip.
+
+    `poll_count` is how many times the process reports "still running" before
+    it settles, which is what lets a test cancel a clip that is genuinely in
+    progress rather than one that has already finished. `after` runs once the
+    clip's output is written, for the tests that need to interfere mid-clip.
+    """
+
+    def __init__(self, returncode=0, stderr="", poll_count=0, after=None):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.poll_count = poll_count
+        self.after = after
+
+    def finish(self, command, errors):
+        with open(command[-1], "wb") as output_file:
+            output_file.write(b"encoded")
+        errors.write(self.stderr.encode("utf-8"))
+        if self.after is not None:
+            self.after(command)
+        return self.returncode
+
+
+class FakeProcess:
+    """The subprocess.Popen surface shared.ffmpeg drives, without an encoder."""
+
+    def __init__(self, command, errors, encoding):
+        self.command = command
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self._errors = errors
+        self._encoding = encoding
+        self._remaining_polls = encoding.poll_count
+
+    def poll(self):
+        if self.returncode is not None:
+            return self.returncode
+        if self._remaining_polls > 0:
+            self._remaining_polls -= 1
+            return None
+        self.returncode = self._encoding.finish(self.command, self._errors)
+        return self.returncode
+
+    def wait(self, timeout=None):
+        while self.poll() is None:
+            pass
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def install_fake_ffmpeg(monkeypatch, *encodings):
+    """Swap subprocess.Popen for a recording fake and return the processes.
+
+    The last encoding repeats once the list runs out, so a test that only cares
+    about the first clip can pass a single one.
+    """
+    queue = list(encodings) or [Encoding()]
+    processes = []
+
+    def fake_popen(command, stdout=None, stderr=None):
+        encoding = queue.pop(0) if len(queue) > 1 else queue[0]
+        process = FakeProcess(command, stderr, encoding)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("shared.ffmpeg.subprocess.Popen", fake_popen)
+    # A clip that is cancelled mid-encode polls in a tight loop; the real
+    # 50 ms interval is a wall-clock detail, not something to wait on.
+    monkeypatch.setattr("shared.ffmpeg._CANCEL_POLL_SECONDS", 0)
+    return processes
+
+
+# ---------------------------------------------------------------------------
 # Successful plan execution
 # ---------------------------------------------------------------------------
 
@@ -51,15 +136,7 @@ def test_execute_export_plan_creates_nested_mp4(
         root,
         [(0, 0.0, 4.5, ("Network", "Promo", "2000s", "Clip.mp4"))],
     )
-    commands = []
-
-    def fake_run(command, **kwargs):
-        commands.append(command)
-        with open(command[-1], "wb") as output_file:
-            output_file.write(b"encoded")
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr("shared.ffmpeg.subprocess.run", fake_run)
+    processes = install_fake_ffmpeg(monkeypatch)
 
     result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
 
@@ -67,10 +144,12 @@ def test_execute_export_plan_creates_nested_mp4(
     assert result.succeeded == 1
     assert result.failed == 0
     assert result.written_paths == (str(destination),)
+    assert result.written_relative_paths == ("Network/Promo/2000s/Clip.mp4",)
     assert destination.read_bytes() == b"encoded"
-    assert commands[0][1:5] == ["-y", "-ss", "0.0", "-i"]
-    assert commands[0][-1].startswith(str(root))
-    assert os.path.basename(commands[0][-1]).startswith(".commcut-export-")
+    command = processes[0].command
+    assert command[1:5] == ["-y", "-ss", "0.0", "-i"]
+    assert command[-1].startswith(str(root))
+    assert os.path.basename(command[-1]).startswith(".commcut-export-")
 
 
 def test_export_named_model_plans_and_executes_in_one_call(
@@ -96,13 +175,7 @@ def test_export_named_model_plans_and_executes_in_one_call(
         file_scheme="{title}",
         folder_scheme=DEFAULT_FOLDER_SCHEME,
     )
-
-    def fake_run(command, **kwargs):
-        with open(command[-1], "wb") as output_file:
-            output_file.write(b"encoded")
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr("shared.ffmpeg.subprocess.run", fake_run)
+    install_fake_ffmpeg(monkeypatch)
 
     plan, result = export_named_model(
         source_path,
@@ -132,16 +205,11 @@ def test_execute_export_plan_refuses_existing_destination(
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"existing")
     plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "Clip.mp4"))])
-    calls = []
-
-    monkeypatch.setattr(
-        "shared.ffmpeg.subprocess.run",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
+    processes = install_fake_ffmpeg(monkeypatch)
 
     with pytest.raises(ExportPlanError, match="already exists"):
         execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
-    assert not calls
+    assert not processes
 
 
 def test_execute_export_plan_reports_partial_failures_and_cleans_temp_files(
@@ -157,18 +225,11 @@ def test_execute_export_plan_reports_partial_failures_and_cleans_temp_files(
             (1, 2.0, 2.0, ("Network", "Second.mp4")),
         ],
     )
-    calls = 0
-
-    def fake_run(command, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            return SimpleNamespace(returncode=1, stderr="encoder failed")
-        with open(command[-1], "wb") as output_file:
-            output_file.write(b"encoded")
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr("shared.ffmpeg.subprocess.run", fake_run)
+    install_fake_ffmpeg(
+        monkeypatch,
+        Encoding(),
+        Encoding(returncode=1, stderr="encoder failed"),
+    )
 
     result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
 
@@ -190,14 +251,11 @@ def test_execute_export_plan_never_overwrites_racing_destination(
     plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "Clip.mp4"))])
     destination = root / "Network" / "Clip.mp4"
 
-    def racing_run(command, **kwargs):
-        with open(command[-1], "wb") as output_file:
-            output_file.write(b"encoded")
+    def race(command):
         with open(destination, "wb") as raced_destination:
             raced_destination.write(b"other export")
-        return SimpleNamespace(returncode=0, stderr="")
 
-    monkeypatch.setattr("shared.ffmpeg.subprocess.run", racing_run)
+    install_fake_ffmpeg(monkeypatch, Encoding(after=race))
 
     result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
 
@@ -215,6 +273,153 @@ def test_execute_export_plan_rejects_missing_source(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="Source video"):
         execute_export_plan(str(tmp_path / "missing.mp4"), plan, ffmpeg_path="ffmpeg")
+
+
+# ---------------------------------------------------------------------------
+# Progress reporting
+# ---------------------------------------------------------------------------
+
+def test_progress_reports_each_clip_and_closes_the_batch(
+    tmp_path,
+    source_path,
+    monkeypatch,
+):
+    """The bar is driven entirely by these calls: one per clip, plus a
+    completion tick. A progress bar that only ticks per batch would sit
+    through every clip of a long export looking frozen."""
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    install_fake_ffmpeg(monkeypatch)
+    seen = []
+
+    execute_export_plan(
+        source_path,
+        plan,
+        ffmpeg_path="ffmpeg",
+        on_progress=lambda done, total, current: seen.append((done, total, current)),
+    )
+
+    assert seen == [
+        (0, 2, "Network/First.mp4"),
+        (1, 2, "Network/Second.mp4"),
+        (2, 2, ""),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+def test_cancel_before_the_first_clip_runs_nothing(
+    tmp_path,
+    source_path,
+    monkeypatch,
+):
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    processes = install_fake_ffmpeg(monkeypatch)
+    seen = []
+
+    result = execute_export_plan(
+        source_path,
+        plan,
+        ffmpeg_path="ffmpeg",
+        on_progress=lambda done, total, current: seen.append((done, total, current)),
+        should_cancel=lambda: True,
+    )
+
+    assert processes == []
+    assert result.cancelled is True
+    assert result.succeeded == 0
+    assert result.failures == ()
+    # A batch that never ran must not claim a full bar on its way out.
+    assert seen == []
+
+
+def test_cancel_mid_clip_terminates_it_and_is_not_a_failure(
+    tmp_path,
+    source_path,
+    monkeypatch,
+):
+    """A clip the user deliberately stopped is not an error, and must leave
+    nothing behind: no destination, no temporary file."""
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    processes = install_fake_ffmpeg(
+        monkeypatch,
+        Encoding(poll_count=5),
+        Encoding(),
+    )
+    calls = []
+
+    def should_cancel():
+        calls.append(1)
+        # Let the pre-clip check pass so the cancel lands inside the encode.
+        return len(calls) > 1
+
+    result = execute_export_plan(
+        source_path,
+        plan,
+        ffmpeg_path="ffmpeg",
+        should_cancel=should_cancel,
+    )
+
+    assert result.cancelled is True
+    assert len(processes) == 1
+    assert processes[0].terminated is True
+    assert result.failures == ()
+    assert result.written_paths == ()
+    assert not list((root / "Network").glob("*.mp4"))
+    assert not list((root / "Network").glob(".commcut-export-*.mp4"))
+
+
+def test_cancel_keeps_the_clips_that_were_already_written(
+    tmp_path,
+    source_path,
+    monkeypatch,
+):
+    """The resume path depends on this: a cancelled run reports exactly what
+    it committed, so the next run knows what to skip."""
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    install_fake_ffmpeg(monkeypatch, Encoding(), Encoding(poll_count=5))
+    calls = []
+
+    result = execute_export_plan(
+        source_path,
+        plan,
+        ffmpeg_path="ffmpeg",
+        should_cancel=lambda: (calls.append(1), len(calls) > 1)[1],
+    )
+
+    assert result.cancelled is True
+    assert result.written_relative_paths == ("Network/First.mp4",)
+    assert (root / "Network" / "First.mp4").exists()
+    assert not (root / "Network" / "Second.mp4").exists()
 
 
 # ---------------------------------------------------------------------------

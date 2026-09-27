@@ -44,7 +44,7 @@ commcut/
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
 ├── editor/                  # The Editing Wizard (current focus)
 │   ├── editor.py            # Entry point: Editor window, editing state machine,
-│   │                        # splash flow, PreScanWorker scaffolding
+│   │                        # splash flow, PreScanWorker scaffolding, ExportWorker
 │   └── editorwindow.ui      # Qt Designer file; promoted TimelineWidget
 ├── scanner/                 # The Segment Scanner (detector + review)
 │   ├── scanner.py           # Entry point: 2-min preview clip load, mpv playback,
@@ -186,13 +186,15 @@ The shared modules are:
  - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
    (`sidecar_path`, `probe_duration`). See [segment-model.md](segment-model.md).
  - `shared/sources.py` — the import/ policy, above.
- - `shared/ffmpeg.py` — ffmpeg helpers: `clip_to_temp` (the scanner's preview),
-   the named-export executor (`export_named_model`, `execute_export_plan`,
-   `ExportExecutionResult`, `ExportClipFailure`), and the legacy numeric
-   `export_segment_clips()` that the editor no longer uses. It is the future home
-   of the smart-cut export. See
-   [naming-and-organization.md](naming-and-organization.md).
- - `shared/scheme.py` — shared tag aliases and canonical-name resolution plus
+  - `shared/ffmpeg.py` — ffmpeg helpers: `clip_to_temp` (the scanner's preview),
+    the named-export executor (`export_named_model`, `execute_export_plan`,
+    `ExportExecutionResult`, `ExportClipFailure`, `ExportCancelled`), and the
+    legacy numeric `export_segment_clips()` that the editor no longer uses. It is
+    the future home of the smart-cut export. The executor takes
+    `on_progress`/`should_cancel` so a caller off the GUI thread can drive a
+    progress bar and stop the batch; it holds no Qt types. See
+    [naming-and-organization.md](naming-and-organization.md#export-pipeline).
+  - `shared/scheme.py` — shared tag aliases and canonical-name resolution plus
    the public AST (`LiteralNode`, `TagNode`, `PipeNode`, `GroupNode`), lenient
    filename parsing, strict diagnostic parsing for path validation, and
    conditional node rendering. Existing filename syntax remains tolerant.
@@ -258,7 +260,11 @@ that records the seek sequence.
 runs `scan_keyframes` (via ffprobe) while it's up. The scan is currently
 synchronous on the GUI thread — it's typically sub-second for a 2-minute
 preview. `PreScanWorker` is scaffolding in the editor for future off-thread
-stages, not yet wired into `__main__`.
+stages, not yet wired into `__main__`. The editor's other worker,
+`ExportWorker`, is the pattern to follow: it holds plain data, emits
+`planned`/`advanced`/`finished` signals, and wraps its body so an exception
+becomes a reported outcome rather than PySide6's abort path. See
+[naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
 
 **Hard-won gotcha:** mpv's Direct3D device initialization hangs when
 another top-level window (the splash) is the active window at construction

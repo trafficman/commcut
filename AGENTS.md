@@ -126,7 +126,10 @@ diagnose. The linked document has the full reasoning.
    [docs/naming-and-organization.md](docs/naming-and-organization.md)
 10. **Editing writes are all-or-nothing.** Stage and Export refuse rather than
     persist an incomplete record, and ignored segments are exempt from the
-    required tags. → [docs/segment-model.md](docs/segment-model.md)
+    required tags. A cancelled export keeps the clips it committed, and the only
+    destinations it may later skip are the ones that same session's cancelled
+    run wrote. →
+    [docs/segment-model.md](docs/segment-model.md)
 
 ## Working agreements
 

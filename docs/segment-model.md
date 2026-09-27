@@ -217,7 +217,10 @@ check reflects what the user is looking at. It gates three things:
   hatch.
 - `on_export` runs the same check *before* persisting, so Export cannot write
   an incomplete record to the sidecar. (It previously saved first and only
-  discovered the problem inside the preflight, after the bad write.)
+  discovered the problem inside the preflight, after the bad write.) The check
+  and the sidecar save both stay on the GUI thread; only the transcode that
+  follows them is handed to a worker, from a snapshot of the model — see
+  [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
 - `_refresh_required_fields()` outlines the missing fields in red. It is
   recomputed on every keystroke, on the Skip toggle, and on every segment
   change, so the outline always states what Stage will demand right now.
