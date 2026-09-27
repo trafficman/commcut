@@ -7,14 +7,19 @@ Provides:
     keyframe nav, play/pause, file load).
   - scan_keyframes(path): ffprobe-based I-frame timestamp scanner.
   - create_mpv_player(video_frame): builds and configures an embedded
-    mpv.MPV for a given QFrame, including the WA_NativeWindow attribute
-    required for direct3d embedding.
+    mpv.MPV for a given QFrame, including the native-window handle mpv
+    embeds into.
 
 The `mpv` package is imported lazily inside create_mpv_player so this
 module remains importable in contexts where mpv isn't needed (e.g. unit
 tests, or consumers that only want scan_keyframes). Callers that
-actually construct a player must have already set up PATH so the mpv
-DLL resolves — see shared.environment.setup_environment.
+actually construct a player must load libmpv first and answer
+python-mpv's own lookup for it — see
+``shared.environment.mpv_import_context``, which create_mpv_player
+enters for them. The ordering is the whole point of the deferral: on
+macOS, python-mpv's import-time lookup searches system directories
+rather than the one this app resolved, and raises rather than falling
+back to a library that is already loaded.
 """
 
 import subprocess
@@ -22,7 +27,7 @@ import subprocess
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 from shared.diagnostics import log
-from shared.environment import get_binary_path, video_output
+from shared.environment import get_binary_path, mpv_import_context, video_output
 
 
 # Keyframes closer than this (seconds) to the current position are treated as
@@ -74,26 +79,43 @@ def scan_keyframes(path):
 def create_mpv_player(video_frame):
     """Build an mpv.MPV embedded in the given QFrame.
 
-    Sets the WA_NativeWindow attribute on the frame (required for mpv's
-    direct3d renderer to embed into it), then constructs the player with the
-    standard options used by both the editor and the scanner
-    (osc/input disabled, keep_open, hr_seek='always'). The caller is
-    responsible for wrapping the returned player in an MpvBridge.
+    Forces a native window handle on the frame and hands it to mpv as `wid`.
+    On Windows that is a child HWND, which is what mpv's direct3d driver
+    embeds into; on macOS it is an NSView* and on Linux an X11/Wayland window,
+    and mpv's generic GPU output embeds into that. The attribute is needed on
+    every platform, not just Windows -- `winId()` is what produces the handle
+    in the first place.
 
     The `vo` driver comes from shared.environment.video_output() rather than
     being hardcoded: 'direct3d' is a Windows path, and the other platforms use
     mpv's generic GPU output.
 
-    The mpv package is imported here (rather than at module top) so this
-    module is importable in contexts that don't need mpv. Callers must
-    have run shared.environment.setup_environment first, which is what puts
-    libmpv on %PATH% for python-mpv's import-time lookup.
+    libmpv is loaded, and python-mpv's own import-time lookup for it is
+    answered from the same path, before `import mpv` runs. That ordering is why
+    the import is deferred at all: python-mpv resolves libmpv for itself the
+    moment it is imported, and on macOS that lookup cannot see a source install
+    -- so a source install cannot start without this. It is wrapped here
+    because the alternative is a bare ctypes OSError telling the user to read
+    the `ctypes.util.find_library` documentation.
+
+    A `winId()` of 0 means the frame never got a native handle, and passing
+    that to mpv produces a window with no video in it -- which reads as a
+    broken build rather than a bug, so it is refused instead.
     """
-    import mpv  # deferred: see module docstring
+    with mpv_import_context():
+        import mpv  # deferred: see module docstring
 
     video_frame.setAttribute(Qt.WA_NativeWindow, True)
+    handle = int(video_frame.winId())
+    if not handle:
+        raise RuntimeError(
+            "Qt did not give the video frame a native window handle, so mpv "
+            "has nothing to embed into. This is a bug in commcut, not a "
+            "missing video file."
+        )
+
     return mpv.MPV(
-        wid=str(int(video_frame.winId())),
+        wid=str(handle),
         vo=video_output(),
         osc=False,
         input_default_bindings=False,

@@ -28,7 +28,7 @@
         <bool>false</bool>
        </property>
        <property name="toolTip">
-        <string>Coming soon: for this alpha the import folder is fixed next to commcut.exe</string>
+        <string>Coming soon: for this alpha the import folder is fixed beside the app</string>
        </property>
        <property name="text">
         <string>Browse...</string>
@@ -55,10 +55,10 @@
         <bool>false</bool>
        </property>
        <property name="toolTip">
-        <string>Coming soon: for this alpha the import folder is fixed next to commcut.exe</string>
+        <string>Coming soon: for this alpha the import folder is fixed beside the app</string>
        </property>
        <property name="placeholderText">
-        <string>Fixed for this alpha - the import folder beside commcut.exe</string>
+        <string>Fixed for this alpha - the import folder beside the app</string>
        </property>
        <property name="readOnly">
         <bool>true</bool>
@@ -130,7 +130,7 @@ li.checked::marker { content: &quot;\2612&quot;; }
         <bool>false</bool>
        </property>
        <property name="toolTip">
-        <string>Coming soon: for this alpha the export folder is fixed next to commcut.exe</string>
+        <string>Coming soon: for this alpha the export folder is fixed beside the app</string>
        </property>
        <property name="text">
         <string>Browse...</string>
@@ -143,10 +143,10 @@ li.checked::marker { content: &quot;\2612&quot;; }
         <bool>false</bool>
        </property>
        <property name="toolTip">
-        <string>Coming soon: for this alpha the export folder is fixed next to commcut.exe</string>
+        <string>Coming soon: for this alpha the export folder is fixed beside the app</string>
        </property>
        <property name="placeholderText">
-        <string>Fixed for this alpha - the export folder beside commcut.exe</string>
+        <string>Fixed for this alpha - the export folder beside the app</string>
        </property>
        <property name="readOnly">
         <bool>true</bool>

@@ -102,19 +102,68 @@ def list_source_videos(folder=None):
     return videos
 
 
+def _volume_is_case_insensitive(folder):
+    """True if this filesystem treats differently-cased spellings as one file.
+
+    Asked of the filesystem rather than assumed from the platform: macOS APFS
+    and Linux volumes can each be either, and only the filesystem knows which.
+
+    The probe is a full-path casefold compared back against the real path. On
+    a case-insensitive volume the two are one file and `samefile` says so. On
+    a case-sensitive volume they are different paths -- and if any parent
+    directory happens to be genuinely mixed-case, one of them does not exist at
+    all and `samefile` raises, which is also the safe answer.
+    """
+    try:
+        return os.path.samefile(folder, folder.casefold())
+    except OSError:
+        return False
+
+
 def _is_inside(folder, candidate):
     """True if `candidate` is strictly inside `folder`, symlinks resolved.
 
     Real paths are compared so a symlink sitting in import/ cannot be used to
-    reach a file outside it. commonpath() raises ValueError when the two paths
-    are on different drives, which is itself an answer: not inside.
+    reach a file outside it.
+
+    Two of the checks here are string comparisons and so are case-sensitive,
+    while the volume usually is not: NTFS and APFS are case-insensitive by
+    default. The same argument would then be accepted on Windows and refused on
+    a Mac, for a file the OS would plainly open -- and realpath() cannot paper
+    over the difference, because it can only report the filesystem's own casing
+    for a path that already exists. So the volume is asked directly, and the
+    case-folded retry is gated on its answer.
+
+    The retry is what makes a differently-cased spelling usable. It is also the
+    direction that could turn a consistency fix into a traversal hole, so it
+    happens only when the filesystem itself says those spellings are one path.
     """
-    folder = os.path.normcase(os.path.realpath(folder))
-    candidate = os.path.normcase(os.path.realpath(candidate))
-    if candidate == folder:
+    folder_real = os.path.realpath(folder)
+    candidate_real = os.path.realpath(candidate)
+
+    if candidate_real == folder_real:
         return False
+
+    case_insensitive = _volume_is_case_insensitive(folder_real)
+
+    # "Strictly inside" has to survive the fold too: on a case-insensitive
+    # volume a differently-cased spelling of the folder is the folder.
+    if case_insensitive and candidate_real.casefold() == folder_real.casefold():
+        return False
+
+    if _contained_in(folder_real, candidate_real):
+        return True
+
+    if not case_insensitive:
+        return False
+
+    return _contained_in(folder_real.casefold(), candidate_real.casefold())
+
+
+def _contained_in(folder_real, candidate_real):
+    """The raw containment test, on already-realpath'd, already-normalised paths."""
     try:
-        return os.path.commonpath([folder, candidate]) == folder
+        return os.path.commonpath([folder_real, candidate_real]) == folder_real
     except ValueError:
         return False
 

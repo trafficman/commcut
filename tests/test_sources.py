@@ -10,6 +10,7 @@ import os
 
 import pytest
 
+import shared.sources as sources
 from shared.sources import (
     DEFAULT_SOURCE_NAME, SourceVideo, import_folder, is_video_file,
     list_source_videos, require_source_video, resolve_import_video,
@@ -174,6 +175,114 @@ class TestResolve:
         assert resolve_import_video(
             "compilation.mp4", folder=str(imports)) == os.path.join(
                 str(imports), "compilation.mp4")
+
+
+class TestContainment:
+    """The inside-import-folder test, which is also the traversal defense.
+
+    A realpath() can only report the filesystem's own casing for a path that
+    exists, so a candidate that is spelled differently and is not there yet
+    keeps whatever case it was typed with. Comparing those strings is
+    case-sensitive, while the volume usually is not -- which is why the same
+    argument is accepted on Windows and refused on a Mac, with advice to put
+    the file somewhere it already is.
+    """
+
+    def test_a_case_insensitive_volume_retries_folded(self, imports, monkeypatch):
+        """The fix, pinned: a second, case-folded attempt, and it is what
+        accepts the spelling a person would type."""
+        monkeypatch.setattr(sources, "_volume_is_case_insensitive",
+                            lambda folder: True)
+        tried = []
+        monkeypatch.setattr(sources, "_contained_in",
+                            lambda f, c: tried.append((f, c)) or len(tried) > 1)
+
+        differently_cased = str(imports).upper() + "/compilation.mp4"
+
+        assert sources._is_inside(str(imports), differently_cased) is True
+        assert len(tried) == 2, tried
+        assert tried[1][0] == tried[0][0].casefold()
+        assert tried[1][1] == tried[0][1].casefold()
+
+    def test_a_case_sensitive_volume_never_folds_the_case(self, imports, monkeypatch):
+        """The direction that must not move.
+
+        Folding the case unconditionally would accept a path that really is
+        outside the folder on a case-sensitive filesystem, which turns a
+        consistency fix into a traversal hole. This spies on the comparison
+        instead of provoking a real refusal, because ``ntpath.commonpath`` folds
+        case and ``posixpath.commonpath`` does not -- so the raw comparison's
+        case-sensitivity cannot be reproduced on a Windows machine at all.
+        """
+        monkeypatch.setattr(sources, "_volume_is_case_insensitive",
+                            lambda folder: False)
+        tried = []
+        monkeypatch.setattr(sources, "_contained_in",
+                            lambda f, c: tried.append((f, c)) or False)
+
+        differently_cased = str(imports).upper() + "/compilation.mp4"
+
+        assert sources._is_inside(str(imports), differently_cased) is False
+        assert len(tried) == 1, tried
+        # The candidate kept the case it was typed with, so no fold happened.
+        # (realpath normalises separators even for a path that does not exist,
+        # which is why this compares against itself rather than the literal.)
+        assert tried[0][1] != tried[0][1].casefold()
+
+    def test_a_differently_cased_path_is_accepted_on_this_host(self, imports):
+        """The end-to-end version, on a volume that actually behaves that way.
+
+        The candidate deliberately does not exist: realpath() can only report
+        the filesystem's own casing for a path that is there, so an existing
+        file would be accepted no matter what this function did.
+        """
+        imports.mkdir(parents=True, exist_ok=True)
+        if not sources._volume_is_case_insensitive(str(imports)):
+            pytest.skip("this host's filesystem is case-sensitive, so the "
+                        "differently-cased spelling really is a different path")
+
+        assert sources._is_inside(
+            str(imports), str(imports).upper() + "/not-yet-ripped.mp4") is True
+
+    def test_the_folder_is_never_inside_itself_however_it_is_spelled(
+        self, imports, monkeypatch
+    ):
+        """strictly inside: the folder itself is refused, because that is what
+        stops a bare folder being accepted as a source video. The fold must not
+        become a way around that."""
+        monkeypatch.setattr(sources, "_volume_is_case_insensitive",
+                            lambda folder: True)
+        monkeypatch.setattr(sources.os.path, "realpath", lambda path: path)
+
+        assert sources._is_inside(str(imports), str(imports).upper()) is False
+
+    def test_a_symlink_out_of_the_folder_is_still_refused(self, imports, tmp_path):
+        """The property the case-widening must not disturb: real paths are
+        compared, so a symlink in import/ cannot reach a file outside it."""
+        outside = touch(str(tmp_path / "elsewhere.mp4"))
+        imports.mkdir(parents=True, exist_ok=True)
+        try:
+            (imports / "sneaky.mp4").symlink_to(outside)
+        except OSError as error:
+            pytest.skip(f"Symlinks unavailable: {error}")
+
+        assert sources._is_inside(str(imports), str(imports / "sneaky.mp4")) is False
+
+    def test_a_traversal_is_refused(self, imports):
+        traversal = os.path.join(str(imports), os.pardir, "outside.mp4")
+
+        assert sources._is_inside(str(imports), traversal) is False
+
+    def test_the_volume_probe_asks_the_filesystem(self, tmp_path):
+        """A case-sensitive volume answers "no" -- which is the safe answer, and
+        is why the probe compares the casefolded path back against the real one
+        rather than assuming anything from the platform."""
+        folder = tmp_path / "Import"
+        folder.mkdir()
+
+        probe = sources._volume_is_case_insensitive(str(folder))
+
+        assert probe is os.path.samefile(str(folder), str(folder).casefold())
 
 
 class TestRequireSourceVideo:

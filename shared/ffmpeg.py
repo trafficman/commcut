@@ -1,17 +1,23 @@
 """Basic ffmpeg/ffprobe operations shared by the editor and scanner.
 
-Paths are resolved per-OS via shared.environment.get_binary_path. This is
+Paths are resolved per-OS via shared.environment.get_binary_path, which owns
+the "bundled on Windows, the system's own on macOS and Linux" policy. This is
 where core.py's ffmpeg helpers migrate to as core.py is retired.
 """
 
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 
-from shared.environment import get_binary_path
+from shared.environment import (
+    REQUIRED_VIDEO_ENCODER,
+    get_binary_path,
+    install_root,
+)
 from shared.diagnostics import log
 from shared.exporting import (
     ExportPlan,
@@ -24,12 +30,9 @@ from shared.exporting import (
 from shared.segments import sidecar_path, SegmentModel
 
 
-# Project root is the parent of the shared/ package directory.
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-
 def _export_dir():
-    return os.path.join(_PROJECT_ROOT, "export")
+    """The default export folder, beside the app's own writable data."""
+    return os.path.join(install_root(), "export")
 
 
 @dataclass(frozen=True)
@@ -63,18 +66,70 @@ class ExportExecutionResult:
         return len(self.failures)
 
 
+def _copy_committing(temporary_path: str, destination: str) -> None:
+    """Move a finished temp file into place on a filesystem without hardlinks.
+
+    exFAT, FUSE mounts, and network shares all refuse `os.link`, and a clip
+    library living on a USB stick is exactly the situation that produces one.
+    What matters is that this never clobbers: `O_CREAT | O_EXCL` is atomic, so
+    if anything already holds the destination the open fails and nothing is
+    written. That is the property the export pipeline is actually built on --
+    see the all-or-nothing rule in docs/segment-model.md.
+
+    The weaker property, which os.link never had to worry about: the
+    destination becomes visible as soon as it is created, so a reader (or a
+    crash) can see a partly-copied file. A failure here removes it, and the
+    uncommitted temp file is left for the caller's cleanup either way.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+
+    # A FileExistsError from the open propagates as-is: that is the collision
+    # the caller already knows how to report.
+    descriptor = os.open(destination, flags, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as target:
+            with open(temporary_path, "rb") as source:
+                shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+    except BaseException:
+        try:
+            os.remove(destination)
+        except OSError:
+            pass
+        raise
+
+
 def _commit_temporary_output(temporary_path: str, destination: str) -> None:
+    """Put a finished export at `destination`, never overwriting anything.
+
+    `os.link` is the fast path and the only fully atomic one: it cannot
+    clobber, and it publishes the file complete. `FileExistsError` from it is
+    a real collision, which the caller already treats as one, so it is left to
+    travel.
+
+    Any other failure means the filesystem has no hardlinks, which is not a
+    reason to refuse the export -- see _copy_committing. There is deliberately
+    no `os.rename` fallback here: rename replaces the destination on POSIX, so
+    it would trade a filesystem limitation for a data-loss bug.
+    """
     try:
         os.link(temporary_path, destination)
-        return
     except FileExistsError:
         raise
     except OSError as link_error:
-        if os.name != "nt":
+        try:
+            _copy_committing(temporary_path, destination)
+        except FileExistsError:
+            raise
+        except OSError as copy_error:
             raise OSError(
-                "Filesystem does not support atomic no-clobber export commits"
-            ) from link_error
-        os.rename(temporary_path, destination)
+                f"Could not write {destination}: this filesystem supports "
+                f"neither hard links ({link_error}) nor an exclusive create "
+                f"({copy_error}). Export to a local disk instead."
+            ) from copy_error
 
 
 #: How often a running ffmpeg is polled for a cancel request. This is the
@@ -91,8 +146,11 @@ def _run_ffmpeg(command, should_cancel=None) -> tuple[int, str]:
 
     A cancel terminates the encoder instead of waiting it out. On Windows
     terminate is TerminateProcess, so it is immediate rather than graceful and
-    needs no grace/kill escalation; the caller discards the uncommitted
-    temporary file either way, so a half-written file is never observable.
+    needs no grace/kill escalation. On macOS and Linux it is SIGTERM, which
+    ffmpeg handles cleanly but not necessarily instantly, so the finally block
+    escalates to kill if it has not exited. The caller discards the
+    uncommitted temporary file either way, so a half-written file is never
+    observable at the destination.
     """
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
@@ -181,6 +239,55 @@ def _run_planned_clip(
             pass
 
 
+#: Set once this machine's ffmpeg is known to have the required encoder. A
+#: negative result is deliberately not cached: the probe costs one subprocess
+#: per export the user starts, and a user who installs a working ffmpeg
+#: mid-session should not have to restart the editor to pick it up.
+_video_encoder_available = False
+
+
+def check_video_encoder(ffmpeg_path=None):
+    """Whether this machine's ffmpeg has the video encoder commcut hardcodes.
+
+    commcut ships its own ffmpeg on Windows and can know the answer. A source
+    install cannot: the user supplied the ffmpeg, and a great many builds ship
+    without libx264. When it is missing, scanning and preview still work and
+    *only* export fails -- with a raw "Unknown encoder" line, once per clip,
+    after the batch has already started. This turns that into one named
+    problem, reported before anything is written.
+
+    Never raises. A probe that could not run is not evidence the encoder is
+    missing, and refusing to export on a failed probe would be worse than
+    letting ffmpeg have its say.
+    """
+    global _video_encoder_available
+    if _video_encoder_available:
+        return True
+
+    if ffmpeg_path is None:
+        try:
+            ffmpeg_path = get_binary_path("ffmpeg")
+        except FileNotFoundError:
+            return False
+
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"could not ask {ffmpeg_path} for its encoders: {error}")
+        return False
+
+    _video_encoder_available = REQUIRED_VIDEO_ENCODER in result.stdout
+    if not _video_encoder_available:
+        log(
+            f"the ffmpeg at {ffmpeg_path} has no {REQUIRED_VIDEO_ENCODER} "
+            f"encoder, so commcut cannot export video on this machine"
+        )
+    return _video_encoder_available
+
+
 def execute_export_plan(
     source_path: str,
     plan: ExportPlan,
@@ -211,6 +318,17 @@ def execute_export_plan(
     preflight_export_plan(plan)
     if ffmpeg_path is None:
         ffmpeg_path = get_binary_path("ffmpeg")
+
+    # Refuse before any directory is created or any clip is started, so a
+    # machine that cannot encode reports one problem rather than one failed
+    # clip per segment. The editor turns this into a named failure.
+    if not check_video_encoder(ffmpeg_path):
+        raise RuntimeError(
+            f"The ffmpeg at {ffmpeg_path} has no {REQUIRED_VIDEO_ENCODER} "
+            f"encoder, which commcut uses for every exported clip. Scanning "
+            f"and preview still work; installing an ffmpeg built with it "
+            f"(Homebrew's does) is what fixes export."
+        )
 
     parent_directories = {
         os.path.dirname(os.path.join(plan.export_root, *clip.relative_components))

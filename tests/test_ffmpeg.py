@@ -1,12 +1,13 @@
 """Tests for plan-based ffmpeg execution and partial-failure reporting."""
 
 import os
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from shared.exporting import ExportPlan, ExportPlanError, ExportSchemes, PlannedExportClip
-from shared.ffmpeg import execute_export_plan, export_named_model
+from shared.ffmpeg import check_video_encoder, execute_export_plan, export_named_model
 from shared.paths import DEFAULT_FOLDER_SCHEME
 from shared.segments import SegmentModel
 
@@ -14,6 +15,18 @@ from shared.segments import SegmentModel
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def ffmpeg_has_the_required_encoder(monkeypatch):
+    """Assume a working ffmpeg; the capability probe has its own tests below.
+
+    check_video_encoder is a subprocess inquiry, and the fake Popen here models
+    an encode -- a temp file for stderr, a payload written to the output path.
+    Letting the probe reach it would test the harness rather than the export.
+    """
+    monkeypatch.setattr(
+        "shared.ffmpeg.check_video_encoder", lambda *args, **kwargs: True)
+
 
 @pytest.fixture
 def source_path(tmp_path):
@@ -420,6 +433,190 @@ def test_cancel_keeps_the_clips_that_were_already_written(
     assert result.written_relative_paths == ("Network/First.mp4",)
     assert (root / "Network" / "First.mp4").exists()
     assert not (root / "Network" / "Second.mp4").exists()
+
+
+# ---------------------------------------------------------------------------
+# Committing to a filesystem with no hardlinks
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def no_hardlinks(monkeypatch):
+    """Simulate exFAT, a FUSE mount, or a network share: no os.link."""
+    def refuse(*args, **kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", refuse)
+
+
+def test_export_lands_when_the_filesystem_has_no_hardlinks(
+    tmp_path, source_path, monkeypatch, no_hardlinks
+):
+    """A clip library on a USB stick is the ordinary case for this.
+
+    Refusing the export because the filesystem has no hardlinks would make the
+    whole pipeline depend on a filesystem feature removable media does not
+    have, so the commit has to degrade rather than stop.
+    """
+    root = tmp_path / "library"
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "First.mp4"))])
+    install_fake_ffmpeg(monkeypatch, Encoding())
+
+    result = execute_export_plan(
+        source_path, plan, ffmpeg_path="ffmpeg")
+
+    destination = root / "Network" / "First.mp4"
+    assert result.written_relative_paths == ("Network/First.mp4",)
+    assert destination.read_bytes() == b"encoded"
+    assert not list((root / "Network").glob(".commcut-export-*.mp4"))
+
+
+def test_the_copy_fallback_still_never_clobbers(
+    tmp_path, source_path, monkeypatch, no_hardlinks
+):
+    """The no-clobber guarantee is the point of the commit, not an optimization.
+
+    The preflight already refuses a destination that exists, so the interesting
+    case is the same one the hardlink path has to survive: something creates the
+    destination while the clip is encoding. os.link cannot be the thing that
+    enforces this on a filesystem that has none, so O_EXCL has to.
+    """
+    root = tmp_path / "library"
+    destination = root / "Network" / "Clip.mp4"
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "Clip.mp4"))])
+
+    def race(command):
+        with open(destination, "wb") as raced:
+            raced.write(b"other export")
+
+    install_fake_ffmpeg(monkeypatch, Encoding(after=race))
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert result.succeeded == 0
+    assert result.failed == 1
+    assert destination.read_bytes() == b"other export"
+    assert not list(destination.parent.glob(".commcut-export-*.mp4"))
+
+
+def test_a_failed_copy_leaves_nothing_behind(
+    tmp_path, source_path, monkeypatch, no_hardlinks
+):
+    """A half-copied destination is worse than no destination: the export
+    would look complete and the next run would skip it as already written."""
+    root = tmp_path / "library"
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "First.mp4"))])
+    install_fake_ffmpeg(monkeypatch, Encoding())
+
+    def fail_mid_copy(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("shared.ffmpeg.shutil.copyfileobj", fail_mid_copy)
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert not (root / "Network" / "First.mp4").exists()
+    assert result.written_paths == ()
+    assert result.failures, result
+    assert not list((root / "Network").glob(".commcut-export-*.mp4"))
+
+
+def test_the_export_directory_follows_the_install_root(tmp_path, monkeypatch):
+    """Not a project root derived from __file__: frozen, that is PyInstaller's
+    extraction folder, which is deleted on exit along with every clip in it."""
+    from shared.ffmpeg import _export_dir
+
+    monkeypatch.setattr("shared.ffmpeg.install_root", lambda: str(tmp_path))
+
+    assert _export_dir() == os.path.join(str(tmp_path), "export")
+
+
+# ---------------------------------------------------------------------------
+# The encoder commcut hardcodes
+# ---------------------------------------------------------------------------
+
+class _Probe:
+    """Stand-in for the `ffmpeg -encoders` inquiry."""
+
+    def __init__(self, stdout, raises=None):
+        self.stdout = stdout
+        self.raises = raises
+        self.calls = 0
+
+    def __call__(self, command, **kwargs):
+        self.calls += 1
+        if self.raises is not None:
+            raise self.raises
+        return SimpleNamespace(returncode=0, stdout=self.stdout, stderr="")
+
+
+@pytest.fixture
+def fresh_encoder_probe(monkeypatch):
+    """The answer is cached per process, so no test inherits another's."""
+    monkeypatch.setattr("shared.ffmpeg._video_encoder_available", False)
+
+
+def test_an_ffmpeg_with_the_encoder_is_accepted(monkeypatch, fresh_encoder_probe):
+    probe = _Probe(" V....D libx264   H.264 encoder")
+    monkeypatch.setattr("shared.ffmpeg.subprocess.run", probe)
+
+    assert check_video_encoder("ffmpeg") is True
+    assert probe.calls == 1
+
+
+def test_a_missing_encoder_is_reported_not_raised(
+    monkeypatch, fresh_encoder_probe
+):
+    """Homebrew's ffmpeg has libx264; plenty of minimal builds do not, and on
+    those only export fails -- so the answer has to be a plain False that the
+    caller turns into a named problem."""
+    monkeypatch.setattr(
+        "shared.ffmpeg.subprocess.run", _Probe(" V....D mpeg4 MPEG-4 part 2"))
+
+    assert check_video_encoder("ffmpeg") is False
+
+
+def test_a_probe_that_cannot_run_is_not_treated_as_a_missing_encoder(
+    monkeypatch, fresh_encoder_probe
+):
+    """Refusing every export because an inquiry failed would be worse than
+    letting ffmpeg have its say."""
+    monkeypatch.setattr(
+        "shared.ffmpeg.subprocess.run",
+        _Probe("", raises=OSError("no such file")))
+
+    assert check_video_encoder("ffmpeg") is False
+
+
+def test_a_confirmed_encoder_is_not_probed_again(
+    monkeypatch, fresh_encoder_probe
+):
+    probe = _Probe(" V....D libx264   H.264 encoder")
+    monkeypatch.setattr("shared.ffmpeg.subprocess.run", probe)
+
+    assert check_video_encoder("ffmpeg") is True
+    assert check_video_encoder("ffmpeg") is True
+    assert probe.calls == 1
+
+
+def test_export_refuses_before_writing_anything_when_the_encoder_is_missing(
+    tmp_path, source_path, monkeypatch
+):
+    """One named problem, up front -- rather than one raw "Unknown encoder"
+    failure per clip after the batch has already started."""
+    monkeypatch.setattr("shared.ffmpeg.check_video_encoder", lambda *a: False)
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [(0, 0.0, 2.0, ("Network", "First.mp4")),
+         (1, 2.0, 2.0, ("Network", "Second.mp4"))],
+    )
+    install_fake_ffmpeg(monkeypatch, Encoding())
+
+    with pytest.raises(RuntimeError) as error:
+        execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert "libx264" in str(error.value)
+    assert not root.exists()
 
 
 # ---------------------------------------------------------------------------

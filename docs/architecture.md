@@ -74,8 +74,12 @@ commcut/
 
 Every window is a separate process, and that is deliberate: constructing an mpv
 player (direct3d) while another top-level window is foreground deadlocks on
-Windows. See [packaging.md](packaging.md) for how that shapes the frozen build
-(`--window <name>` re-execution, argv forwarding).
+Windows. The rule is applied on every platform, not just the one where the
+deadlock was found — it is not proven absent elsewhere. See
+[packaging.md](packaging.md) for how that shapes the frozen build (`--window
+<name>` re-execution, argv forwarding) and
+[source-install.md](source-install.md) for what the same model means on macOS
+and Linux.
 
 `main.py` is the application entry point. It calls
 `shared.environment.setup_environment(__file__)`, constructs `MainWindow` from
@@ -158,8 +162,9 @@ The editor, scanner, and Settings window use the common library under
 `shared/`. Each entry point calls `shared.environment.setup_environment(__file__)`
 near the top — it puts the install root on `sys.path` (so `shared.*` resolves
 when running the script directly) and makes the per-OS `bin/<os>/` folder
-discoverable, which is how mpv finds `libmpv` and how the ffmpeg/ffprobe call
-sites resolve to the bundled versions.
+discoverable. How each *binary* is then resolved is per-platform: bundled on
+Windows, from the system on macOS and Linux (see
+[source-install.md](source-install.md)).
 
 The shared modules are:
 
@@ -167,8 +172,11 @@ The shared modules are:
   read-only data, `install_root()` for user data and `bin/<os>/`),
   `resource_path(*parts)`, `setup_environment(script_path)` (sys.path + making
   the bundled binaries discoverable), `is_frozen()`, `bin_dir()` /
-  `get_binary_path(name)` (per-OS resolution under `bin/<os>/`, `.exe` on
-  Windows), `launch_command(name, *args)` (argv to open a child window),
+  `get_binary_path(name)` (per-platform resolution: `bin/<os>/` first, then the
+  system prefixes on platforms that do not bundle),   `resolve_mpv_library()` / `load_mpv_library()` / `mpv_import_context()` (resolve
+  libmpv by absolute path, map it, and answer python-mpv's own lookup for it
+  before `import mpv`),
+  `launch_command(name, *args)` (argv to open a child window),
   `WINDOW_NAMES`, `video_output()` (per-OS mpv `vo`), and
   `ensure_app_folders()`. This is the cross-platform binary resolution that
   used to live in `core.py`.
@@ -176,7 +184,7 @@ The shared modules are:
   and `fatal()`. Everything diagnostic, because a windowed build has no
   console.
 - `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel),
-  `create_mpv_player` (wraps `mpv.MPV` for a `QFrame`, sets
+  `create_mpv_player` (loads libmpv, then wraps `mpv.MPV` for a `QFrame` with
   `WA_NativeWindow`), `scan_keyframes(path)` (ffprobe I-frame scan
   returning sorted timestamps), and `BoundaryPreview` (the editor's boundary
   peek).

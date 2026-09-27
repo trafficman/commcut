@@ -1,16 +1,17 @@
 # Packaging and frozen mode
 
-How the portable build is assembled, and the rules that only bite once the app
+How the Windows build is assembled, and the rules that only bite once the app
 is frozen: the two roots, the `.ui` payload layout, child windows as
-re-executions, and Windows DLL loading.
+re-executions, and per-platform library loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
 `packaging/README.md`, `shared/environment.py`, `main.py`'s `--window`
 dispatch, `tests/test_frozen_mode.py`.
 
-Related: [architecture.md](architecture.md) (the same code unfrozen — one
-process per window, diagnostics), [testing.md](testing.md) (how frozen behavior
-is tested without building an exe).
+Related: [source-install.md](source-install.md) (how you run commcut on macOS or
+Linux, which this build does not cover), [architecture.md](architecture.md) (the
+same code unfrozen — one process per window, diagnostics), [testing.md](testing.md)
+(how frozen behavior is tested without building an exe).
 
 ## The distributable
 
@@ -126,21 +127,52 @@ the test has to run in a **fresh interpreter**: once `scanner` is in
 `sys.modules` as the package, an in-process reproduction succeeds against broken
 code.
 
-## Windows DLL loading
+## Library loading, per platform
 
-`ctypes.util.find_library` — which python-mpv calls at *import* time to find
-libmpv — scans `%PATH%` for each candidate name and returns the first absolute
-hit, which it then loads with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. So
-prepending `bin/<os>` to `%PATH%` is **load-bearing**, and it has to happen
-before `import mpv`. python-mpv's import is deferred inside
-`create_mpv_player` precisely so that ordering can be guaranteed.
-`os.add_dll_directory` is registered too, and its handle is kept in a module
-global — a dropped handle unregisters the directory and surfaces much later as a
-bare `OSError` from ctypes with nothing pointing at the cause.
+python-mpv resolves libmpv **for itself at import time**, via
+`ctypes.util.find_library`, and how that lookup works is not the same on every
+platform. This is why `create_mpv_player` loads the library itself before
+importing python-mpv, and why that import is deferred at all.
+
+**On Windows**, `find_library` scans `%PATH%` for each candidate name and
+returns the first absolute hit, which it then loads with
+`LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. So prepending `bin/<os>` to `%PATH%` is
+**load-bearing**. `os.add_dll_directory` is registered too, and its handle is
+kept in a module global — a dropped handle unregisters the directory and
+surfaces much later as a bare `OSError` from ctypes with nothing pointing at
+the cause.
+
+**On macOS, `find_library` ignores `%PATH%` entirely.** It searches a fixed
+list of system directories and returns a path only if that exact file exists.
+A source install's libmpv is not there, so the `PATH` prepend buys nothing.
+
+**And mapping the library first is not enough.** This is the non-obvious part.
+python-mpv 1.0.8's POSIX branch asks `ctypes.util.find_library('mpv')` and
+**raises if that returns `None`** — it never checks whether libmpv is already
+loaded. `DYLD_LIBRARY_PATH` does not help either, because `find_library` looks
+for a *file* at a fixed list of paths rather than asking the dynamic loader. So a
+libmpv commcut can find and map is still one python-mpv refuses to load, and the
+error tells the user to read the `ctypes.util.find_library` documentation.
+
+`environment.mpv_import_context` therefore does both: it resolves libmpv itself
+(`resolve_mpv_library` — `COMMCUT_MPV_LIB` override, then `bin/<os>/`, then the
+system prefixes), maps it with `ctypes.CDLL(..., RTLD_GLOBAL)`, and **answers
+`find_library` for exactly the names python-mpv asks for** (`_MPV_LOOKUP_NAMES`),
+leaving every other name to the real function and removing the override on the
+way out. On Windows that is redundant with the `PATH` prepend underneath, and is
+applied anyway so the library bound is the one this module validated.
+
+`create_mpv_player` enters the context around the `import` — not
+`setup_environment`, so the main-menu process never loads libmpv.
+
+[source-install.md](source-install.md) owns the macOS and Linux end of this:
+the search order, the `COMMCUT_MPV_LIB` override, and why `DYLD_LIBRARY_PATH` is
+set but `LD_LIBRARY_PATH` is not.
 
 `mpv`'s `vo` comes from `environment.video_output()` (per-OS), not a literal
-`'direct3d'`. The `WA_NativeWindow` attribute on the video frame exists for
-that Windows driver, so changing it there is a break, not a portability tweak.
+`'direct3d'`. The `WA_NativeWindow` attribute on the video frame is required on
+**every** platform, not just the one whose driver motivated it: `winId()` is what
+produces the handle mpv embeds into, and without it `winId()` returns 0.
 
 ## Windowed-build diagnostics
 
@@ -152,22 +184,37 @@ The spec sets `disable_windowed_traceback=True` for the same reason: the
 default makes the windowed bootloader pop a **modal** traceback dialog that the
 process waits on, so an undismissable error looks exactly like a hang.
 
-## Resolving the bundled binaries at runtime
+## Resolving the binaries at runtime
 
-Both the editor and the scanner call
-`shared.environment.setup_environment` at startup, which prepends the
-per-OS `bin/<os>/` folder to `PATH` via `get_binary_path`. mpv, ffprobe,
-and ffmpeg resolve to the bundled versions. `get_binary_path` raises
-`FileNotFoundError` if a binary is missing at the expected path. Every call
-site uses the resolved absolute path rather than a bare binary name.
+`get_binary_path(name)` returns the absolute path of a binary, and it is the
+only way any call site gets one — a bare name resolves through a mutated
+`PATH` and picks up whatever happens to be installed. The order is data
+(`shared/environment.py`), not an if-chain:
 
-The ordering is load-bearing, not incidental: see "Windows DLL loading" above.
+1. `bin/<os>/<name><ext>`, always. On Windows this is where the bundled binary
+   is, so it wins.
+2. Only on a platform **not** in `_BUNDLED_BINARY_PLATFORMS`, the absolute
+   prefixes in `_SYSTEM_BIN_PREFIXES` — a candidate has to be an executable file
+   to count. macOS and Linux are *source* installs, so this step is their only
+   step; see [source-install.md](source-install.md).
+3. Otherwise `FileNotFoundError`, naming every location searched.
+
+A bundling platform must **refuse** rather than fall through. A packaged build
+that silently used a system ffmpeg would be running a binary nobody tested,
+which is a far worse failure than a missing file — and it has a known one
+bundled, so there is nothing to gain. macOS and Linux are the mirror image: the
+user supplied the ffmpeg, so "whatever the user installed" is the intent.
+
+The libmpv load is separate from this, and happens at `import mpv` rather than at
+`get_binary_path` time. See "Library loading, per platform" above.
 
 ## What the build checks
 
-Pre-flight, `build.py` refuses to build when the host is not Windows (no
-`bin/linux`/`bin/mac` binaries exist) or when a bundled binary is a Git LFS
-pointer file rather than a real binary.
+Pre-flight, `build.py` refuses to build when the host is not Windows, or when a
+bundled binary is a Git LFS pointer file rather than a real binary. The Windows
+gate stays because there is no macOS or Linux build: those platforms ship as
+source installs, and a frozen macOS build would put `install_root()` inside a
+signed `.app` bundle, which is read-only.
 
 Post-build, it asserts `_internal/` is absent, and that `prototypes/` and
 `tests/` were not bundled. `docs/` is not bundled either — the spec's `datas`

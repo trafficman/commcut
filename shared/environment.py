@@ -6,9 +6,10 @@ things before anything else:
 
   1. The project root on sys.path so `shared.*` imports resolve when the
      script is run directly (e.g. `python editor/editor.py`).
-  2. The bundled binaries folder discoverable so mpv, ffprobe, and ffmpeg
-     resolve to the versions under bin/<os>/ rather than whatever happens to
-     be on the system.
+  2. The binaries folder discoverable, so mpv, ffprobe, and ffmpeg resolve
+     predictably rather than to whatever happens to be on the system -- to the
+     bundled copy on Windows, to the user's own install on macOS and Linux.
+     See "Where the binaries come from" below.
 
 The bin folder is selected per-OS via ``get_binary_path`` / ``_bin_dir``
 (the cross-platform binary resolution formerly living in ``core.py``).
@@ -34,25 +35,76 @@ a single path. They are still separate functions because that is a property of
 the build, not of the code: a onefile build would put ``resource_root()`` in a
 temporary directory and ``install_root()`` beside the .exe.
 
-Windows DLL loading
------------------------------------------------------------------------------
+Where the binaries come from
+------------------------------------------------------------------------------
 
-``ctypes.util.find_library`` -- which python-mpv calls at *import* time to
-locate libmpv -- scans ``%PATH%`` for each candidate name and returns the
-absolute path of the first hit. It then loads that absolute path with
-``LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR``. So prepending ``bin/<os>`` to ``%PATH%``
-is the load-bearing step, and it has to happen *before* ``import mpv`` runs.
-python-mpv's import is deferred inside ``create_mpv_player`` precisely so that
-this ordering can be guaranteed.
+Windows ships its own ffmpeg, ffprobe and libmpv in ``bin/win/`` and this build
+owns them. macOS and Linux are *source* installs: nothing is bundled, and the
+binaries come from whatever the user installed (Homebrew, Linuxbrew, a distro
+package). That is a policy difference, not an implementation one, so it is data:
 
-``os.add_dll_directory`` is also registered for good measure: it is the
-modern mechanism and it keeps working if the loader flags python-mpv uses ever
-change. The returned handle is stored in a module global, because
-``add_dll_directory`` unregisters the directory as soon as its handle is
-garbage collected -- a dropped handle shows up as a bare ``OSError`` much later,
-at player construction, with nothing pointing at the cause.
+``_BUNDLED_BINARY_PLATFORMS``
+    which platforms ship binaries in ``bin/<os>/``. On these, a missing bundled
+    binary is an error -- falling back to a system copy would silently run a
+    build nobody tested.
+``_SYSTEM_BIN_PREFIXES``
+    the absolute prefixes searched on platforms that do *not* bundle.
+
+The prefixes are an explicit list rather than ``shutil.which`` on purpose: a
+bare name resolves through a mutated ``PATH`` and picks up whatever happens to
+be installed, which is a very confusing bug to chase. On a bundling platform
+that is exactly wrong. On a sourcing platform "whatever the user installed" is
+the intent -- but naming the prefixes keeps the resolution reproducible, and
+keeps the difference between "bundled" and "system" visible at every call site.
+
+macOS needs no architecture handling anywhere. Homebrew installs to
+``/opt/homebrew`` on Apple Silicon and ``/usr/local`` on Intel, and both are in
+the list.
+
+Loading libmpv
+------------------------------------------------------------------------------
+
+libmpv is the one dependency that has to be *loaded* rather than merely
+executed, and how that happens is not the same on every platform.
+
+On Windows, ``ctypes.util.find_library`` -- which python-mpv calls at *import*
+time -- scans ``%PATH%`` and returns the absolute path of the first hit.
+Prepending ``bin/<os>`` to ``%PATH%`` is therefore load-bearing, and it has to
+happen before ``import mpv`` runs. ``os.add_dll_directory`` is registered too;
+the returned handle is stored in a module global, because
+``add_dll_directory`` unregisters the directory as soon as its handle is garbage
+collected, and a dropped handle shows up as a bare ``OSError`` much later.
+
+On macOS ``find_library`` ignores ``PATH`` entirely: it searches a fixed list of
+system directories and returns a path only if that exact file exists. None of
+that is where a source install's libmpv is, so the ``PATH`` prepend buys nothing
+there and the failure surfaces as a bare ctypes ``OSError`` from inside
+python-mpv, naming none of the folders this module actually searched.
+
+Mapping the library first is **not** sufficient on its own, which is the
+non-obvious part. python-mpv 1.0.8's POSIX branch asks
+``ctypes.util.find_library('mpv')`` and raises outright if that returns ``None``,
+without ever checking whether libmpv is already mapped. ``DYLD_LIBRARY_PATH``
+does not help either, because ``find_library`` looks for a *file* at a fixed
+list of paths rather than asking the dynamic loader. So ``mpv_import_context``
+also *answers* the lookup, from the path already resolved, for exactly the names
+python-mpv asks for; the override is removed again on the way out.
+
+``DYLD_LIBRARY_PATH`` is still set, for libmpv's transitive dylib
+dependencies. That is a secondary measure, and it works because a PyInstaller
+app is not SIP-protected (SIP strips ``DYLD_*`` only for Apple-signed system
+binaries). It is skipped on Linux, where ``LD_LIBRARY_PATH`` semantics for
+runtime ``dlopen`` are murkier.
+
+``mpv_import_context`` is deliberately *not* entered from
+``setup_environment``: the main menu never loads mpv, and doing it there would
+put libmpv in every process including the one that has no player. Wrap the
+``import mpv`` instead.
 """
 
+import contextlib
+import ctypes
+import ctypes.util
 import os
 import platform
 import sys
@@ -63,28 +115,85 @@ import sys
 # treated as if it were one level below the root.
 _SHARED_MARKER = os.path.join('shared', 'environment.py')
 
-# Per-OS bundled-binary subfolder. Only Windows is populated; the Linux and
-# macOS folders ship empty, so get_binary_path() raises there rather than
-# silently resolving to a system-installed ffmpeg.
+# Per-OS bundled-binary subfolder, under install_root(). Mirrors the layout of
+# the source tree, so bin/ is the same folder unfrozen and frozen.
 _OS_BIN_FOLDERS = {
     'windows': 'win',
     'linux': 'linux',
     'darwin': 'mac',  # macOS
 }
 
-# mpv's video output driver. 'direct3d' is the Windows embedded-rendering path
-# and is the reason the WA_NativeWindow attribute is set on the video frame;
+# Platforms that ship their own ffmpeg/ffprobe in bin/<os>/, as opposed to
+# using the system's. This is the policy switch behind the whole resolution
+# order: on a bundling platform a missing binary is an error, because silently
+# falling back to whatever the machine has installed is how a build ends up
+# running an ffmpeg nobody tested. The macOS and Linux folders are placeholders
+# that ship empty; those platforms are source installs (see docs/source-install.md)
+# and get their binaries from the prefixes below.
+_BUNDLED_BINARY_PLATFORMS = frozenset({'windows'})
+
+# Absolute prefixes searched on platforms that do not bundle, in order.
+# Deliberately explicit rather than shutil.which: see the module docstring.
+# macOS needs no architecture handling -- Homebrew uses /opt/homebrew on Apple
+# Silicon and /usr/local on Intel, and both are listed.
+_SYSTEM_BIN_PREFIXES = {
+    'darwin': ('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'),
+    'linux': ('/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin', '/usr/bin'),
+}
+
+# The libmpv client library, by platform. This is not the mpv player binary:
+# python-mpv needs the library, which is a separate thing to install and the
+# usual reason a source install on macOS cannot start.
+_MPV_LIBRARY_NAMES = {
+    'windows': ('libmpv-2.dll',),
+    'darwin': ('libmpv.2.dylib', 'libmpv.dylib'),
+    'linux': ('libmpv.so.2',),
+}
+
+#: Overrides the libmpv search outright. Set it to the absolute path of a
+#: libmpv binary or framework when the automatic search cannot find one, which
+#: is the documented escape hatch for a source install on an unusual machine.
+#: A value that does not exist is an error rather than a reason to keep
+#: searching -- an override that silently does nothing is worse than none.
+MPV_LIBRARY_ENV_VAR = 'COMMCUT_MPV_LIB'
+
+#: The names python-mpv hands to ``ctypes.util.find_library`` when it is
+#: imported, which is what ``mpv_import_context`` has to answer. Taken from
+#: python-mpv 1.0.8's own import block: the Windows branch loops over three DLL
+#: names in that order, and the POSIX branch asks for the bare string 'mpv' and
+#: relies on ``find_library`` to supply the platform filename. The darwin/linux
+#: rows are the spellings ``find_library`` itself would try, so a name it might
+#: have produced is intercepted too.
+_MPV_LOOKUP_NAMES = {
+    'windows': ('mpv', 'mpv-2.dll', 'libmpv-2.dll', 'mpv-1.dll'),
+    'darwin': ('mpv', 'libmpv.2.dylib', 'mpv.2.dylib',
+               'libmpv.dylib', 'mpv.dylib'),
+    'linux': ('mpv', 'libmpv.so.2', 'mpv.so.2', 'libmpv.so', 'mpv.so'),
+}
+
+# mpv's video output driver. 'direct3d' is the Windows embedded-rendering path;
 # the other platforms use mpv's generic GPU output. Kept here rather than
 # hardcoded at the call site so the next port does not have to rediscover it.
+# The macOS and Linux entries are unverified: mpv is embedded through an
+# NSView* on macOS and an X11/Wayland window on Linux, and neither path has
+# been exercised on this machine. See docs/source-install.md.
 MPV_VIDEO_OUTPUT = {
     'windows': 'direct3d',
     'linux': 'gpu',
     'darwin': 'gpu',
 }
 
+#: The mpv video encoder this app hardcodes, checked at first use so a source
+#: install on a machine whose ffmpeg lacks it reports that rather than failing
+#: every export with a raw encoder error.
+REQUIRED_VIDEO_ENCODER = 'libx264'
+
 # Handles returned by os.add_dll_directory(). Module-level so they outlive the
 # call that created them -- see the module docstring.
 _dll_directory_handles = []
+
+# The loaded libmpv, so a second player in one process reuses it.
+_mpv_library_handle = None
 
 # The child windows this app can open, and the script that implements each one
 # when running from source. When frozen, the scripts do not exist on disk, so
@@ -179,29 +288,196 @@ def bin_dir():
     return _bin_dir()
 
 
-def get_binary_path(binary_name):
-    """Dynamically resolve the path to a bundled binary based on OS.
+def _binary_filename(binary_name):
+    """This platform's filename for a bundled binary: ffmpeg, ffmpeg.exe, ..."""
+    return f"{binary_name}{'.exe' if _os_key() == 'windows' else ''}"
 
-    Looks under ``bin/<os>/`` for the named binary, appending the platform's
-    executable extension (``.exe`` on Windows). Raises ``FileNotFoundError``
-    if the binary is not present at the expected location.
+
+def _system_bin_candidates(binary_name):
+    """Absolute paths searched for a binary on a platform that does not bundle."""
+    filename = _binary_filename(binary_name)
+    for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ()):
+        yield os.path.join(prefix, filename)
+
+
+def get_binary_path(binary_name):
+    """Absolute path to this machine's ffmpeg, ffprobe, or any bundled binary.
+
+    ``bin/<os>/`` is searched first, always. On a platform that bundles its
+    binaries that is the only place searched, and a missing one is an error:
+    falling through to a system copy would silently run a build nobody tested,
+    which is a much worse failure than a missing file. On a platform that does
+    not bundle -- the macOS and Linux source installs -- the absolute prefixes
+    in ``_SYSTEM_BIN_PREFIXES`` are searched next, and a candidate has to be an
+    executable file to count.
+
+    Raises ``FileNotFoundError`` naming every location it looked in, because a
+    packaged build that cannot find ffmpeg otherwise reports nothing useful.
 
     Every ffmpeg/ffprobe call site should use this rather than a bare binary
-    name. A bare name resolves through the mutated ``%PATH%`` and silently
-    picks up whatever ffmpeg the machine happens to have if the prepend ever
-    fails -- which is a very confusing bug to chase.
+    name. A bare name resolves through the mutated ``PATH`` and picks up
+    whatever happens to be installed, which is a very confusing bug to chase.
     """
-    ext = '.exe' if _os_key() == 'windows' else ''
-    binary_path = os.path.join(_bin_dir(), f"{binary_name}{ext}")
+    bundled = os.path.join(_bin_dir(), _binary_filename(binary_name))
+    if os.path.exists(bundled):
+        return bundled
 
-    if not os.path.exists(binary_path):
+    if _os_key() in _BUNDLED_BINARY_PLATFORMS:
         raise FileNotFoundError(
-            f"Could not find {binary_name}{ext} in the bundled binaries "
-            f"folder: {binary_path}. It is shipped for Windows only in this "
-            f"build; other platforms are not supported yet."
+            f"Could not find {_binary_filename(binary_name)} in the bundled "
+            f"binaries folder:\n\n{bundled}\n\n"
+            f"This build bundles its own ffmpeg and will not fall back to a "
+            f"system copy, so restore bin/"
+            f"{_OS_BIN_FOLDERS[_os_key()]}/ beside the executable and try "
+            f"again."
         )
 
-    return binary_path
+    candidates = list(_system_bin_candidates(binary_name))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    searched = "\n".join(f"  {path}" for path in [bundled, *candidates])
+    raise FileNotFoundError(
+        f"Could not find {_binary_filename(binary_name)}. Looked in:\n\n"
+        f"{searched}\n\n"
+        f"commcut uses the system's ffmpeg on this platform. Install it and "
+        f"make sure it is on PATH:\n\n"
+        f"  brew install ffmpeg        # macOS, or Linux with Linuxbrew\n"
+        f"  apt install ffmpeg         # Debian, Ubuntu"
+    )
+
+
+def resolve_mpv_library():
+    """Absolute path to the libmpv client library on this machine.
+
+    Searched in order: the ``MPV_LIBRARY_ENV_VAR`` override, then ``bin/<os>/``,
+    then the ``lib/`` subdirectory of each system prefix. Returns the first hit
+    and raises ``FileNotFoundError`` -- naming every location -- when there is
+    none.
+
+    The override must be an absolute path that exists. One that does not is an
+    error rather than a reason to keep searching, because an override that
+    silently does nothing is worse than no override at all. Point it at a
+    framework binary (``…/mpv.framework/mpv``) if that is what your build
+    ships; ``ctypes.CDLL`` loads those too.
+
+    This resolves only, and loads nothing, so the search order is testable on
+    any platform. ``mpv_import_context`` is what actually loads it and hands the
+    result to python-mpv.
+    """
+    override = os.environ.get(MPV_LIBRARY_ENV_VAR)
+    if override:
+        if not os.path.isabs(override):
+            raise FileNotFoundError(
+                f"{MPV_LIBRARY_ENV_VAR} must be an absolute path, not "
+                f"{override!r}."
+            )
+        if not os.path.isfile(override):
+            raise FileNotFoundError(
+                f"{MPV_LIBRARY_ENV_VAR} points at {override}, which does not "
+                f"exist."
+            )
+        return os.path.abspath(override)
+
+    names = _MPV_LIBRARY_NAMES.get(_os_key())
+    if not names:
+        raise EnvironmentError(
+            f"Unsupported operating system: {platform.system()}")
+
+    directories = [_bin_dir()]
+    directories.extend(
+        os.path.join(prefix, "lib")
+        for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ())
+    )
+
+    searched = []
+    for directory in directories:
+        for name in names:
+            candidate = os.path.join(directory, name)
+            searched.append(candidate)
+            if os.path.isfile(candidate):
+                return candidate
+
+    listing = "\n".join(f"  {path}" for path in searched)
+    raise FileNotFoundError(
+        f"Could not find the libmpv library. Looked in:\n\n{listing}\n\n"
+        f"commcut needs the libmpv client library, which is a different thing "
+        f"from the mpv player:\n\n"
+        f"  brew install mpv                # macOS, or Linux with Linuxbrew\n"
+        f"  apt install libmpv2             # Debian, Ubuntu\n\n"
+        f"If your mpv ships one somewhere else, point "
+        f"{MPV_LIBRARY_ENV_VAR} at it:\n\n"
+        f"  {MPV_LIBRARY_ENV_VAR}=/full/path/to/libmpv.2.dylib"
+    )
+
+
+def load_mpv_library(path=None):
+    """Map the resolved libmpv, once per process, and return the handle.
+
+    ``RTLD_GLOBAL`` so it is visible to everything already loaded. Memoized: a
+    second player in one process reuses the mapped image rather than loading it
+    again. Pass ``path`` to avoid resolving twice when the caller already has
+    the answer.
+    """
+    global _mpv_library_handle
+    if _mpv_library_handle is not None:
+        return _mpv_library_handle
+
+    if path is None:
+        path = resolve_mpv_library()
+
+    if _os_key() == 'darwin':
+        # Secondary measure, for libmpv's own transitive dylibs. Effective
+        # because a PyInstaller app is not SIP-protected. Skipped on Linux,
+        # where LD_LIBRARY_PATH semantics for runtime dlopen are murkier.
+        library_dir = os.path.dirname(path)
+        current = os.environ.get('DYLD_LIBRARY_PATH', '')
+        entries = current.split(os.pathsep) if current else []
+        if library_dir not in entries:
+            os.environ['DYLD_LIBRARY_PATH'] = (
+                library_dir + os.pathsep + current if current else library_dir)
+
+    _mpv_library_handle = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+    return _mpv_library_handle
+
+
+@contextlib.contextmanager
+def mpv_import_context():
+    """Load libmpv and make python-mpv's own lookup agree with ours.
+
+    Wrap the ``import mpv`` in this, and nothing else. Mapping the library
+    first is **not** sufficient on its own, which is the non-obvious part:
+    python-mpv 1.0.8's POSIX branch asks ``ctypes.util.find_library('mpv')`` and
+    raises outright if that returns ``None``, without ever checking whether
+    libmpv is already mapped. And ``DYLD_LIBRARY_PATH`` does not help either,
+    because ``find_library`` looks for a *file* at a fixed list of paths rather
+    than asking the dynamic loader. A Homebrew libmpv in ``/opt/homebrew/lib``
+    is therefore invisible to it, and the failure is a message that tells the
+    user to read the ``ctypes.util.find_library`` documentation.
+
+    So the lookup is answered, from the path already resolved, for exactly the
+    names python-mpv asks for and nothing else. Every other name still goes to
+    the real function, and the override is removed on the way out. On Windows
+    this is redundant with the ``PATH`` prepend underneath, and it is applied
+    anyway so the library that gets bound is the one this module validated.
+    """
+    path = resolve_mpv_library()
+    load_mpv_library(path)
+
+    wanted = _MPV_LOOKUP_NAMES.get(_os_key(), ('mpv',))
+    original = ctypes.util.find_library
+
+    def find_library(name, *args, **kwargs):
+        if name in wanted:
+            return path
+        return original(name, *args, **kwargs)
+
+    ctypes.util.find_library = find_library
+    try:
+        yield path
+    finally:
+        ctypes.util.find_library = original
 
 
 def video_output():

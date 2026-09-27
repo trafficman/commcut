@@ -32,6 +32,22 @@ from shared.environment import (
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def bin_dir_for(root):
+    """The bin/<os>/ folder under `root` for whichever platform is running.
+
+    Naming a specific folder here would be what makes this file fail on any
+    platform but Windows; the mapping is the module's table, and the tests that
+    assert the table itself are the ones below that check it directly.
+    """
+    folder = environment._OS_BIN_FOLDERS[environment._os_key()]
+    return os.path.join(root, "bin", folder)
+
+
+def bundles_its_own_binaries():
+    """True when this platform expects its binaries in bin/<os>/."""
+    return environment._os_key() in environment._BUNDLED_BINARY_PLATFORMS
+
+
 # The .ui files, as they are looked up in code. Kept as (folder, name) pairs so
 # the spec's datas mapping and this file cannot drift apart silently: the
 # spec mirrors these subfolders into the payload precisely so that
@@ -126,7 +142,7 @@ def test_frozen_bin_dir_sits_beside_the_executable(frozen):
     """
     install_dir = frozen()
 
-    assert environment.bin_dir() == os.path.join(install_dir, "bin", "win")
+    assert environment.bin_dir() == bin_dir_for(install_dir)
 
 
 def test_bin_dir_is_never_inside_the_payload(frozen):
@@ -140,7 +156,7 @@ def test_bin_dir_is_never_inside_the_payload(frozen):
 
 
 def test_unfrozen_bin_dir_matches_the_source_tree():
-    assert environment.bin_dir() == os.path.join(PROJECT_ROOT, "bin", "win")
+    assert environment.bin_dir() == bin_dir_for(PROJECT_ROOT)
 
 
 def test_bin_folder_is_chosen_per_os(monkeypatch):
@@ -172,6 +188,11 @@ def test_missing_binary_names_the_folder_it_looked_in():
     assert environment.bin_dir() in message
 
 
+@pytest.mark.skipif(
+    not bundles_its_own_binaries(),
+    reason="bin/<os>/ is a placeholder on a platform that uses the system's "
+           "ffmpeg, so there is nothing bundled to check",
+)
 def test_bundled_ffmpeg_and_ffprobe_exist_in_the_source_tree():
     """Guards the build's pre-flight assumption. If these are LFS pointers the
     build still succeeds and only fails at export time."""
@@ -179,13 +200,417 @@ def test_bundled_ffmpeg_and_ffprobe_exist_in_the_source_tree():
         assert os.path.isfile(get_binary_path(name)), name
 
 
+@pytest.mark.skipif(
+    bundles_its_own_binaries(),
+    reason="a platform that bundles its binaries never consults these",
+)
+def test_a_platform_without_bundled_binaries_is_told_where_to_install_them():
+    """The source installs' version of the pre-flight: the names it looks for
+    are the ones a package manager actually provides."""
+    with pytest.raises(FileNotFoundError) as error:
+        get_binary_path("ffmpeg")
+
+    assert "ffmpeg" in str(error.value)
+    assert "install" in str(error.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Where the binaries come from
+# ---------------------------------------------------------------------------
+
+def test_a_bundled_binary_is_preferred_over_the_system(monkeypatch, tmp_path):
+    """The one behaviour that must not drift on Windows: bin/win/ wins, and a
+    system ffmpeg is never substituted for it."""
+    if not bundles_its_own_binaries():
+        pytest.skip("a platform that does not bundle has no bundled candidate")
+
+    prefix = tmp_path / "system"
+    prefix.mkdir()
+    (prefix / "ffprobe.exe").write_bytes(b"not the one we ship")
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"windows": (str(prefix),)})
+
+    assert get_binary_path("ffprobe") == os.path.join(
+        environment.bin_dir(), "ffprobe.exe")
+
+
+def test_a_platform_that_bundles_refuses_to_fall_back(monkeypatch, tmp_path):
+    """Silence here would mean a packaged build quietly running an ffmpeg
+    nobody tested, which is the failure this policy exists to prevent."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "bin"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"windows": (str(tmp_path),)})
+    present = tmp_path / "ffmpeg.exe"
+    present.write_bytes(b"system ffmpeg")
+
+    with pytest.raises(FileNotFoundError) as error:
+        get_binary_path("ffmpeg")
+
+    assert str(present) not in str(error.value)
+    assert "will not fall back" in str(error.value)
+
+
+def test_a_platform_that_does_not_bundle_resolves_from_a_prefix(
+    monkeypatch, tmp_path
+):
+    """The macOS and Linux source installs: the user's own ffmpeg, found by an
+    absolute path rather than by name."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    (tmp_path / "empty").mkdir()
+    prefix = tmp_path / "homebrew"
+    prefix.mkdir()
+    installed = prefix / "ffmpeg"
+    installed.write_bytes(b"#!/bin/sh\n")
+    installed.chmod(0o755)
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(prefix),)})
+
+    assert get_binary_path("ffmpeg") == str(installed)
+
+
+def test_a_non_executable_file_does_not_count_as_installed(monkeypatch, tmp_path):
+    """A file that is there but cannot be run is not a working ffmpeg, and
+    reporting it as found turns into a permission error at the first cut.
+
+    os.access is stubbed rather than relying on a real permission bit: Windows
+    has no execute bit, so chmod cannot produce this state on the machine these
+    tests mostly run on.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    (tmp_path / "empty").mkdir()
+    prefix = tmp_path / "brew"
+    prefix.mkdir()
+    (prefix / "ffmpeg").write_bytes(b"not executable")
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(prefix),)})
+    asked = []
+    monkeypatch.setattr(
+        environment.os, "access",
+        lambda path, mode: asked.append(mode) or False)
+
+    with pytest.raises(FileNotFoundError):
+        get_binary_path("ffmpeg")
+
+    assert os.X_OK in asked
+
+
+def test_the_exhausted_search_names_every_place_it_looked(monkeypatch, tmp_path):
+    """The failure a macOS user actually gets, which has to be actionable: the
+    error is their only clue about where commcut was looking."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(tmp_path / "a"), str(tmp_path / "b"))})
+
+    with pytest.raises(FileNotFoundError) as error:
+        get_binary_path("ffprobe")
+
+    message = str(error.value)
+    for expected in (str(tmp_path / "empty"), str(tmp_path / "a"),
+                     str(tmp_path / "b")):
+        assert expected in message
+
+
+# ---------------------------------------------------------------------------
+# libmpv
+# ---------------------------------------------------------------------------
+
+def test_the_env_var_overrides_the_libmpv_search(monkeypatch, tmp_path):
+    """The documented escape hatch for a machine whose mpv does not install a
+    loadable library anywhere commcut looks."""
+    override = tmp_path / "mpv.framework" / "mpv"
+    override.parent.mkdir()
+    override.write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setattr(environment.os, "environ",
+                        {environment.MPV_LIBRARY_ENV_VAR: str(override)})
+
+    assert environment.resolve_mpv_library() == str(override)
+
+
+def test_a_set_but_missing_override_is_an_error_rather_than_a_fallback(
+    monkeypatch, tmp_path
+):
+    """An override that silently does nothing is worse than no override: the
+    user believes they have pointed commcut at the right library."""
+    monkeypatch.setattr(environment.os, "environ",
+                        {environment.MPV_LIBRARY_ENV_VAR:
+                         str(tmp_path / "nope.dylib")})
+
+    with pytest.raises(FileNotFoundError) as error:
+        environment.resolve_mpv_library()
+
+    assert environment.MPV_LIBRARY_ENV_VAR in str(error.value)
+
+
+def test_a_relative_override_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(environment.os, "environ",
+                        {environment.MPV_LIBRARY_ENV_VAR: "libmpv.2.dylib"})
+
+    with pytest.raises(FileNotFoundError) as error:
+        environment.resolve_mpv_library()
+
+    assert "absolute" in str(error.value)
+
+
+def test_libmpv_resolves_out_of_the_bundled_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.os, "environ", {})
+
+    assert environment.resolve_mpv_library() == str(bundled / "libmpv-2.dll")
+
+
+def test_libmpv_resolves_out_of_a_system_prefix(monkeypatch, tmp_path):
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.os, "environ", {})
+    prefix = tmp_path / "opt" / "homebrew"
+    (prefix / "lib").mkdir(parents=True)
+    (prefix / "lib" / "libmpv.2.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(prefix),)})
+
+    assert environment.resolve_mpv_library() == str(
+        prefix / "lib" / "libmpv.2.dylib")
+
+
+def test_a_missing_libmpv_explains_which_library_is_needed(monkeypatch, tmp_path):
+    """The whole reason this resolution is rewritten: the alternative is a bare
+    ctypes OSError from inside python-mpv naming none of these folders."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(tmp_path / "brew"),)})
+
+    with pytest.raises(FileNotFoundError) as error:
+        environment.resolve_mpv_library()
+
+    message = str(error.value)
+    assert "libmpv" in message
+    assert environment.MPV_LIBRARY_ENV_VAR in message
+
+
+def test_the_import_context_answers_python_mpvs_own_lookup(
+    monkeypatch, tmp_path
+):
+    """The part that is not obvious, and the whole reason the pre-load alone
+    is not enough.
+
+    python-mpv 1.0.8's POSIX branch asks find_library('mpv') and *raises* if
+    that returns None -- it never checks whether libmpv is already mapped. So a
+    library commcut resolved but find_library cannot name is one python-mpv
+    refuses to load, and the fix has to be to answer the lookup.
+    """
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+    asked = []
+
+    with environment.mpv_import_context() as path:
+        for name in environment._MPV_LOOKUP_NAMES["windows"]:
+            asked.append(environment.ctypes.util.find_library(name))
+
+    assert asked == [path] * len(environment._MPV_LOOKUP_NAMES["windows"])
+
+
+def test_the_two_libmpv_tables_agree():
+    """Every filename the resolver can return must also be a name the lookup
+    override answers for.
+
+    The two tables exist for the same call and could drift apart: a name added
+    to one and not the other means resolving a library by a filename while
+    python-mpv asks under a spelling this module does not intercept -- which is
+    the source-install failure all over again. The POSIX branches ask for the
+    bare 'mpv', so that one is required on every platform.
+    """
+    for system in environment._OS_BIN_FOLDERS:
+        lookup = environment._MPV_LOOKUP_NAMES[system]
+        assert "mpv" in lookup, system
+        for name in environment._MPV_LIBRARY_NAMES[system]:
+            assert name in lookup, (system, name)
+
+
+def test_the_import_context_leaves_find_library_alone_afterwards(
+    monkeypatch, tmp_path
+):
+    """It is a context manager for a reason: the override is not left behind
+    for the rest of the process, so nothing else resolves a library through it.
+    """
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+    before = environment.ctypes.util.find_library
+
+    with environment.mpv_import_context():
+        assert environment.ctypes.util.find_library is not before
+
+    assert environment.ctypes.util.find_library is before
+
+
+def test_the_import_context_restores_find_library_even_when_the_import_fails(
+    monkeypatch, tmp_path
+):
+    """A failed `import mpv` is the normal case on a machine with no libmpv,
+    and it must not leave a patched find_library behind for the error dialog
+    and the log to resolve things through."""
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+    before = environment.ctypes.util.find_library
+
+    with pytest.raises(RuntimeError):
+        with environment.mpv_import_context():
+            raise RuntimeError("import mpv failed")
+
+    assert environment.ctypes.util.find_library is before
+
+
+def test_the_import_context_defers_other_libraries_to_the_real_lookup(
+    monkeypatch, tmp_path
+):
+    """Only libmpv's names are answered. Anything else still has to go through
+    the real function, or this would be a process-wide change in how every
+    ctypes consumer resolves a library.
+
+    A name that genuinely does not exist resolves to None either way, so the
+    discriminator is that it must not come back as our libmpv path.
+    """
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    # A real environment, so the delegated lookup has a PATH to search.
+    monkeypatch.setattr(environment.os, "environ", dict(environment.os.environ))
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+
+    with environment.mpv_import_context() as path:
+        assert environment.ctypes.util.find_library("no-such-library-xyz") is None
+
+    assert path.endswith("libmpv-2.dll")
+
+
+def test_setting_dyld_library_path_on_macos(monkeypatch, tmp_path):
+    """A secondary measure, for libmpv's own transitive dylibs. Skipped on
+    Linux, where LD_LIBRARY_PATH semantics for runtime dlopen are murkier."""
+    library = tmp_path / "brew" / "lib" / "libmpv.2.dylib"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(tmp_path / "brew"),)})
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+
+    with environment.mpv_import_context():
+        pass
+
+    assert str(library.parent) in environment.os.environ["DYLD_LIBRARY_PATH"]
+
+
+def test_no_dyld_library_path_on_windows(monkeypatch, tmp_path):
+    """A stray DYLD_* on Windows would be meaningless and misleading."""
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    monkeypatch.setattr(environment.ctypes, "CDLL",
+                        lambda path, **kwargs: "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+
+    with environment.mpv_import_context():
+        pass
+
+    assert "DYLD_LIBRARY_PATH" not in environment.os.environ
+
+
+def test_the_library_is_loaded_once_per_process(monkeypatch, tmp_path):
+    """Two players in one process must share one mapped library, not re-load
+    it -- and certainly not from a test, where the real one is 110 MB."""
+    bundled = tmp_path / "bin"
+    bundled.mkdir()
+    (bundled / "libmpv-2.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(environment.os, "environ", {})
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(bundled))
+    loads = []
+    monkeypatch.setattr(
+        environment.ctypes, "CDLL",
+        lambda path, **kwargs: loads.append(path) or "handle")
+    monkeypatch.setattr(environment, "_mpv_library_handle", None)
+
+    environment.load_mpv_library()
+    environment.load_mpv_library()
+
+    assert loads == [str(bundled / "libmpv-2.dll")]
+
+
 # ---------------------------------------------------------------------------
 # mpv video output
 # ---------------------------------------------------------------------------
 
-def test_video_output_has_an_entry_for_this_platform():
-    assert environment.video_output() == MPV_VIDEO_OUTPUT[
-        environment.platform.system().lower()]
+def test_every_platform_with_a_bin_folder_has_a_video_output():
+    """The table-completeness claim, which runs on any host.
+
+    The obvious version of this test -- asserting video_output() equals
+    MPV_VIDEO_OUTPUT[platform.system()] -- indexes the same dict with the same
+    key the function uses, so it cannot fail on any platform and proves
+    nothing. This is the version that can.
+    """
+    for system in environment._OS_BIN_FOLDERS:
+        assert environment.MPV_VIDEO_OUTPUT.get(system), system
+
+
+def test_every_platform_gets_a_non_empty_video_output():
+    assert environment.video_output()
+    assert isinstance(environment.video_output(), str)
+
+
+def test_every_platform_that_does_not_bundle_knows_where_to_look():
+    """Otherwise the platform silently has no way to find ffmpeg at all, and
+    the failure is a FileNotFoundError with nothing in it."""
+    for system in environment._OS_BIN_FOLDERS:
+        if system in environment._BUNDLED_BINARY_PLATFORMS:
+            continue
+        assert environment._SYSTEM_BIN_PREFIXES.get(system), system
+
+
+def test_every_platform_knows_its_libmpv_filename():
+    for system in environment._OS_BIN_FOLDERS:
+        assert environment._MPV_LIBRARY_NAMES.get(system), system
 
 
 def test_windows_keeps_direct3d():

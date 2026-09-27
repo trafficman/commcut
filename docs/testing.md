@@ -50,11 +50,12 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
 | `test_end_boundary.py` | `place_end_boundary` — insert vs. move, and the refusal guards |
 | `test_timeline_zoom.py` | zoom state surviving a resize, and the editor toggle agreeing with the widget |
-| `test_sources.py` | the import folder: what can be opened, what the picker offers, the "nothing to open" messages |
+| `test_sources.py` | the import folder: what can be opened, what the picker offers, the "nothing to open" messages, and the containment/traversal defense incl. case-insensitive volumes |
 | `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off |
 | `test_picker.py` | the picker window, offscreen |
 | `test_main_window.py` | the main menu, the launcher, and the failure paths |
-| `test_frozen_mode.py` | frozen roots, per-OS binaries, mpv `vo`, child-window argv, spec/`resource_path` agreement |
+| `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement |
+| `test_mpv_player.py` | how the player is built: libmpv loaded before the import that needs it, the native handle, and the zero-handle refusal (no real player) |
 | `test_scheme.py` | strict scheme parsing |
 | `test_naming.py` | filename rendering, including the README pattern |
 | `test_paths.py` | strict folder scheme compilation, rendering, and sanitation |
@@ -120,6 +121,24 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
   through, the resume that follows, and a failing clip. It is the only thing
   that executes the terminate path against a live encoder. Run it by hand after
   touching `shared/ffmpeg.py`.
+- **A green suite is not evidence that a platform works.** `FakeBridge` stands in
+  for libmpv by design, so the suite passes on a machine with no libmpv at all,
+  and every macOS/Linux test monkeypatches `platform.system` rather than running
+  on that platform. The suite covers *resolution*; playback on macOS and Linux
+  can only be confirmed by a person on that machine — see
+  [source-install.md](source-install.md#what-has-not-been-verified).
+- **Cross-platform behavior is asserted by table completeness, not by the host.**
+  The per-OS tables in `shared/environment.py` are checked for holes (every
+  platform has a video output, a libmpv filename, and — if it does not bundle —
+  search prefixes) because that is what fails when someone adds a platform.
+  Asserting `video_output() == MPV_VIDEO_OUTPUT[platform.system()]` instead
+  indexes the same dict with the same key and cannot fail on any host, which is
+  why it is not the test.
+- **Where a stdlib behavior differs by platform, spy instead of provoking.**
+  `ntpath.commonpath` folds case and `posixpath.commonpath` does not, so
+  `test_sources.py`'s case-sensitivity tests assert which comparisons
+  `_is_inside` *tried* rather than provoking a real refusal — the one that must
+  not move cannot be reproduced on a Windows machine.
 
 ## The documentation guard
 

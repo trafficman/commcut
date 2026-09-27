@@ -1,5 +1,9 @@
 # Building commcut
 
+This is the **Windows** build. macOS and Linux have no build and are not meant
+to: they run from a clone with the system's ffmpeg and mpv, per
+[docs/source-install.md](../docs/source-install.md).
+
 Two artifacts, both from `packaging/commcut.spec`:
 
 - **`commcut.exe`** — a PyInstaller *onefile* executable. Carries Python, PySide6,
@@ -77,7 +81,9 @@ PyInstaller 6.22.3, 7-Zip n/a (no longer used).
 `build.py` refuses to build on a few specific conditions, all of which produce
 a build that installs cleanly and then fails at runtime:
 
-- **Not Windows.** `bin/linux/` and `bin/mac/` hold no binaries, so the result
+- **Not Windows.** There is no macOS or Linux build. `bin/linux/` and `bin/mac/`
+  hold no binaries, and those platforms resolve ffmpeg from the system instead —
+  see [docs/source-install.md](../docs/source-install.md). A build made here
   would be an app that cannot cut a clip.
 - **A bundled binary is a Git LFS pointer.** The repo tracks `bin/**/*.exe` and
   `*.dll` through Git LFS. A checkout without `git lfs pull` leaves ~130-byte

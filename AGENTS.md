@@ -16,9 +16,9 @@ vision, described in [README.md](README.md), has three pieces:
    (Title, Network, Block, Filler Type, Year, Time Period, Show, Special,
    Length, Information).
 2. **Rename Wizard** — batch-rename already-cut clips. Not built.
-3. **Editing Wizard** — load a compilation video, auto-detect boundaries, let the
-   user review/adjust, and cut each segment out as a separate file. This is the
-   current focus.
+3. **Editing Wizard** — load a compilation video, auto-detect boundaries, let
+   the user review/adjust, and cut each segment out as a separate file. This is
+   the current focus.
 
 The tree holds the Editing Wizard (`editor/`), its Segment Scanner pre-process
 (`scanner/`), the source picker that fronts them, the Settings window, and the
@@ -35,7 +35,8 @@ Run from the project root.
 | Run the app | `python main.py` |
 | Run one window on its own | `python editor/editor.py <video>`, `python scanner/scanner.py <video>` (each window is its own process; `<video>` is optional) |
 | Tests | `python -m pytest` — one file: `python -m pytest tests/test_paths.py` |
-| Build the portable app | `python packaging/build.py` — see [packaging/README.md](packaging/README.md) |
+| Build the portable app | `python packaging/build.py` — Windows only; see [packaging/README.md](packaging/README.md) |
+| Run on macOS or Linux | Same, from a clone, with ffmpeg/mpv installed — see [docs/source-install.md](docs/source-install.md) |
 
 There is no pytest config: `tests/conftest.py` puts the project root on
 `sys.path` and redirects the log out of the source tree. Widget tests set
@@ -47,7 +48,7 @@ There is no pytest config: `tests/conftest.py` puts the project root on
 commcut/
 ├── main.py                  # entry point: argv dispatcher (--window <name>) + main menu
 ├── mainwindow.py/.ui        # main menu (Editor, Settings)
-├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv — never bundled into the exe
+├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
 ├── import/                  # the only videos that can be opened; user drops them in
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
@@ -80,7 +81,8 @@ commcut/
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the Settings scheme UI |
-| [docs/packaging.md](docs/packaging.md) | the portable build, the two roots, the `.ui` payload layout, child-window argv, Windows DLL loading |
+| [docs/packaging.md](docs/packaging.md) | the portable Windows build, the two roots, the `.ui` payload layout, child-window argv, Windows DLL loading |
+| [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |
 | [docs/testing.md](docs/testing.md) | how to run the suite, the widget/`FakeBridge` harness, which test file covers what, the Qt/import gotchas |
 | [docs/status.md](docs/status.md) | what is built, what is next, known gaps |
 | [docs/design_legacy.md](docs/design_legacy.md) | the original scope/design notes |
@@ -97,7 +99,8 @@ diagnose. The linked document has the full reasoning.
 2. **Frozen has two roots.** `resource_root()` is the read-only payload;
    `install_root()` is beside the exe and holds `bin/<os>/`, `settings.json`,
    `import/`, `export/`, `temp/`, `commcut.log`. Nothing that must survive goes
-   in the payload. → [docs/packaging.md](docs/packaging.md)
+   in the payload. Unfrozen they are the same folder, so a source install on
+   macOS or Linux writes to the clone. → [docs/packaging.md](docs/packaging.md)
 3. **`launch_command(name, *args)` is the only way to open a window**, and its
    `*args` are forwarded verbatim into that window's `run(*args)`. A window's
    `__main__` must therefore `sys.exit(run(*sys.argv[1:]))`; dropping the
@@ -106,16 +109,27 @@ diagnose. The linked document has the full reasoning.
    `__init__.py`, so a sibling import must be guarded on `__package__`, and the
    test for it must run in a **fresh interpreter**. →
    [docs/packaging.md](docs/packaging.md)
-5. **`bin/<os>` must be on `PATH` before `import mpv`**, and the
-   `os.add_dll_directory` handle must stay alive (a dropped handle surfaces
-   later as a bare `OSError` from ctypes). → [docs/packaging.md](docs/packaging.md)
-6. **Close the splash before constructing any mpv-backed widget.** mpv's
-   Direct3D init hangs when another top-level window is foreground.
+5. **Binaries resolve by absolute path, per platform, and libmpv is loaded
+   and named before `import mpv`.** `get_binary_path` searches `bin/<os>/` and
+   then, only on platforms that do not bundle (`_BUNDLED_BINARY_PLATFORMS`), the
+   absolute prefixes in `_SYSTEM_BIN_PREFIXES`. A bundling platform must
+   **refuse** rather than fall through to a system copy. On Windows the `PATH`
+   prepend and the `os.add_dll_directory` handle stay load-bearing, and the
+   handle must stay alive (a dropped one surfaces later as a bare `OSError` from
+   ctypes). On macOS `find_library` ignores `PATH` and **raises** rather than
+   falling back to an already-loaded image, so `mpv_import_context` loads the
+   resolved library and answers the lookup for it.
+   → [docs/packaging.md](docs/packaging.md),
+   [docs/source-install.md](docs/source-install.md)
+6. **Close the splash before constructing any mpv-backed widget.** A splash is a
+   top-level window, and constructing a player while another one is foreground
+   has deadlocked mpv's renderers.
    → [docs/architecture.md](docs/architecture.md)
 7. **Never construct a second mpv player while another top-level window is
    foreground.** Every window is its own process for exactly this reason; the
-   main menu stays open in the background rather than hosting a child.
-   → [docs/architecture.md](docs/architecture.md)
+   main menu stays open in the background rather than hosting a child. The
+   deadlock was found on Windows with direct3d and is not proven absent on
+   other platforms, so the rule is unconditional.
 8. **The source video path is an argument, not shared state.** It travels
    `main menu → picker → scanner → editor` through argv; a window never
    re-resolves a default of its own. → [docs/architecture.md](docs/architecture.md)

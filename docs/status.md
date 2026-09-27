@@ -8,7 +8,8 @@ exists before you build it.
 
 Related: [architecture.md](architecture.md), [segment-model.md](segment-model.md),
 [scanner.md](scanner.md), [naming-and-organization.md](naming-and-organization.md),
-[packaging.md](packaging.md), [testing.md](testing.md).
+[packaging.md](packaging.md), [source-install.md](source-install.md),
+[testing.md](testing.md).
 
 ## Built
 
@@ -83,10 +84,22 @@ Detail in [architecture.md](architecture.md) and
 
 ### Shared library and packaging
 
-- Cross-platform binary resolution: `shared/environment.get_binary_path`
-  resolves ffmpeg/ffprobe/mpv per OS under `bin/<os>/`; both the editor and
-  the scanner reach them through `setup_environment`. Every call site uses the
-  resolved absolute path rather than a bare binary name.
+- Per-platform binary resolution: `shared/environment.get_binary_path` searches
+  `bin/<os>/` first and, only on a platform that does not bundle binaries
+  (macOS, Linux), the absolute system prefixes. Windows bundles and **refuses**
+  rather than falling through.   `resolve_mpv_library` / `load_mpv_library` / `mpv_import_context` resolve
+  libmpv by absolute path, map it, and **answer python-mpv's own lookup** for it
+  before `import mpv`, which is what makes the source installs possible:
+  python-mpv scans `%PATH%` on Windows, and on macOS it scans system
+  directories and raises rather than falling back to a loaded image.
+  Every call site uses the resolved absolute path rather than a bare binary
+  name.
+- `shared/ffmpeg.check_video_encoder` probes `ffmpeg -encoders` for `libx264`
+  once and refuses an export batch up front if it is missing, so a source install
+  on a minimal ffmpeg reports one named problem rather than one failed clip per
+  segment. The export commit falls back from `os.link` to an exclusive create
+  plus copy, so a library on exFAT or a network mount exports rather than
+  refuses.
 - Shared library layer used by the wizards and Settings: `shared/mpv`
   (MpvBridge, create_mpv_player, scan_keyframes), `shared/timeline`,
   `shared/segments`, `shared/ffmpeg`, `shared/environment`, `shared/scheme`,
@@ -98,8 +111,12 @@ Detail in [architecture.md](architecture.md) and
   re-executions of the same binary via `--window <name>`. Pre-flight rejects a
   non-Windows host and Git LFS pointer binaries; post-build asserts the `.ui`
   layout and that `prototypes/`/`tests/` were not bundled.
+- **macOS and Linux run from source**, not from a build — see
+  [source-install.md](source-install.md). No frozen build exists for them, and
+  none is planned: a frozen macOS build would resolve `install_root()` inside a
+  signed `.app` bundle, which is read-only.
 
-Detail in [packaging.md](packaging.md).
+Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md).
 
 ### Not built
 
@@ -166,3 +183,11 @@ The full vision in `README.md` has three pieces; two are not started:
   `place_end_boundary` (see [segment-model.md](segment-model.md#end-seg)).
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
+- **macOS and Linux are unverified.** The resolution logic is cross-platform and
+  the suite covers it on any host, but nothing here has been run on either
+  platform. The open assumptions, in the order worth checking: whether a
+  loadable `libmpv` exists (a `brew install mpv` gives the *player*, not the
+  library — `COMMCUT_MPV_LIB` is the escape hatch); whether `vo=gpu` renders
+  into an `NSView*`; and, on Linux, whether `wid` embedding works at all under
+  Wayland. A green suite proves none of these, because `FakeBridge` stands in
+  for libmpv by design. See [source-install.md](source-install.md#what-has-not-been-verified).
