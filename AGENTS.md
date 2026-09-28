@@ -63,6 +63,8 @@ commcut/
 ├── shared/                  # the library all four windows build on
 ├── tests/                   # pytest suite (docs/testing.md)
 ├── docs/                    # the documents indexed below
+├── experiments/             # code answering a question the docs could not;
+│                            # never shipped, never bundled
 └── prototypes/              # historical; the active code is editor/ and scanner/
 ```
 

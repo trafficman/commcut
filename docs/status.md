@@ -192,6 +192,24 @@ The full vision in `README.md` has three pieces; two are not started:
   `place_end_boundary` (see [segment-model.md](segment-model.md#end-seg)).
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
+- **The one-process-per-window model has an untested justification.** The app
+  opens every window as a separate process because constructing an mpv player
+  while another top-level window is foreground is *believed* to deadlock. There
+  is no recorded reproduction, stack, or trigger condition in the tree, and
+  invariant 7's wording does not match the codebase's own workaround: a splash
+  screen is a top-level window in the same process, and closing it is the whole
+  fix. `experiments/mpv_foreground/` tests the claim directly. On Windows with
+  mpv `v0.41.0-39-ga58dd8ac4`, 120 runs across six cases — the shipped
+  `direct3d` driver, a verified-foreground window, a frameless splash, and
+  three concurrent presenting players — produced **no hang**, with the
+  foreground window confirmed on every run and a negative control proving the
+  harness detects a block at that exact step. So the stated trigger does not
+  reproduce on the development machine. It is not proven absent elsewhere: that
+  is one GPU, one driver, one mpv build, and not the real editor or scanner
+  windows. The finding and its limits are recorded in
+  [experiments/README.md](../experiments/README.md). Until it is resolved, the
+  process model stands, but invariant 7 should be read as an unverified
+  workaround rather than a proven law.
 - **macOS and Linux are unverified.** The resolution logic is cross-platform and
   the suite covers it on any host, but nothing here has been run on either
   platform. The open assumptions, in the order worth checking: whether a

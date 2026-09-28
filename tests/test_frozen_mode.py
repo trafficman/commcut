@@ -683,10 +683,13 @@ def test_every_registered_window_has_a_script():
 #: Modules that ship in the app and so may start a child process. core.py is
 #: excluded on purpose: nothing imports it, PyInstaller never sees it, and it is
 #: kept only as history. The gap this leaves is that wiring core.py back into a
-#: window would reintroduce the pop-ups without failing here.
+#: window would reintroduce the pop-ups without failing here. experiments/ is
+#: excluded for the same reason prototypes/ is: it is never bundled, so the rule
+#: it would be measured against does not apply to it.
 NOT_SHIPPED = ("core.py",)
 
-EXCLUDED_FOLDERS = ("tests", "prototypes", "packaging", "docs", ".github")
+EXCLUDED_FOLDERS = ("tests", "prototypes", "experiments", "packaging", "docs",
+                    ".github")
 
 
 def _app_modules():
@@ -1000,7 +1003,8 @@ def test_every_ui_file_in_the_tree_is_listed_and_bundled():
     with open(spec_path, encoding="utf-8") as handle:
         spec_text = handle.read()
 
-    skip = {"prototypes", "packaging", "dist", "__pycache__", ".git"}
+    skip = {"prototypes", "experiments", "packaging", "dist", "__pycache__",
+            ".git"}
 
     def pruned(dirnames):
         # Hidden folders (agent worktrees, VCS internals) hold copies of this

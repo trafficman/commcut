@@ -68,12 +68,12 @@ Controls, from left to right, top down:
 
 #### Tags
 
-Four required tags, **Title**, **Type**, **Network**, and **Time Period**, and many optional tags. These are ultimately what will name and organize your filler library (and importantly, what will allow you to do advanced filler scheduling), **for a glossary of filler types** see my WIP guide [Filler and You](/docs/guides/filler_and_you.md#glossary).
+Four required tags, **Title**, **Type**, **Network**, and **Time Period**, and many optional tags. These are ultimately what will name and organize your filler library (and importantly, what will allow you to do advanced filler scheduling), **for a glossary of filler types** see my WIP guide [Filler and You](docs/guides/filler_and_you.md#glossary).
 
 - **Lock/Unlock**: Locks the currently entered tag in that row, carrying it over to the next segment, and every segment after that as long as it remains locked (**Usecase**: The entire source video is from 2010, so all clips have that year applied)
 
 - **Title**: Required, the title of the clip, unique, and should be descriptive enough to tell what the clip is at a glance.
-- **Type**: Filler Type, required, the category of this particular filler clip, again see the [Filler and You](/docs/guides/filler_and_you.md#glossary) glossary for the ones I personally use + their descriptions.
+- **Type**: Filler Type, required, the category of this particular filler clip, again see the [Filler and You](docs/guides/filler_and_you.md#glossary) glossary for the ones I personally use + their descriptions.
 - **Network**: Required, the television network which this filler clip aired on/you want it to appear on. Promos and bumpers are network specific, but commercials are more generalized (appearing across multiple networks), for those I personally use the network "General".
 - **Time Period**: Required, the time period ("80s" vs "90s") or era ("CN City" vs "Powerhouse") in which this filler aired. Personally, I use 5 year time periods (2000, 2005, 2010, etc) so that whatever my target year for a channel is, it can have filler from the surrounding +/- 5 years.
 - **Year**: Optional, the year this filler clip aired, prime candidate for being locked.
