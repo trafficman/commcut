@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.environment import (
-    get_binary_path, launch_command, resource_path, setup_environment,
+    get_binary_path, launch_command, no_console_kwargs, resource_path,
+    setup_environment,
 )
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -238,7 +239,8 @@ class ScannerWindow(QMainWindow):
             "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
             "-an", "-f", "null", "-",
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, **no_console_kwargs())
         midpoints = [(t1 + t2) / 2.0 for t1, t2 in self._parse_blackdetect_runs(proc.stderr)]
         self.ui.timelineWidget1.set_markers(midpoints)
 
@@ -307,7 +309,8 @@ class ScannerWindow(QMainWindow):
             "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
             "-an", "-f", "null", "-",
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, **no_console_kwargs())
         midpoints = [(t1 + t2) / 2.0 for t1, t2 in self._parse_blackdetect_runs(proc.stderr)]
 
         model = _model_from_midpoints(midpoints, duration, os.path.basename(source))
@@ -318,7 +321,7 @@ class ScannerWindow(QMainWindow):
         # Open the editor to review the .cmct we just wrote, then close the scanner.
         # The source path travels with it: the editor works on this video, not
         # on a default one.
-        subprocess.Popen(launch_command('editor', source))
+        subprocess.Popen(launch_command('editor', source), **no_console_kwargs())
         QApplication.quit()
 
     def on_play_pause(self):
@@ -355,7 +358,8 @@ def run(source=None):
     # before the QApplication is built, because this process does nothing
     # but hand off.
     if _editor_to_launch(source_path) is not None:
-        subprocess.Popen(launch_command('editor', source_path))
+        subprocess.Popen(
+            launch_command('editor', source_path), **no_console_kwargs())
         return 0
 
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

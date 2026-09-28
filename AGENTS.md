@@ -147,6 +147,12 @@ diagnose. The linked document has the full reasoning.
     clips — keeps the clips it committed, and the only destinations it may later
     skip are the ones that same session's own run wrote. →
     [docs/segment-model.md](docs/segment-model.md)
+11. **Every child process carries `**no_console_kwargs()`.** A `console=False`
+    build has no console, so Windows gives each ffmpeg, ffprobe, and window
+    launch a *visible* console window — and it is invisible from a source run,
+    where the child joins the developer's terminal. The rule's one owner is
+    `shared/environment.py:no_console_kwargs`; `tests/test_frozen_mode.py` sweeps
+    the app's modules and fails without it. → [docs/packaging.md](docs/packaging.md)
 
 ## Working agreements
 

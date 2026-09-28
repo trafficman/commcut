@@ -196,6 +196,47 @@ The spec sets `disable_windowed_traceback=True` for the same reason: the
 default makes the windowed bootloader pop a **modal** traceback dialog that the
 process waits on, so an undismissable error looks exactly like a hang.
 
+## No console windows
+
+A windowed build has no console of its own, and on Windows that changes what a
+child process gets. A **console** program started by a process that has no
+console is handed a new, *visible* console window. ffmpeg and ffprobe are
+console programs, so without a flag every one of their calls flashes a console
+over the app — the scanner's preview clip, the editor's duration and keyframe
+probes, `blackdetect` on Test Scan, the encoder check and every exported clip.
+
+This is invisible from a source run: the developer is in a terminal, the child
+joins that terminal's console, and no window ever appears. It only happens in
+the packaged build, which is what makes it a packaging rule.
+
+`no_console_kwargs()` in `shared/environment.py` is the single owner. It
+returns `{"creationflags": subprocess.CREATE_NO_WINDOW}` on Windows and `{}`
+elsewhere, and every `subprocess.run` / `Popen` in the app splats it in:
+
+```python
+subprocess.run(command, capture_output=True, text=True, **no_console_kwargs())
+```
+
+The flag gives the child a console with **no window**, so captured pipes and the
+temporary stderr file in `_run_ffmpeg` keep working unchanged. It is a no-op on
+a child that is not a console application, which is why the four window launches
+(`launch_command` call sites) can carry it too without a second code path — a
+GUI-subsystem `commcut.exe` re-executing itself never allocated a console in the
+first place, so the pop-ups seen on a window transition were the *new* window's
+own ffmpeg and ffprobe calls, not the launch.
+
+The flag is unconditional rather than applied only when the current process
+happens to have no console: every call site already captures its child's
+output, so there is nothing to lose by never joining the parent console, and
+"does this process have a console" is a ctypes question with a subtle answer
+that call sites should not each have to get right.
+
+`tests/test_frozen_mode.py` sweeps the app's modules with `ast` and fails if any
+`subprocess.run` / `Popen` lacks the flag, because the failure mode is silent on
+every machine a developer has. `core.py` is excluded from the sweep: nothing
+imports it, PyInstaller never sees it, and it is kept only as history. Wiring it
+back into a window would reintroduce the pop-ups without failing the sweep.
+
 ## Resolving the binaries at runtime
 
 `get_binary_path(name)` returns the absolute path of a binary, and it is the

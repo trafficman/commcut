@@ -81,7 +81,7 @@ class Encoding:
 class FakeProcess:
     """The subprocess.Popen surface shared.ffmpeg drives, without an encoder."""
 
-    def __init__(self, command, errors, encoding):
+    def __init__(self, command, errors, encoding, spawn_kwargs=None):
         self.command = command
         self.returncode = None
         self.terminated = False
@@ -89,6 +89,9 @@ class FakeProcess:
         self._errors = errors
         self._encoding = encoding
         self._remaining_polls = encoding.poll_count
+        #: The extra keyword arguments Popen was called with, so a test can
+        #: assert on what actually reaches the spawn rather than on the source.
+        self.spawn_kwargs = spawn_kwargs or {}
 
     def poll(self):
         if self.returncode is not None:
@@ -122,9 +125,9 @@ def install_fake_ffmpeg(monkeypatch, *encodings):
     queue = list(encodings) or [Encoding()]
     processes = []
 
-    def fake_popen(command, stdout=None, stderr=None):
+    def fake_popen(command, stdout=None, stderr=None, **kwargs):
         encoding = queue.pop(0) if len(queue) > 1 else queue[0]
-        process = FakeProcess(command, stderr, encoding)
+        process = FakeProcess(command, stderr, encoding, kwargs)
         processes.append(process)
         return process
 
@@ -661,3 +664,55 @@ def test_two_sources_get_different_preview_clips(tmp_path, monkeypatch):
     second = clip_to_temp(str(tmp_path / "two.mp4"), 120, output_dir=output_dir)
 
     assert first != second
+
+
+# ---------------------------------------------------------------------------
+# No console windows
+# ---------------------------------------------------------------------------
+
+def test_an_export_forbids_its_encoder_a_console_window(
+    tmp_path, source_path, monkeypatch
+):
+    """The flag has to survive the trip to Popen, not just be present at the
+    call site. commcut.exe has no console, so an unguarded ffmpeg is given a new
+    visible one -- once per clip, over the app."""
+    sentinel = {"creationflags": "sentinel"}
+    monkeypatch.setattr(
+        "shared.ffmpeg.no_console_kwargs", lambda: dict(sentinel))
+    processes = install_fake_ffmpeg(monkeypatch)
+    plan = make_plan(
+        tmp_path / "library",
+        [(0, 0.0, 4.5, ("Network", "Promo", "2000s", "Clip.mp4"))],
+    )
+
+    execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert processes, "no ffmpeg was started"
+    for process in processes:
+        assert process.spawn_kwargs == sentinel
+
+
+def test_the_preview_clip_forbids_ffmpeg_a_console_window(tmp_path, monkeypatch):
+    """The scanner's preview clip is the first thing a user sees when a window
+    opens, so this call is the first one they would notice."""
+    sentinel = {"creationflags": "sentinel"}
+    from shared.ffmpeg import clip_to_temp
+
+    monkeypatch.setattr(
+        "shared.ffmpeg.get_binary_path", lambda name: "ffmpeg")
+    monkeypatch.setattr(
+        "shared.ffmpeg.no_console_kwargs", lambda: dict(sentinel))
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("shared.ffmpeg.subprocess.run", fake_run)
+
+    clip_to_temp(str(tmp_path / "one.mp4"), 120, output_dir=str(tmp_path / "temp"))
+
+    assert seen, "ffmpeg was never run"
+    for kwargs in seen:
+        assert kwargs["creationflags"] == sentinel["creationflags"]
+

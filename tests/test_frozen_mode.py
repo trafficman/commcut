@@ -11,6 +11,7 @@ starts and then cannot find ffmpeg, its .ui files, or libmpv. The assertions
 below are the contract the spec and build.py have to keep satisfying.
 """
 
+import ast
 import os
 
 import pytest
@@ -25,6 +26,7 @@ from shared.environment import (
     install_root,
     is_frozen,
     launch_command,
+    no_console_kwargs,
     resource_path,
     resource_root,
 )
@@ -672,6 +674,154 @@ def test_every_registered_window_has_a_script():
     for name in WINDOW_NAMES:
         assert os.path.isfile(
             os.path.join(PROJECT_ROOT, launch_command(name)[1]))
+
+
+# ---------------------------------------------------------------------------
+# No console windows
+# ---------------------------------------------------------------------------
+
+#: Modules that ship in the app and so may start a child process. core.py is
+#: excluded on purpose: nothing imports it, PyInstaller never sees it, and it is
+#: kept only as history. The gap this leaves is that wiring core.py back into a
+#: window would reintroduce the pop-ups without failing here.
+NOT_SHIPPED = ("core.py",)
+
+EXCLUDED_FOLDERS = ("tests", "prototypes", "packaging", "docs", ".github")
+
+
+def _app_modules():
+    """Every .py file the app ships, as root-relative posix paths."""
+    found = []
+    for directory, subfolders, files in os.walk(PROJECT_ROOT):
+        relative = os.path.relpath(directory, PROJECT_ROOT)
+        subfolders[:] = [
+            name for name in subfolders
+            if not name.startswith(".") and name not in EXCLUDED_FOLDERS
+        ]
+        for name in sorted(files):
+            if not name.endswith(".py") or name in NOT_SHIPPED:
+                continue
+            found.append(os.path.join(relative, name).replace(os.sep, "/").lstrip("./"))
+    return sorted(found)
+
+
+def _spawn_calls(path):
+    """(imports the helper, [(line, call)]) for `path`.
+
+    Whether the name is imported is part of the same question as whether it is
+    called: a call without the import is a NameError the first time that ffmpeg
+    runs, which in the shipped build is a user pressing Export.
+    """
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
+
+    imports_helper = any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "no_console_kwargs" for alias in node.names)
+        ) or (
+            isinstance(node, ast.Import)
+            and any(alias.name == "no_console_kwargs" for alias in node.names)
+        )
+        for node in ast.walk(tree)
+    )
+
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if (
+            isinstance(function, ast.Attribute)
+            and function.attr in ("run", "Popen")
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "subprocess"
+        ):
+            calls.append((node.lineno, node))
+    return imports_helper, calls
+
+
+def _suppresses_the_console(call):
+    """Whether the call carries the flag, by whatever spelling it uses."""
+    for keyword in call.keywords:
+        if keyword.arg == "creationflags":
+            return True
+        unpacked = keyword.value
+        if (
+            keyword.arg is None
+            and isinstance(unpacked, ast.Call)
+            and isinstance(unpacked.func, ast.Name)
+            and unpacked.func.id == "no_console_kwargs"
+        ):
+            return True
+    return False
+
+
+def test_a_windows_child_is_told_not_to_open_a_console(monkeypatch):
+    """A console program started by a console-less parent is given a new,
+    *visible* console window. commcut.exe is GUI-subsystem and has no console,
+    so this is what every ffmpeg call in the shipped build needs."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+
+    assert no_console_kwargs() == {
+        "creationflags": environment.subprocess.CREATE_NO_WINDOW}
+
+
+def test_a_platform_without_console_windows_gets_no_flags(monkeypatch):
+    """macOS and Linux have no equivalent and no problem: the flag does not
+    exist there, and passing anything would be a TypeError."""
+    for system in ("Darwin", "Linux"):
+        monkeypatch.setattr(environment.platform, "system", lambda: system)
+
+        assert no_console_kwargs() == {}, system
+
+
+def test_each_console_call_gets_its_own_dict_to_merge_into(monkeypatch):
+    """Callers splat this into their own keyword arguments, so a shared module
+    level dict could be mutated by one call site and change another's."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+
+    first = no_console_kwargs()
+    first["creationflags"] = "clobbered"
+
+    assert no_console_kwargs()["creationflags"] == environment.subprocess.CREATE_NO_WINDOW
+
+
+def test_every_app_spawn_site_suppresses_the_console():
+    """The regression guard. A new ffmpeg call that forgets the flag is
+    invisible from a source run -- the developer has a terminal, the child joins
+    it, and no window ever appears -- so the only place it can be caught is
+    here."""
+    unguarded = []
+    for relative in _app_modules():
+        imports_helper, calls = _spawn_calls(os.path.join(PROJECT_ROOT, relative))
+        for lineno, call in calls:
+            if not _suppresses_the_console(call) or not imports_helper:
+                unguarded.append(f"{relative}:{lineno}")
+
+    assert not unguarded, (
+        "these spawn a child without no_console_kwargs() imported and splatted "
+        f"in, so a packaged build pops a console window for each: "
+        f"{', '.join(unguarded)}"
+    )
+
+
+def test_the_console_scan_actually_finds_the_app_spawn_sites():
+    """A sweep that finds nothing would pass the test above for the wrong
+    reason -- a typo in the pattern, or a module that stopped importing
+    subprocess, and the guard would be worth nothing."""
+    found = {
+        relative
+        for relative in _app_modules()
+        if _spawn_calls(os.path.join(PROJECT_ROOT, relative))[1]
+    }
+
+    assert "shared/ffmpeg.py" in found
+    assert "shared/mpv.py" in found
+    assert "shared/segments.py" in found
+    assert "scanner/scanner.py" in found
+    assert "mainwindow.py" in found
+    assert "picker/picker.py" in found
 
 
 # ---------------------------------------------------------------------------

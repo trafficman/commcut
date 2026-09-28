@@ -17,6 +17,7 @@ from shared.environment import (
     REQUIRED_VIDEO_ENCODER,
     get_binary_path,
     install_root,
+    no_console_kwargs,
 )
 from shared.diagnostics import log
 from shared.exporting import (
@@ -157,6 +158,7 @@ def _run_ffmpeg(command, should_cancel=None) -> tuple[int, str]:
             command,
             stdout=subprocess.DEVNULL,
             stderr=errors,
+            **no_console_kwargs(),
         )
         try:
             while process.poll() is None:
@@ -274,6 +276,7 @@ def check_video_encoder(ffmpeg_path=None):
         result = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=30,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as error:
         log(f"could not ask {ffmpeg_path} for its encoders: {error}")
@@ -473,7 +476,8 @@ def export_segment_clips(source_path, out_dir=None, crf=18):
             "-movflags", "+faststart",
             out_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, **no_console_kwargs())
         if result.returncode != 0:
             log(f"FFmpeg export error for segment {out_index} "
                 f"(start={start:.3f}s dur={duration:.3f}s):\n{result.stderr}")
@@ -504,7 +508,10 @@ def clip_to_temp(input_path, duration, output_dir="temp"):
     ]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            cmd, check=True, capture_output=True, text=True,
+            **no_console_kwargs(),
+        )
         return output_path
     except subprocess.CalledProcessError as e:
         log(f"FFmpeg clip error for {input_path}:\n{e.stderr}")

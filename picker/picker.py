@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.environment import (
-    launch_command, resource_path, setup_environment,
+    launch_command, no_console_kwargs, resource_path, setup_environment,
 )
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -140,7 +140,7 @@ class PickerWindow(QMainWindow):
         try:
             command = launch_command('scanner', video.path)
             log(f"picking {video.path}: {command}")
-            subprocess.Popen(command)
+            subprocess.Popen(command, **no_console_kwargs())
         except (OSError, ValueError) as error:
             # Reported, not raised: an escape here would reach Qt's event loop
             # and take the window down with a traceback.

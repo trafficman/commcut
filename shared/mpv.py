@@ -27,7 +27,9 @@ import subprocess
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 from shared.diagnostics import log
-from shared.environment import get_binary_path, mpv_import_context, video_output
+from shared.environment import (
+    get_binary_path, mpv_import_context, no_console_kwargs, video_output,
+)
 
 
 # Keyframes closer than this (seconds) to the current position are treated as
@@ -61,6 +63,7 @@ def scan_keyframes(path):
         ],
         capture_output=True,
         text=True,
+        **no_console_kwargs(),
     )
     keyframes = []
     for line in result.stdout.splitlines():

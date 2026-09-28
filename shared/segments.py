@@ -26,7 +26,7 @@ import json
 import os
 import subprocess
 
-from shared.environment import get_binary_path
+from shared.environment import get_binary_path, no_console_kwargs
 
 
 def sidecar_path(video_path):
@@ -46,6 +46,7 @@ def probe_duration(path):
         ],
         capture_output=True,
         text=True,
+        **no_console_kwargs(),
     )
     try:
         return float(result.stdout.strip())

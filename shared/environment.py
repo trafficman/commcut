@@ -61,6 +61,35 @@ macOS needs no architecture handling anywhere. Homebrew installs to
 ``/opt/homebrew`` on Apple Silicon and ``/usr/local`` on Intel, and both are in
 the list.
 
+No console windows
+------------------------------------------------------------------------------
+
+The shipped build has no console of its own -- ``commcut.spec`` sets
+``console=False``, so the executable is a GUI-subsystem binary -- and that
+changes what Windows does with a child process. A console program started by a
+process that has no console is given a *new, visible* console window. ffmpeg
+and ffprobe are console programs, so every one of their calls would flash a
+console over the app: the scanner's preview clip, the editor's duration and
+keyframe probes, one per exported clip, and so on. It is the kind of surprise
+that makes a GUI look like it is doing something to the machine.
+
+``no_console_kwargs`` is the single owner of the fix. It returns the
+``CREATE_NO_WINDOW`` flag on Windows and nothing elsewhere, for the call to
+splat into ``subprocess.run``/``Popen``::
+
+    subprocess.run(command, capture_output=True, text=True, **no_console_kwargs())
+
+The flag gives the child a console with no window, so pipes and the temporary
+stderr file keep working exactly as they do now. It is a no-op on a child that
+is not a console application, which is why the window launches can carry it
+without a second code path.
+
+The alternative -- only adding the flag when the current process happens to
+have no console -- was not taken. Every call site already captures its child's
+output, so there is nothing to lose by never joining the parent console, and
+"does this process have a console" is a question with a ctypes answer that has
+to be kept correct rather than one the call sites can get right by accident.
+
 Loading libmpv
 ------------------------------------------------------------------------------
 
@@ -107,6 +136,7 @@ import ctypes
 import ctypes.util
 import os
 import platform
+import subprocess
 import sys
 
 
@@ -487,6 +517,23 @@ def video_output():
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
     return MPV_VIDEO_OUTPUT[key]
+
+
+def no_console_kwargs():
+    """Extra ``subprocess`` kwargs that keep a child off the screen on Windows.
+
+    Splat into every ``subprocess.run`` / ``Popen`` that starts a console
+    program -- ffmpeg, ffprobe, and a child window for good measure. See "No
+    console windows" in the module docstring for why a windowed build needs
+    this and why the flag is unconditional rather than only when the parent
+    happens to have no console.
+
+    Returns a fresh dict every call, so a caller that merges it into other
+    keyword arguments cannot corrupt anyone else's.
+    """
+    if _os_key() == 'windows':
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {}
 
 
 def launch_command(window_name, *args):

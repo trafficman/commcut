@@ -54,13 +54,13 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
 | `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off |
 | `test_picker.py` | the picker window, offscreen |
 | `test_main_window.py` | the main menu, the launcher, and the failure paths |
-| `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement |
+| `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement, and the sweep that every spawn site carries `no_console_kwargs()` |
 | `test_mpv_player.py` | how the player is built: libmpv loaded before the import that needs it, the native handle, and the zero-handle refusal (no real player) |
 | `test_scheme.py` | strict scheme parsing |
 | `test_naming.py` | filename rendering, including the README pattern |
 | `test_paths.py` | strict folder scheme compilation, rendering, and sanitation |
 | `test_exporting.py` | export settings, destination planning, preflight, resume skips |
-| `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting (`Popen` mocked) |
+| `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting, the encoder probe, and the no-console flag reaching `Popen` (`Popen` mocked) |
 | `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run, and the summary screen (window wiring with a substituted dialog, plus the shipped dialog itself) |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels |
 | `test_docs.py` | the documentation guard (see below) |

@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from shared.environment import (
-    launch_command, resource_path, setup_environment,
+    launch_command, no_console_kwargs, resource_path, setup_environment,
 )
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -48,7 +48,7 @@ def _launch(window_name):
     """
     command = launch_command(window_name)
     log(f"launching {window_name}: {command}")
-    return subprocess.Popen(command)
+    return subprocess.Popen(command, **no_console_kwargs())
 
 
 class MainWindow(QMainWindow):
