@@ -52,7 +52,8 @@ commcut/
 │   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
 ├── shared/                  # Cross-module library (editor + scanner + settings)
-│   ├── environment.py       # frozen-aware roots, per-OS binaries, launch_command
+│   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context
+│   ├── session.py           # the QApplication's window stack: Shell, _BUILDERS
 │   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
 │   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
@@ -70,22 +71,33 @@ commcut/
     └── VideoEditor/         # Pre-rename copy of the editor module
 ```
 
-## One process per window
+## One process, one event loop, a stack of windows
 
-Every window is a separate process, and that is deliberate: constructing an mpv
-player (direct3d) while another top-level window is foreground deadlocks on
-Windows. The rule is applied on every platform, not just the one where the
-deadlock was found — it is not proven absent elsewhere. See
-[packaging.md](packaging.md) for how that shapes the frozen build (`--window
-<name>` re-execution, argv forwarding) and
-[source-install.md](source-install.md) for what the same model means on macOS
-and Linux.
+Every window in this app is a window, not a process. `main.py` is the only entry
+point: it builds the one `QApplication`, constructs `MainWindow`, installs a
+`Shell` over it, and runs the event loop. There is no `--window` flag and no
+per-window script, and each window module exposes a `create(...)` builder rather
+than a `run()` entry point.
 
-`main.py` is the application entry point. It calls
-`shared.environment.setup_environment(__file__)`, constructs `MainWindow` from
-`mainwindow.py`, and runs the event loop. It is also the argv dispatcher: the same
-binary, re-executed as `--window <name> [args]`, routes to that window's `run()`
-(`_run_window`, importing each window lazily so the main menu does not pull in mpv).
+This was not always so. One process per window existed because constructing an
+mpv player (direct3d) while another top-level window is foreground was believed
+to deadlock on Windows. There was never a recorded reproduction, and
+`experiments/mpv_foreground/` ran the claim directly: 120 runs across six cases,
+no hang, with the foreground window verified rather than assumed — including the
+frameless-splash case and three concurrent presenting players in one process. See
+[experiments/README.md](../experiments/README.md) for the method and its limits.
+One GPU, one driver, one mpv build, and bare windows rather than the real editor,
+so it does not prove the hazard absent everywhere; the splash-closing precaution
+in the scanner and the editor is kept for that reason.
+
+What the change cost is worth stating plainly: a hard fault inside
+`libmpv-2.dll` used to kill one window and leave the main menu running. Now it
+kills the app. That was a deliberate trade, made while the project is pre-release
+and the packaged build has never run on a user's machine.
+
+`shared/session.py` owns navigation. The builders are imported lazily inside
+`Shell.open`, so the main menu — the first thing that runs — does not pull in
+libmpv; `main.py` and the menu never import a window module at module level.
 
 ## The main menu
 
@@ -94,27 +106,43 @@ binary, re-executed as `--window <name> [args]`, routes to that window's `run()`
 
 Two buttons: **Editor** and **Settings**.
 
-**"Editor" launches the picker, not the editor.** The picker chooses which video
+**"Editor" opens the picker, not the editor.** The picker chooses which video
 in `import/` to work on; the scanner is then the pre-process phase of the
 Editing Wizard — it detects clip boundaries and hands off to the editor itself
 — so picker, scanner, and editor are one journey, not three menu items. The
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
-Children are launched with `shared.environment.launch_command(name, *args)`, the
-same mechanism the picker uses to hand the chosen video to the scanner and the
-scanner uses to hand it to the editor. Three
-reasons: the menu **stays open in the background** (it never waits on or
-observes the child, so there is no need to reopen it on child exit), each
-window gets its own Qt event loop and its own mpv instance, and it sidesteps
-the Windows mpv D3D hazard where constructing a player while another
-top-level window is foreground can deadlock. A launch that fails — an unknown
-window name, or a missing script when running from source — is reported with a
-`QMessageBox` rather than allowed to escape into the event loop.
+Both buttons call `shell().open_safely(name)`, which is the only way a window is
+opened anywhere in the app. The menu is the **root** of the stack and is never
+destroyed, so a child closing brings this same window back to the foreground
+rather than relaunching it or making a second one — which is what the
+separate-process arrangement did by leaving the menu running behind everything
+else.
+
+`open_safely` exists because the process boundary is gone. Every window opens the
+next one from inside a button handler, and an exception escaping one of those
+reaches the event loop: with one process that takes down the window the button
+belonged to, where before it only killed a child. It logs the failure and shows
+a `QMessageBox` instead, and returns `None`.
+
+A builder has a two-way contract: return a window, or raise. One exception to
+the second is `shared/session.py:OpenInstead`, which a builder raises to say
+"I am not opening; open *this* instead", and the shell resolves it. The scanner
+is the case: a video that already has a `.cmct` must not be re-scanned, so the
+rule is the scanner's, but the routing is not — it has no window to show. This
+was a `None` return originally, and it failed the way a sentinel does: the shell
+took the `None` for a window and reported the already-scanned video as
+unopenable instead of opening the editor. `tests/test_session.py` guards it.
+
+The shell removes a closed window **by identity, not by popping the top**. The
+picker's Open button opens the scanner and *then* closes itself, so the window
+that died is not the one on top; a positional pop would discard the scanner and
+put the menu back over it. `tests/test_session.py` covers this.
 
 `setup_environment` resolves the project root as `install_root()`: the source
 tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
-covers the launcher, the failure paths, and the project-root resolution from
-every entry point.
+covers the two buttons and the project-root resolution from every entry point;
+`tests/test_session.py` covers the stack.
 
 ## The source video is picked from the import folder
 
@@ -136,23 +164,25 @@ to turn an argument into a source path:
   a file outside it, and `commonpath` so `import_backup` is not "inside"
   `import`) and must be a video extension. This is what actually enforces the
   restriction — the picker is only a convenience over it, and a hand-edited
-  `--window scanner <path>` still has to pass.
+  call still has to pass.
 - `require_source_video(value, folder)` — the same check plus existence, and it
   owns the "nothing to open" message. Without it a missing video fails as a
   *codec* problem: ffprobe returns nothing, a placeholder `.cmct` is written
   with `duration=0.0`, and mpv then reports an opaque load failure.
 - `DEFAULT_SOURCE_NAME` is the no-argument fallback (`import/test.mp4`) so a
-  direct `python scanner/scanner.py` and any build predating the picker still
-  work. The picker always supplies an explicit path.
+  hand-edited call still has something to fall back on. The picker always
+  supplies an explicit path.
 
 **The path is an argument, not shared state.** It travels
-`main menu → picker → scanner → editor`, because each window is its own
-process: `launch_command(name, *args)` appends it, `main.py`'s
-`--window <name> [args]` dispatcher forwards it, and each `run(source=None)`
-passes it to its window constructor (`ScannerWindow(source_path)`,
-`MediaPlayer(media_path)`). `tests/test_source_handoff.py` guards the shapes
-that regressed quietly: a window that resolves its own source instead of using
-the one it was given. The dependency direction is one-way —
+`main menu → picker → scanner → editor` as a keyword the shell passes to a
+window's builder: `shell().open('scanner', source=path)` reaches
+`ScannerWindow(source_path)`, and `shell().open('editor', source=path)` reaches
+`MediaPlayer(media_path)`. Navigation is the one process-wide global and it
+lives in `shared/session.py`; the video is not in it.
+`tests/test_source_handoff.py` guards the shapes that regressed quietly: a
+window that resolves its own source instead of using the one it was given, and a
+builder that would swallow the `source` keyword. The dependency direction is
+one-way —
 `shared/sources.py` imports `sidecar_path` from `shared/segments.py`; segments
 never imports sources.
 
@@ -175,11 +205,15 @@ The shared modules are:
   `get_binary_path(name)` (per-platform resolution: `bin/<os>/` first, then the
   system prefixes on platforms that do not bundle),   `resolve_mpv_library()` / `load_mpv_library()` / `mpv_import_context()` (resolve
   libmpv by absolute path, map it, and answer python-mpv's own lookup for it
-  before `import mpv`),
-  `launch_command(name, *args)` (argv to open a child window),
-  `WINDOW_NAMES`, `video_output()` (per-OS mpv `vo`), and
+  before `import mpv`), `video_output()` (per-OS mpv `vo`), and
   `ensure_app_folders()`. This is the cross-platform binary resolution that
-  used to live in `core.py`.
+  used to live in `core.py`. It used to also own `launch_command()` and
+  `WINDOW_NAMES`; both went with the process model.
+- `shared/session.py` — the `Shell`: the one `QApplication`'s window stack, the
+  `_BUILDERS` registry mapping a window name to its module and builder, and
+  `shell()` / `set_shell()`. It is the only way a window is opened, and the only
+  process-wide piece of state. Imports no window module and no mpv at module
+  level, so the main menu does not pull in libmpv.
 - `shared/diagnostics.py` — `log()`, `log_exception()`, `install_excepthook()`,
   and `fatal()`. Everything diagnostic, because a windowed build has no
   console.
@@ -290,9 +324,9 @@ owns reporting:
   build. Override the path with `COMMCUT_LOG`.
 - `install_excepthook()` writes a traceback to the log and shows a
   `QMessageBox` naming it.
-- `fatal()` handles failures *before* a window exists (missing source video,
-  unwritable install root, bad `--window` argument) and returns a real exit
-  code. `main()` wraps dispatch in it so nothing reaches the bootloader.
+- `fatal()` handles failures *before* a window exists (an unwritable install
+  root) and returns a real exit code. Once the menu is up, a window that will
+  not build is a `QMessageBox` from `Shell.open_safely` instead.
 
 The spec sets `disable_windowed_traceback=True` for the same reason: the
 default makes the windowed bootloader pop a **modal** traceback dialog that the

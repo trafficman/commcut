@@ -9,8 +9,8 @@ from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile, QIODevice, QSaveFile, QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from shared.diagnostics import install_excepthook, log, log_exception
+from PySide6.QtWidgets import QMainWindow, QMessageBox
+from shared.diagnostics import log, log_exception
 from shared.exporting import (
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
@@ -366,20 +366,12 @@ class SettingsWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def run(*_args):
-    """Show the settings window and run its event loop. Returns the exit code.
+def create(app=None):
+    """Build the settings window. Returns it; the shell shows it.
 
-    Also the entry point main.py dispatches to for '--window settings'. Any
-    extra command-line argument is ignored and ignored deliberately: main.py
-    forwards arguments to every window uniformly (the source video, for the
-    scanner and the editor), and this window has nothing to open.
+    `app` is the process's QApplication. It is accepted for uniformity with the
+    windows that need it during construction — the scanner and the editor show
+    a splash while they work — and ignored here: this window constructs no
+    player and runs no loop of its own.
     """
-    app = QApplication(sys.argv)
-    install_excepthook(app)
-    window = SettingsWindow()
-    window.show()
-    return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(run(*sys.argv[1:]))
+    return SettingsWindow()

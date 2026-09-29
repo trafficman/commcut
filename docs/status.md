@@ -107,8 +107,10 @@ Detail in [architecture.md](architecture.md) and
 - Portable packaging (`packaging/commcut.spec` + `packaging/build.py`): a
   self-extracting onefile `commcut.exe` (Python + PySide6 + the app + the `.ui`
   files) assembled into `dist/commcut-portable/` alongside the `bin/win/`
-  binaries and the `import/`+`export/` placeholders. Child windows are
-  re-executions of the same binary via `--window <name>`. Pre-flight rejects a
+  binaries and the `import/`+`export/` placeholders. Every window is built
+  in-process by `shared/session.py`; there is one entry point and nothing is
+  re-executed, so the payload is extracted once per run rather than once per
+  window. Pre-flight rejects a
   non-Windows host and Git LFS pointer binaries; post-build asserts the `.ui`
   layout and that `prototypes/`/`tests/` were not bundled. `--zip` adds the
   distributable archive plus a sha256 sidecar, refused unless the exe, all
@@ -177,7 +179,7 @@ The full vision in `README.md` has three pieces; two are not started:
   the length of one long segment. A run that finishes — clean or with per-clip
   failures — then gets a summary screen saying what was written, where, and what
   failed, with **Back to main menu** closing the editor and handing the user back
-  to the main menu, which is still running in its own process. **Export the
+  to the main menu, which is still open underneath it. **Export the
   rest** retries a partial run's unwritten clips, which is what makes a
   per-clip failure recoverable: the preflight refuses a destination that exists,
   so a retry needs the clips the run already wrote skipped — see
@@ -192,24 +194,26 @@ The full vision in `README.md` has three pieces; two are not started:
   `place_end_boundary` (see [segment-model.md](segment-model.md#end-seg)).
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
-- **The one-process-per-window model has an untested justification.** The app
-  opens every window as a separate process because constructing an mpv player
-  while another top-level window is foreground is *believed* to deadlock. There
-  is no recorded reproduction, stack, or trigger condition in the tree, and
-  invariant 7's wording does not match the codebase's own workaround: a splash
-  screen is a top-level window in the same process, and closing it is the whole
-  fix. `experiments/mpv_foreground/` tests the claim directly. On Windows with
-  mpv `v0.41.0-39-ga58dd8ac4`, 120 runs across six cases — the shipped
-  `direct3d` driver, a verified-foreground window, a frameless splash, and
-  three concurrent presenting players — produced **no hang**, with the
-  foreground window confirmed on every run and a negative control proving the
-  harness detects a block at that exact step. So the stated trigger does not
-  reproduce on the development machine. It is not proven absent elsewhere: that
-  is one GPU, one driver, one mpv build, and not the real editor or scanner
-  windows. The finding and its limits are recorded in
-  [experiments/README.md](../experiments/README.md). Until it is resolved, the
-  process model stands, but invariant 7 should be read as an unverified
-  workaround rather than a proven law.
+- **The one-process-per-window model has been removed.** Every window is now a
+  window in one process, on one event loop, with `shared/session.py` owning the
+  stack. `launch_command`, the `--window` dispatcher, the per-window `run()`
+  entry points and the `scanner/` folder-shadowing guard are all gone with it.
+  The trigger for that rule — constructing an mpv player while another top-level
+  window is foreground — was tested directly in `experiments/mpv_foreground/`:
+  120 runs across six cases on Windows with mpv `v0.41.0-39-ga58dd8ac4`, the
+  shipped `direct3d` driver, a verified-foreground window, a frameless splash,
+  and three concurrent presenting players, produced **no hang**. The foreground
+  was verified rather than assumed, and a negative control proved the harness
+  detects a block at that exact step. So the stated trigger does not reproduce
+  on the development machine. It is not proven absent elsewhere: one GPU, one
+  driver, one mpv build, and bare windows rather than the real editor or
+  scanner, so the splash-closing precaution stays. The trade made is that a hard
+  fault inside `libmpv-2.dll` now takes down the whole app rather than one
+  window; that is a real cost, accepted while the project is pre-release, and
+  worth revisiting once the packaged build has run on a user's machine. The
+  method and its limits are in
+  [experiments/README.md](../experiments/README.md); the architecture is in
+  [architecture.md](architecture.md#one-process-one-event-loop-a-stack-of-windows).
 - **macOS and Linux are unverified.** The resolution logic is cross-platform and
   the suite covers it on any host, but nothing here has been run on either
   platform. The open assumptions, in the order worth checking: whether a

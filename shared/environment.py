@@ -1,11 +1,11 @@
-"""Shared environment setup for the project's entry-point scripts.
+"""Shared environment setup for the project's entry points.
 
-Scripts may live at the project root (main.py, mainwindow.py) or in a
-subdirectory (editor/, scanner/, settings/). Either way they need the same two
-things before anything else:
+Every module that needs the project root or the binaries imports this. They may
+live at the project root (main.py, mainwindow.py) or in a subdirectory (editor/,
+scanner/, picker/, settings/). Either way they need the same two things before
+anything else:
 
-  1. The project root on sys.path so `shared.*` imports resolve when the
-     script is run directly (e.g. `python editor/editor.py`).
+  1. The project root on sys.path so `shared.*` imports resolve.
   2. The binaries folder discoverable, so mpv, ffprobe, and ffmpeg resolve
      predictably rather than to whatever happens to be on the system -- to the
      bundled copy on Windows, to the user's own install on macOS and Linux.
@@ -13,6 +13,23 @@ things before anything else:
 
 The bin folder is selected per-OS via ``get_binary_path`` / ``_bin_dir``
 (the cross-platform binary resolution formerly living in ``core.py``).
+
+All the windows are in one process
+------------------------------------------------------------------------------
+
+This module used to own ``launch_command()``, which built the argv that started
+another window as its own process, and the frozen build's ``--window <name>``
+dispatch that fed it. Both are gone: ``main.py`` is the only entry point, and
+windows open each other through ``shared/session.py``. What is left here is the
+environment they share.
+
+Note what that changed for libmpv. It used to be true that the main menu could
+never load mpv, because the menu and every player lived in different processes.
+Now the menu is still the first thing to run and still never loads mpv on its
+own -- but the moment a player window is opened, libmpv is loaded into the same
+process. ``mpv_import_context()`` below still keeps the main menu's own startup
+off that path, and the second-player optimization is now more valuable than it
+was, since more windows can share one process.
 
 Two roots, and the difference matters once the app is frozen
 ------------------------------------------------------------------------------
@@ -224,21 +241,6 @@ _dll_directory_handles = []
 
 # The loaded libmpv, so a second player in one process reuses it.
 _mpv_library_handle = None
-
-# The child windows this app can open, and the script that implements each one
-# when running from source. When frozen, the scripts do not exist on disk, so
-# the same binary is re-executed with '--window <name>' instead; see
-# main.py's dispatcher and launch_command() below.
-_WINDOW_SCRIPTS = {
-    'scanner': os.path.join('scanner', 'scanner.py'),
-    'editor': os.path.join('editor', 'editor.py'),
-    'settings': os.path.join('settings', 'settings.py'),
-    'picker': os.path.join('picker', 'picker.py'),
-}
-
-#: The child-window names launch_command() accepts, sorted for stable display.
-WINDOW_NAMES = tuple(sorted(_WINDOW_SCRIPTS))
-
 
 def is_frozen():
     """True when running from a PyInstaller-built executable."""
@@ -534,43 +536,6 @@ def no_console_kwargs():
     if _os_key() == 'windows':
         return {'creationflags': subprocess.CREATE_NO_WINDOW}
     return {}
-
-
-def launch_command(window_name, *args):
-    """Return the argv that opens `window_name` in its own process.
-
-    Each window is a separate process by design, not by accident: constructing
-    an mpv player (direct3d) while another top-level window is foreground
-    deadlocks on Windows, so the main menu must not open the scanner in-process.
-
-    From source that is the interpreter plus the window's script. Frozen, the
-    scripts do not exist on disk and ``sys.executable`` is the application
-    binary itself, so the same binary is re-executed with a ``--window`` flag
-    that main.py dispatches on.
-
-    `args` are appended verbatim in both layouts, which is how the picker hands
-    the chosen source video to the scanner and the scanner hands it on to the
-    editor. They arrive in the window's ``run(*args)``.
-
-    Raises ValueError for an unknown window, FileNotFoundError when running
-    from source and the script is missing.
-    """
-    try:
-        relative = _WINDOW_SCRIPTS[window_name]
-    except KeyError:
-        raise ValueError(
-            f"Unknown window {window_name!r}; expected one of "
-            f"{', '.join(WINDOW_NAMES)}"
-        ) from None
-
-    if is_frozen():
-        return [sys.executable, '--window', window_name, *args]
-
-    script = os.path.join(install_root(), relative)
-    if not os.path.exists(script):
-        raise FileNotFoundError(
-            f"Could not find {window_name} script at {script}")
-    return [sys.executable, script, *args]
 
 
 #: Writable folders the app expects to exist next to the executable.

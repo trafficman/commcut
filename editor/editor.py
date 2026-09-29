@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.diagnostics import install_excepthook, log, log_exception
+from shared.diagnostics import log, log_exception
 from shared.mpv import (
     BoundaryPreview, MpvBridge, SEGMENT_PREVIEW_DWELL_MS,
     SEGMENT_PREVIEW_FRAMES, create_mpv_player, scan_keyframes,
@@ -37,7 +37,7 @@ from shared.ffmpeg import (
 
 # Qt libs
 from PySide6.QtWidgets import (
-    QMainWindow, QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox,
+    QMainWindow, QDialog, QHBoxLayout, QLabel, QMessageBox,
     QPlainTextEdit, QProgressDialog, QPushButton, QStyle, QSplashScreen,
     QVBoxLayout,
 )
@@ -1155,26 +1155,18 @@ class MediaPlayer(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-def run(source=None):
-    """Run the editor. Returns the process exit code.
+def create(app, source):
+    """Build the editor window for `source`. Returns the window, unscaled.
 
-    Also the entry point main.py dispatches to for '--window editor', so a
-    packaged build and a source run share this one code path. `source` is the
-    video to work on, handed over by the picker or by the scanner; without one
-    the legacy import/test.mp4 is used, so running this script directly still
-    works.
+    `app` is the process's QApplication, owned by main.py — this window does not
+    make one and does not run an event loop, because it shares the loop with the
+    menu and with whatever else is open. main.py shows it through the shell.
+
+    `source` is the video to work on, and it arrives as an argument rather than
+    being re-derived here: this window never guesses which video it is for.
     """
-    # Checked before the QApplication exists so the "no source video" message
-    # is a clean, readable error rather than a traceback out of an event loop
-    # that is already running.
     media_path = require_source_video(source)
     log(f"editor working on {media_path}")
-
-    # Required for high-DPI scaling on modern Windows displays
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    app = QApplication(sys.argv)
-    install_excepthook(app)
 
     pixmap = QPixmap(480, 270)
     pixmap.fill(QColor(30, 30, 30))
@@ -1192,21 +1184,16 @@ def run(source=None):
         duration = probe_duration(media_path) or 0.0
         SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
 
-    # The splash is closed BEFORE MediaPlayer() constructs the mpv player.
-    # Building a direct3d renderer while another top-level window is the
-    # foreground deadlocks on Windows, and a splash is a top-level window.
+    # The splash is closed BEFORE MediaPlayer() constructs the mpv player. That
+    # hazard was never reproduced -- experiments/mpv_foreground/ ran the splash
+    # case 20 times against the shipped driver with no hang -- but closing a
+    # splash is three lines, it costs nothing when it turns out to be
+    # unnecessary, and it is the only thing standing between a driver update
+    # and a frozen window. Kept until the packaged build has run on hardware
+    # nobody here has tested.
     splash.close()
     window = MediaPlayer(media_path)
     window.bridge.set_keyframes(keyframes)
     window.segment_model = SegmentModel.load(sidecar_path(media_path))
     window.resize(1024, 768)
-    window.show()
-
-    return app.exec()
-
-
-if __name__ == "__main__":
-    # sys.argv[1:] is the argument main.py's dispatcher would have passed, so
-    # `python editor/editor.py <video>` and `commcut.exe --window editor
-    # <video>` work on the same code path.
-    sys.exit(run(*sys.argv[1:]))
+    return window

@@ -38,15 +38,16 @@ outside the folder.
 
 ## Why the binaries are not inside the exe
 
-The app opens every window as a **separate process** — the main menu stays
-open while the scanner runs, and the scanner launches the editor (this is what
-avoids the Windows mpv Direct3D deadlock; see [docs/packaging.md](../docs/packaging.md)).
-
-A onefile build re-extracts its entire payload on *every* launch, so that means
-once per window. With `bin/win/` bundled that is ~366 MB of extraction each
-time. Kept outside, the exe carries only ~46 MB and `bin/win/` is found
-immediately by `shared/environment.py:install_root()`, which resolves to
+A onefile build re-extracts its entire payload on *every* launch. With
+`bin/win/` bundled that is ~366 MB of extraction each time commcut starts. Kept
+outside, the exe carries only ~46 MB and `bin/win/` is found immediately by
+`shared/environment.py:install_root()`, which resolves to
 `dirname(sys.executable)` when frozen.
+
+This used to be paid once per *window* — the app ran each of its windows as a
+separate process, so one editing session extracted the payload four times. There
+is one process now, so it is paid once. The layout is unchanged, and the reason
+for it is if anything stronger; see [docs/packaging.md](../docs/packaging.md).
 
 Measured on this machine, every window including the main menu reaches a
 ready state in **~1.3 s**.
@@ -155,8 +156,9 @@ The build is `console=False`, so there is no console output. Instead:
 - `shared/diagnostics.py:install_excepthook()` writes a full traceback to the
   log and shows a `QMessageBox` naming it.
 - `shared/diagnostics.py:fatal()` handles anything that fails *before* a
-  window exists (missing video, unwritable install folder, bad `--window`
-  argument) and returns a real exit code.
+  window exists (an unwritable install folder) and returns a real exit code.
+  Once the menu is up, a window that will not open is a `QMessageBox` from
+  `shared/session.py:Shell.open_safely`.
 
 `packaging/commcut.spec` sets `disable_windowed_traceback=True` on purpose.
 The default makes the windowed bootloader pop its own **modal** traceback

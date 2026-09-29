@@ -7,48 +7,36 @@ boundaries and then hands off to the editor itself — so picker, scanner, and
 editor are one journey rather than three menu items. "Settings" opens the
 standalone scheme editor.
 
-Children are launched as separate processes, matching the scanner's own handoff
-to the editor and the picker's to the scanner. That keeps this window alive in
-the background -- it does not wait for or observe them -- and it means each
-window owns its own mpv instance and Qt event loop, which matters on Windows
-where constructing an mpv player while another top-level window is foreground
-can deadlock.
+Every window in the app is in this process, and this one is the root of the
+stack the shell (:mod:`shared.session`) keeps. It is not destroyed when a child
+opens or closes, so "Back to main menu" from the editor brings this same window
+back to the foreground — which is what the separate-process arrangement did by
+leaving it running behind everything else. It never waits for or observes a
+child; it only opens one.
 
-"Launched as separate processes" is a property of the architecture, not of the
-build: in a packaged app there are no .py files on disk, so launch_command()
-re-executes the application binary with a --window flag, passing the chosen
-source video along as an argument. See shared/environment.py.
+The one thing that used to be different: children were separate processes, and
+that was done because constructing an mpv player while another top-level window
+is foreground was believed to deadlock on Windows. That hazard was tested
+directly and did not reproduce (see ``experiments/mpv_foreground/``), so the
+process boundary came out. The windows still each own their own mpv instance,
+and now share one Qt event loop.
 """
 
 import os
-import subprocess
 import sys
 
 # This file sits at the project root, so that is what goes on sys.path; the
 # subdirectory scripts each step up a level to reach the same place.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from shared.environment import (
-    launch_command, no_console_kwargs, resource_path, setup_environment,
-)
+from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile
-from PySide6.QtWidgets import QMainWindow, QMessageBox
+from PySide6.QtWidgets import QMainWindow
 
-from shared.diagnostics import log, log_exception
+from shared.session import shell
 from shared.ui_loader import UiLoader
-
-
-def _launch(window_name):
-    """Start a child window as its own process and return the Popen handle.
-
-    The child is deliberately not waited on: this window stays open and
-    usable while the launched window works.
-    """
-    command = launch_command(window_name)
-    log(f"launching {window_name}: {command}")
-    return subprocess.Popen(command, **no_console_kwargs())
 
 
 class MainWindow(QMainWindow):
@@ -78,18 +66,10 @@ class MainWindow(QMainWindow):
         self.ui.editorButton.clicked.connect(self.open_editor)
         self.ui.settingsButton.clicked.connect(self.open_settings)
 
-    def _open(self, window_name, title):
-        """Launch a child window, reporting any failure instead of crashing."""
-        try:
-            _launch(window_name)
-        except (OSError, ValueError) as error:
-            log_exception(f"could not launch the {title} window", error)
-            QMessageBox.warning(self, f"{title} could not start", str(error))
-
     def open_editor(self):
         """Open the source picker, which leads into the scanner and editor."""
-        self._open('picker', "Editor")
+        shell().open_safely('picker')
 
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""
-        self._open('settings', "Settings")
+        shell().open_safely('settings')

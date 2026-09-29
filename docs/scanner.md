@@ -7,8 +7,9 @@ the result to the editor.
 Applies to: `scanner/scanner.py`, `scanner/marker_timeline.py`,
 `scanner/scannerwindow.ui`, `shared/ffmpeg.py:clip_to_temp`.
 
-Related: [architecture.md](architecture.md) (one process per window, the source
-hand-off), [segment-model.md](segment-model.md) (what the boundaries become).
+Related: [architecture.md](architecture.md) (one process, the window stack, the
+source hand-off), [segment-model.md](segment-model.md) (what the boundaries
+become).
 
 ## What it does
 
@@ -58,14 +59,16 @@ written until Finished.
 
 When no `.cmct` exists, the Finished button runs `blackdetect` on the full
 source, writes the midpoint boundaries to `<name>.cmct` next to the source,
-and then launches the editor on that same source. The midpoints become segment
+and then opens the editor on that same source. The midpoints become segment
 starts through `SegmentModel` (`_model_from_midpoints`).
 
 If a `.cmct` sidecar already exists next to the source video, the scanner
-skips itself and launches the Video Editor (`launch_command("editor", source)`)
-instead, so an existing project is never overwritten. The source there is the
-one the picker handed this process, not a re-resolved default
-(`_editor_to_launch` is that decision). The picker labels an already-scanned
+builds no window at all and raises `shared/session.py:OpenInstead` naming the
+editor, so an existing project is never overwritten. The rule is the scanner's;
+the routing is the shell's, because there is no scanner window to show. The
+source there is the one the picker handed this window, not a re-resolved
+default (`_editor_to_launch` is that decision). The picker labels an
+already-scanned
 video "(already scanned - opens in the editor)", so that shortcut is visible
 before it is taken.
 

@@ -9,10 +9,9 @@ chosen file to the scanner as an argument.
 Two rules make that more than a convention:
 
 * :func:`resolve_import_video` refuses anything that is not a video file inside
-  ``import/``. It is the only supported way to turn a command-line argument
-  into a source path, and it is called from the scanner and the editor, so a
-  hand-edited ``--window scanner <path>`` argument cannot open a file the user
-  was not offered.
+  ``import/``. It is the only supported way to turn an argument into a source
+  path, and it is called from the scanner and the editor, so a path that did not
+  come from the picker cannot open a file the user was never offered.
 * :func:`list_source_videos` is the one definition of "what is available", used
   by the picker and by the tests.
 

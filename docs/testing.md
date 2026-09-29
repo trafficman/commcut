@@ -71,12 +71,13 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
   *visible* widget only, so any test that resizes a widget to check zoom
   behavior has to `show()` it first. Otherwise the assertion passes for the
   wrong reason.
-- **The shadowing trap needs a fresh interpreter.** A window folder that shadows
-  its own package (see [packaging.md](packaging.md)) cannot be reproduced
-  in-process once `scanner` is cached in `sys.modules` as the package — an
-  in-process reproduction succeeds against broken code. `test_source_handoff.py`
-  therefore runs each window's script the way `launch_command` launches it, in a
-  **new interpreter**.
+- **Closing a window needs its deferred delete delivered.** `WA_DeleteOnClose`
+  destroys the C++ object through a `DeferredDelete` event, which
+  `processEvents()` does not reliably deliver. A test that closes a window and
+  only pumps the loop will sometimes assert against a stack that has not been
+  updated yet — and then pass on the next run. `tests/test_session.py`
+  `sendPostedEvents(None, QEvent.DeferredDelete)` explicitly, which is what makes
+  it deterministic.
 - **Frozen mode is simulated, not built.** `test_frozen_mode.py` monkeypatches
   `sys.frozen` / `sys._MEIPASS` / `sys.executable` rather than producing an
   executable.

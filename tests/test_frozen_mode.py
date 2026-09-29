@@ -20,12 +20,10 @@ import shared.environment as environment
 from shared.environment import (
     APP_FOLDERS,
     MPV_VIDEO_OUTPUT,
-    WINDOW_NAMES,
     ensure_app_folders,
     get_binary_path,
     install_root,
     is_frozen,
-    launch_command,
     no_console_kwargs,
     resource_path,
     resource_root,
@@ -629,51 +627,52 @@ def test_video_output_raises_for_an_unsupported_os(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Child window launching
+# Window building
 # ---------------------------------------------------------------------------
 
-def test_unfrozen_launch_uses_the_window_script():
-    """Running from source must keep launching the real script, or the suite
-    would no longer be exercising the code that ships."""
-    for name in WINDOW_NAMES:
-        command = launch_command(name)
-        assert command[0] == environment.sys.executable
-        assert command[1].endswith(".py")
-        assert os.path.isfile(command[1]), name
+def test_every_registered_window_resolves_to_a_builder():
+    """The registry is the only place that knows which windows exist and how to
+    build each one. A name pointing at a module that does not exist, or at an
+    attribute that is not callable, fails here rather than when a user presses
+    a button — and it is the same failure frozen and unfrozen, because the
+    registry is Python rather than a script on disk."""
+    import importlib
+
+    from shared.session import WINDOW_NAMES, _BUILDERS
+
+    assert set(_BUILDERS) == set(WINDOW_NAMES)
+    for name, (module_name, builder_name) in _BUILDERS.items():
+        module = importlib.import_module(module_name)
+        builder = getattr(module, builder_name, None)
+        assert callable(builder), f"{name}: {module_name}.{builder_name}"
 
 
-def test_frozen_launch_re_executes_the_binary(frozen):
-    """The packaged build has no .py files, so it re-runs itself with a flag
-    that main.py dispatches on."""
-    install_dir = frozen()
+def test_every_builder_takes_the_application_first():
+    """The shell passes the QApplication to every builder without knowing which
+    ones need it, so a builder whose signature does not start with one is a
+    TypeError the first time that window is opened."""
+    import inspect
 
-    assert launch_command("scanner") == [
-        os.path.join(install_dir, "commcut.exe"), "--window", "scanner"]
+    from shared.session import _BUILDERS
+
+    for name, (module_name, builder_name) in _BUILDERS.items():
+        import importlib
+        builder = getattr(importlib.import_module(module_name), builder_name)
+        parameters = list(inspect.signature(builder).parameters)
+        assert parameters and parameters[0] == "app", (
+            f"{name}: {module_name}.{builder_name}{tuple(parameters)}")
 
 
-def test_frozen_launch_ignores_a_missing_script(frozen, tmp_path):
-    """Frozen, the scripts genuinely do not exist, so the existence check must
-    not run. A check that fired here would make every child launch fail."""
-    frozen()
+def test_the_shell_names_the_windows_it_accepts():
+    """An unknown window is a programming error, and the message should say what
+    the options are rather than just that the name was wrong."""
+    from shared.session import Shell, WINDOW_NAMES
 
-    assert len(launch_command("editor")) == 3
-
-
-def test_launch_refuses_an_unknown_window():
     with pytest.raises(ValueError) as error:
-        launch_command("not-a-window")
+        Shell.open(None, "not-a-window")
 
     for name in WINDOW_NAMES:
         assert name in str(error.value)
-
-
-def test_every_registered_window_has_a_script():
-    """The registry is the only place that knows which windows exist; if a
-    window is added without a script, the packaged build finds out at runtime
-    and the source build does not."""
-    for name in WINDOW_NAMES:
-        assert os.path.isfile(
-            os.path.join(PROJECT_ROOT, launch_command(name)[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -823,8 +822,12 @@ def test_the_console_scan_actually_finds_the_app_spawn_sites():
     assert "shared/mpv.py" in found
     assert "shared/segments.py" in found
     assert "scanner/scanner.py" in found
-    assert "mainwindow.py" in found
-    assert "picker/picker.py" in found
+    # mainwindow.py and picker/picker.py used to be here, launching each other
+    # as child processes. They open windows through the shell now, so they
+    # must have stopped spawning: a subprocess in either one would mean the
+    # process model is not actually gone.
+    assert "mainwindow.py" not in found
+    assert "picker/picker.py" not in found
 
 
 # ---------------------------------------------------------------------------
@@ -863,83 +866,52 @@ def test_non_writable_install_root_raises(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Argv dispatch
+# Startup
 # ---------------------------------------------------------------------------
 
-def _dispatch(monkeypatch, argv):
-    """Run main.main() with the filesystem and dialogs stubbed out.
+def _start(monkeypatch, argv, menu_return=0):
+    """Run main.main() with the filesystem, the app and the loop stubbed out.
 
     The real main() creates the app folders and, on failure, pops a modal
-    dialog. Neither belongs in a test.
+    dialog. Neither belongs in a test, and neither belongs in the assertion.
     """
     import main
     from shared import diagnostics
 
     monkeypatch.setattr(main, "ensure_app_folders", lambda: [])
+    seen = []
+    monkeypatch.setattr(
+        main, "run_main_menu",
+        lambda given: seen.append(list(given)) or menu_return)
     reported = []
     monkeypatch.setattr(
         diagnostics, "fatal",
         lambda title, text: reported.append((title, text)))
-    return main.main(argv), reported
+    return main.main(argv), seen, reported
 
 
-def test_window_flag_without_a_name_is_rejected(monkeypatch):
-    """`commcut --window` names no window, so it must exit rather than open
-    the main menu and leave the user wondering."""
-    code, reported = _dispatch(monkeypatch, ["commcut.exe", "--window"])
+def test_argv_reaches_the_application_and_nothing_else(monkeypatch):
+    """There is one entry point now. argv goes to the QApplication, which is
+    the only part of it still read — it used to be the dispatcher that sent
+    `--window <name>` to another process."""
+    code, seen, reported = _start(monkeypatch, ["commcut.exe", "leftover"])
 
-    assert code == 2
-    assert reported
-    for name in WINDOW_NAMES:
-        assert name in reported[0][1]
-
-
-def test_unknown_window_is_reported_not_raised(monkeypatch):
-    """An uncaught error here would reach the bootloader's modal traceback
-    dialog and hang. main() must turn it into an exit code instead."""
-    code, reported = _dispatch(
-        monkeypatch, ["commcut.exe", "--window", "nope"])
-
-    assert code == 1
-    assert reported
-    assert "nope" in reported[0][1]
+    assert code == 0
+    assert seen == [["commcut.exe", "leftover"]]
+    assert not reported
 
 
-def test_a_window_that_cannot_start_is_reported_not_raised(monkeypatch):
-    """Same guarantee for a real window failing during startup -- the missing
-    source video is the case that actually happens on a fresh install."""
-    import main
+def test_a_window_flag_is_no_longer_special(monkeypatch):
+    """`commcut --window scanner` must not try to open the scanner, and must not
+    complain either. The flag used to be the whole mechanism for handing a
+    source video between windows; if anything still routes on it, that is a
+    ghost of the process model rather than a feature."""
+    code, seen, reported = _start(
+        monkeypatch, ["commcut.exe", "--window", "scanner"])
 
-    monkeypatch.setattr(main, "ensure_app_folders", lambda: [])
-    monkeypatch.setattr(
-        main, "_run_window",
-        lambda name, rest: (_ for _ in ()).throw(
-            FileNotFoundError(f"No source video found.\n\n{'-' * 40}")))
-    reported = []
-    from shared import diagnostics
-    monkeypatch.setattr(
-        diagnostics, "fatal", lambda title, text: reported.append((title, text)))
-
-    code = main.main(["commcut.exe", "--window", "scanner"])
-
-    assert code == 1
-    assert reported
-    assert "No source video" in reported[0][1]
-
-
-def test_known_window_is_dispatched(monkeypatch):
-    """The happy path must actually reach the window's own entry point."""
-    import main
-
-    monkeypatch.setattr(main, "ensure_app_folders", lambda: [])
-    seen = []
-    monkeypatch.setattr(
-        main, "_run_window", lambda name, rest: seen.append((name, rest)) or 7)
-
-    code = main.main(["commcut.exe", "--window", "editor"])
-
-    assert code == 7
-    assert seen == [("editor", [])]
+    assert code == 0
+    assert not reported
+    assert seen == [["commcut.exe", "--window", "scanner"]]
 
 
 def test_bootstrap_failure_exits_before_opening_anything(monkeypatch):
@@ -954,12 +926,15 @@ def test_bootstrap_failure_exits_before_opening_anything(monkeypatch):
     reported = []
     monkeypatch.setattr(
         diagnostics, "fatal", lambda title, text: reported.append((title, text)))
+    opened = []
+    monkeypatch.setattr(main, "run_main_menu", lambda argv: opened.append(1))
 
     code = main.main(["commcut.exe"])
 
     assert code == 1
     assert reported
     assert "access denied" in reported[0][1]
+    assert not opened
 
 
 # ---------------------------------------------------------------------------

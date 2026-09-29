@@ -133,9 +133,9 @@ Two incidental findings worth keeping:
   and this GPU. It does not prove it is absent everywhere, and a user on
   different hardware could still hit whatever was originally seen.
 - **It is not the real app.** These are bare `QMainWindow`s, not the editor or
-  scanner. A single-process refactor still has to survive the real windows
-  (`ExportWorker`'s `QThread`, the modal `ExportSummaryDialog` parenting), and
-  that is a separate question this does not answer.
+  scanner. Whether the real windows survive one event loop is a separate
+  question this does not answer, and was answered instead by doing the
+  refactor and walking the journey by hand.
 - **One unresolved intermittent.** In one earlier matrix run, 4 of 10
   `E_d3d_three_players` runs were reported `ERROR` even though the probe's own
   stdout showed `"verdict": "OK"` and the result file was absent — a harness
@@ -144,10 +144,21 @@ Two incidental findings worth keeping:
   harness now records the child's return code and keeps the scratch files for
   any non-OK verdict. Unresolved.
 - **Crash isolation is a separate cost.** A hard fault inside `libmpv-2.dll`
-  currently takes down one window; single-process it takes down the app. No
+  used to take down one window; single-process it takes down the app. No
   experiment informs that; it is a product decision.
 - **Packaging does not follow automatically.** One process means one payload
   extraction, but a ~412 MB onefile extracting on every start is worse than a
   ~46 MB one extracting four times. The pairing that follows is single-process
   **plus onedir**, or keeping `bin/win/` beside the exe — see
   [packaging.md](../docs/packaging.md).
+
+### What was done with it
+
+The process model was removed on the strength of this result. `launch_command`,
+the `--window` dispatcher, the per-window `run()` entry points and the
+`scanner/` folder-shadowing guard are all gone; `shared/session.py` now owns one
+`QApplication` and a window stack, and the trade is written down as an accepted
+cost in [docs/status.md](../docs/status.md) rather than presented as a solved
+problem. If a hang ever does appear, this harness is the thing to re-run first:
+it is the only version of the claim in this tree that produces evidence rather
+than an assertion.

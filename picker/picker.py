@@ -2,13 +2,14 @@
 
 This is where the Editing Wizard starts. The main menu's **Editor** button
 opens this window, the user picks one of the videos sitting in the app's
-``import/`` folder, and that path is handed to the scanner as a command-line
+``import/`` folder, and that path is handed to the scanner as a constructor
 argument. From there the journey is the one that already existed: scan
 boundaries, then the editor.
 
-It is a separate process for the same reason every other window is — see
-:func:`shared.environment.launch_command`. It is launched *by* the menu and it
-launches the scanner, so the chain is menu -> picker -> scanner -> editor.
+Every window is in the same process, so the picker asks the shell
+(:mod:`shared.session`) for the scanner instead of starting one. The chain is
+still menu -> picker -> scanner -> editor; what changed is that it is a stack
+of windows rather than a chain of processes.
 
 The list is not the only thing that decides what can be opened.
 :func:`shared.sources.resolve_import_video` re-validates the path the scanner
@@ -19,21 +20,19 @@ than re-running the scanner.
 """
 
 import os
-import subprocess
 import sys
 
 # Make the project root importable so 'shared' resolves.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.environment import (
-    launch_command, no_console_kwargs, resource_path, setup_environment,
-)
+from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QMainWindow
 
-from shared.diagnostics import install_excepthook, log, log_exception
+from shared.diagnostics import log
+from shared.session import shell
 from shared.sources import SourceVideo, import_folder, list_source_videos
 from shared.ui_loader import UiLoader
 
@@ -129,42 +128,31 @@ class PickerWindow(QMainWindow):
 
     # --- launching ---
     def _on_activated(self, *_args):
-        """Open the selected video, then close this window.
+        """Open the scanner on the selected video, then close this window.
 
-        The window closes rather than lingering so a tester does not stack up
-        picker windows behind several scanner processes.
+        The scanner is opened through the shell rather than started as a
+        process, so the chosen path is a constructor argument. This window then
+        closes itself, which is not the same as the scanner closing: the shell
+        removes windows by identity, so the scanner that was just pushed stays
+        on top of the menu.
         """
         video = self._selected_video()
         if video is None:
             return
-        try:
-            command = launch_command('scanner', video.path)
-            log(f"picking {video.path}: {command}")
-            subprocess.Popen(command, **no_console_kwargs())
-        except (OSError, ValueError) as error:
-            # Reported, not raised: an escape here would reach Qt's event loop
-            # and take the window down with a traceback.
-            log_exception("could not launch the scanner", error)
-            QMessageBox.warning(
-                self, "Scanner could not start", str(error))
+        log(f"picking {video.path}")
+        if shell().open_safely('scanner', source=video.path) is None:
+            # The scanner did not open, so this window is still the one the
+            # user is looking at. Leave it up and let them pick again.
             return
         self.close()
 
 
-def run(*_args):
-    """Run the picker. Returns the process exit code.
+def create(app=None):
+    """Build the picker window. Returns it; the shell shows it.
 
-    Also the entry point main.py dispatches to for '--window picker', so a
-    packaged build and a source run share this one code path. Arguments are
-    accepted and ignored: main.py forwards them to every window, and this one
-    has nothing to open until the user picks something.
+    `app` is the process's QApplication. It is accepted for uniformity with the
+    windows that need it during construction — the scanner and the editor show
+    a splash while they work — and ignored here: this window constructs no
+    player, and its buttons only ask the shell for the next window.
     """
-    app = QApplication(sys.argv)
-    install_excepthook(app)
-    window = PickerWindow()
-    window.show()
-    return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(run(*sys.argv[1:]))
+    return PickerWindow()

@@ -93,8 +93,8 @@ def log_exception(message, exc):
 def fatal(title, text):
     """Report a startup failure the user can act on, then return.
 
-    Used for anything that goes wrong *before* a window is up -- a missing
-    source video, an unwritable install folder, a bad --window argument. In a
+    Used for anything that goes wrong *before* a window is up -- an unwritable
+    install folder, most often. In a
     windowed build there is no console, so an uncaught exception here would
     otherwise be reported by the PyInstaller bootloader's own traceback dialog,
     which is modal: the process sits there waiting for a click and looks like a

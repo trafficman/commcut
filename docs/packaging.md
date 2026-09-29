@@ -1,18 +1,18 @@
 # Packaging and frozen mode
 
 How the Windows build is assembled, and the rules that only bite once the app
-is frozen: the two roots, the `.ui` payload layout, child windows as
-re-executions, and per-platform library loading.
+is frozen: the two roots, the `.ui` payload layout, and per-platform library
+loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
 `packaging/README.md`, `shared/environment.py`, `shared/version.py`,
-`main.py`'s `--window` dispatch, `.github/workflows/release.yml`,
+`shared/session.py`, `main.py`, `.github/workflows/release.yml`,
 `tests/test_frozen_mode.py`, `tests/test_release_build.py`.
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
 Linux, which this build does not cover), [architecture.md](architecture.md) (the
-same code unfrozen — one process per window, diagnostics), [testing.md](testing.md)
-(how frozen behavior is tested without building an exe).
+same code unfrozen — one process, a window stack, diagnostics),
+[testing.md](testing.md) (how frozen behavior is tested without building an exe).
 
 ## The distributable
 
@@ -32,13 +32,17 @@ installer, no shortcuts, no uninstaller, no signing. See
 `python packaging/build.py` is the whole build; `--onedir` produces the faster
 folder form, and `--check-only` runs just the pre-flight checks.
 
-**`bin/win/` is deliberately not bundled into the exe.** The app opens every
-window as a separate process, and a onefile build re-extracts its whole
-payload per launch, so bundling ~366 MB of binaries would mean re-extracting a
-third of a gigabyte every time a window opened. Kept beside the exe, the
-payload is only ~46 MB and every window reaches ready in **~1.3 s**.
-`build.py` copies `bin/win/` in beside the exe, which is what makes the layout
-below work.
+**`bin/win/` is deliberately not bundled into the exe.** A onefile build
+re-extracts its whole payload on every launch, so bundling ~366 MB of binaries
+would mean extracting a third of a gigabyte every time commcut started. Kept
+beside the exe, the payload is only ~46 MB. `build.py` copies `bin/win/` in
+beside the exe, which is what makes the layout below work.
+
+The conclusion is unchanged from when each window was its own process, but the
+reasoning moved: back then one editing session paid that extraction **four
+times**, once per window. It now pays it once. That is a better argument for
+the same layout, not a reason to revisit it — a 412 MB onefile is still a third
+of a gigabyte on every start.
 
 Every runtime path resolution in the app therefore has to work from two
 different places — the source tree and the frozen install folder. The next four
@@ -88,56 +92,50 @@ that moves cannot be silently mis-bundled.
 `dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen
 it points into the payload. Use `resource_path()`.
 
-## Child windows are re-executions of the same binary
+## There is one entry point, and it is not re-executed
 
-Every window is a separate process, and that is deliberate: constructing an
-mpv player (direct3d) while another top-level window is foreground deadlocks
-on Windows. From source each window is its own `.py` script; frozen the scripts
-do not exist on disk, so `shared/environment.launch_command(name, *args)`
-returns `[sys.executable, "--window", name, *args]` and `main.py` dispatches it.
-`main.py` is therefore the only entry point in the spec, and all five windows
-expose a `run()` function that both paths share — so the packaged build cannot
-drift from the source build.
+`main.py` is the only entry point in the spec, and the only one on disk. Every
+window is built in-process by `shared/session.py:Shell.open`, which imports the
+window's `create(...)` builder lazily and shows it. There is no `--window` flag,
+no per-window script, and nothing to dispatch.
 
-Any `*args` are forwarded verbatim into that window's `run(*args)`, which is
-how the source video reaches the scanner and the editor. Dropping that
-forwarding is silent: the windows would fall back to their default source and
-open a different video than the one that was scanned. A window's own
-`if __name__ == "__main__":` block must therefore pass `sys.argv[1:]` through —
-`sys.exit(run(*sys.argv[1:]))`, which is exactly what `main.py` does with the
-text after `--window <name>`. `sys.exit(run())` throws the argument away, and
-because the fallback is `import/test.mp4` — which usually has a `.cmct` beside
-it — the window silently hands off to the editor on a *different* video rather
-than failing.
+This was not always true, and the reason is worth keeping because the frozen
+build is where it used to bite. Windows used to be separate processes because
+constructing an mpv player (direct3d) while another top-level window is
+foreground was believed to deadlock; `shared/environment.launch_command(name,
+*args)` returned `[sys.executable, "--window", name, *args]` and `main.py`
+routed it to that window's `run(*args)`. That whole arrangement — the argv
+forwarding, the `if __name__ == "__main__":` blocks, and the folder-shadowing
+guard below — was there to make a re-executed binary find its own windows, and
+all of it is gone with the process model. `experiments/mpv_foreground/` tested
+the claim it rested on and found no hang in 120 runs; see
+[architecture.md](architecture.md) and
+[experiments/README.md](../experiments/README.md).
 
-`launch_command` is the only place that knows how to open a window. Do not
-hand-assemble argv elsewhere.
+The one consequence for the spec is favourable. Under onefile, PyInstaller
+extracts the whole payload on **every** launch, so the old model extracted it
+once per window — four extractions for one editing session. There is one now.
 
 **A folder named after an installed library cannot be imported.** `packaging/`
 has no `__init__.py`, and the `packaging` that PyInstaller depends on is a real
 package in site-packages. A regular package beats a namespace portion
 *wherever* it is on `sys.path`, so `import packaging.build` binds to the
-dependency and then reports no `build` inside it — the mirror image of the
-`scanner` case above, and permanent rather than order-dependent, because
-PyInstaller means the installed one is always there. `packaging/build.py` is
-therefore run as a script, and `tests/test_release_build.py` loads it with
+dependency and then reports no `build` inside it. This is permanent rather than
+order-dependent, because PyInstaller means the installed one is always there.
+`packaging/build.py` is therefore run as a script, and
+`tests/test_release_build.py` loads it with
 `importlib.util.spec_from_file_location`. PyInstaller's own `import packaging`
 is unaffected and gets the dependency, which is what it wants anyway.
 
-**A window folder that shadows its own package.** `scanner/` has no
-`__init__.py`, so `scanner` is only a *namespace* portion, and CPython ranks a
-regular module found **anywhere** on `sys.path` above a namespace portion
-collected elsewhere. Running `python scanner/scanner.py` puts `scanner/` at
-`sys.path[0]`, where `scanner.py` sits — so `scanner` resolves to that file and
-`from scanner.marker_timeline import ...` fails with *"'scanner' is not a
-package"*. That is precisely the command `launch_command` builds from source,
-which is how the picker starts the scanner, and it does not reproduce when the
-same module is imported as `scanner.scanner`. `scanner/scanner.py` therefore
-branches on `__package__` to import its sibling by whichever name is actually
-reachable. Adding a sibling import to any other window needs the same guard, and
-the test has to run in a **fresh interpreter**: once `scanner` is in
-`sys.modules` as the package, an in-process reproduction succeeds against broken
-code.
+`scanner/` is a namespace portion for a different reason — it has no
+`__init__.py` — and CPython ranks a regular module found **anywhere** on
+`sys.path` above one. That used to break `from scanner.marker_timeline import
+...` whenever the scanner was launched as a *script*, because `scanner.py` sat at
+`sys.path[0]` and shadowed the package of the same name. Nothing launches a
+window as a script any more, so the guard is gone. Do not reintroduce it by
+adding a `__main__` block to a window; if a sibling import ever shadows a
+package again, the fix is to stop running that module as a top-level script, not
+to branch on `__package__`.
 
 ## Library loading, per platform
 
@@ -175,7 +173,14 @@ way out. On Windows that is redundant with the `PATH` prepend underneath, and is
 applied anyway so the library bound is the one this module validated.
 
 `create_mpv_player` enters the context around the `import` — not
-`setup_environment`, so the main-menu process never loads libmpv.
+`setup_environment`, so starting commcut and reaching the main menu never loads
+libmpv. That property is now weaker than it was, and the difference is worth
+being exact about: the menu is still the first thing to run and still loads no
+mpv, but the first player window the user opens loads libmpv **into the menu's
+process**, because there is only one process. Under the old model the menu could
+never load mpv at all. `shared/session.py` is what preserves the first half — its
+builders are imported lazily inside `Shell.open`, so importing a window module
+at module level would drag libmpv in before the menu ever appears.
 
 [source-install.md](source-install.md) owns the macOS and Linux end of this:
 the search order, the `COMMCUT_MPV_LIB` override, and why `DYLD_LIBRARY_PATH` is
@@ -219,11 +224,10 @@ subprocess.run(command, capture_output=True, text=True, **no_console_kwargs())
 
 The flag gives the child a console with **no window**, so captured pipes and the
 temporary stderr file in `_run_ffmpeg` keep working unchanged. It is a no-op on
-a child that is not a console application, which is why the four window launches
-(`launch_command` call sites) can carry it too without a second code path — a
-GUI-subsystem `commcut.exe` re-executing itself never allocated a console in the
-first place, so the pop-ups seen on a window transition were the *new* window's
-own ffmpeg and ffprobe calls, not the launch.
+a child that is not a console application. Every child the app starts now is an
+ffmpeg or ffprobe call: the window launches that used to carry it are gone with
+the process model, which also removes the "was that console from the launch or
+from the window's own probing?" question.
 
 The flag is unconditional rather than applied only when the current process
 happens to have no console: every call site already captures its child's

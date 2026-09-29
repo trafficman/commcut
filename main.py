@@ -1,14 +1,18 @@
-"""Application entry point.
+"""Entry point: create the QApplication, the main menu, and the window shell.
 
-Opens the main menu. Every other window is launched from there as its own
-process, so this script's only job is to show the menu and run the event loop.
+This is the only way into the app. Every window runs in this process, on this
+one event loop, and the shell (``shared/session.py``) is what puts one on top of
+another. The main menu is the root of that stack and outlives its children, so
+closing a window brings the menu back to the foreground without relaunching
+anything or making a second one.
 
-It is also the single packaged binary. From source the other windows are
-separate .py scripts, but a PyInstaller build has no .py files on disk, so
-``commcut.exe --window <name>`` re-executes this same binary and the block
-below routes it to that window's entry point instead. Both paths end up in the
-same per-window ``run()``, so there is exactly one implementation of each
-window and the packaged build cannot drift from the source build.
+There is no ``--window`` flag and no per-window script. That used to be how a
+window was opened — the app re-executed its own binary with a window name and a
+source path as argv — and it existed because constructing an mpv player was
+believed to deadlock when another top-level window was foreground. That hazard
+was tested directly and did not reproduce; see
+``experiments/mpv_foreground/``. ``main.py`` now imports a window's builder on
+demand and the shell shows it, instead of dispatching to a new process.
 """
 
 import os
@@ -19,9 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from shared import diagnostics
-from shared.environment import (
-    WINDOW_NAMES, ensure_app_folders, setup_environment,
-)
+from shared.environment import ensure_app_folders, setup_environment
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -29,50 +31,37 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from mainwindow import MainWindow
-
-
-WINDOW_FLAG = '--window'
+from shared.session import Shell, set_shell
 
 
 def run_main_menu(argv):
     """Show the main menu and run the event loop. Returns the exit code."""
+    # High-DPI scaling on modern Windows displays. Set before the QApplication
+    # exists, which is why it is here and not in a window.
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv)
     diagnostics.install_excepthook(app)
 
-    window = MainWindow()
-    window.show()
+    # The menu is the root of the stack and is never destroyed: closing a child
+    # brings this same window back to the foreground, which is what the
+    # separate-process arrangement used to do by leaving the menu running
+    # behind everything else.
+    menu = MainWindow()
+    set_shell(Shell(app, menu))
+    menu.show()
     return app.exec()
 
 
-def _run_window(window_name, args):
-    """Dispatch to a child window's entry point. Returns the exit code.
-
-    `args` is everything after ``--window <name>`` on the command line, handed
-    straight to the window's ``run()``. That is how the picker passes the
-    source video to the scanner, and the scanner to the editor.
-
-    Imported lazily: from source these are the same modules the standalone
-    scripts are, and importing them all up front would pull in mpv and every
-    window's dependencies just to show the main menu.
-    """
-    if window_name == 'scanner':
-        from scanner.scanner import run as scanner_run
-        return scanner_run(*args)
-    if window_name == 'editor':
-        from editor.editor import run as editor_run
-        return editor_run(*args)
-    if window_name == 'settings':
-        from settings.settings import run as settings_run
-        return settings_run(*args)
-    if window_name == 'picker':
-        from picker.picker import run as picker_run
-        return picker_run(*args)
-    raise ValueError(f"Unknown window: {window_name!r}")
-
-
 def main(argv=None):
-    """Route argv to the requested window and run it. Returns the exit code."""
+    """Start the app. Returns the process exit code.
+
+    `argv` goes to the QApplication, which is the only part of it that is still
+    read. It used to be more than that: ``--window <name> [args]`` routed it to
+    a child window's ``run()``, which is how the picker passed a source video to
+    the scanner and the scanner to the editor. A window is now opened by the
+    shell and handed the path as a constructor argument, so there is nothing
+    left to dispatch.
+    """
     argv = list(sys.argv if argv is None else argv)
 
     try:
@@ -86,28 +75,6 @@ def main(argv=None):
             f"The install folder is not writable:\n\n{PROJECT_ROOT}\n\n"
             f"{error}")
         return 1
-
-    if len(argv) > 1 and argv[1] == WINDOW_FLAG:
-        if len(argv) < 3:
-            diagnostics.fatal(
-                f"{WINDOW_FLAG} needs a window name",
-                f"Expected one of:\n{', '.join(WINDOW_NAMES)}")
-            return 2
-        try:
-            return _run_window(argv[2], argv[3:])
-        except Exception as error:
-            # Everything a child window can fail at before it opens a window
-            # lands here. Letting it escape would reach the PyInstaller
-            # bootloader's traceback dialog, which is modal and reads as a
-            # hang, so it is reported and turned into an exit code instead.
-            diagnostics.log_exception(
-                f"the {argv[2]} window could not start", error)
-            diagnostics.fatal(
-                "commcut could not start",
-                f"The {argv[2]} window could not start.\n\n"
-                f"{type(error).__name__}: {error}\n\n"
-                f"Details were written to:\n{diagnostics.log_path()}")
-            return 1
 
     return run_main_menu(argv)
 

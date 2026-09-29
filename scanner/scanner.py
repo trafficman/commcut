@@ -6,42 +6,23 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.environment import (
-    get_binary_path, launch_command, no_console_kwargs, resource_path,
-    setup_environment,
+    get_binary_path, no_console_kwargs, resource_path, setup_environment,
 )
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.diagnostics import install_excepthook, log
+from shared.diagnostics import log
 from shared.ffmpeg import clip_to_temp
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.segments import (
     sidecar_path, probe_duration,
     SegmentModel,
 )
+from scanner.marker_timeline import MarkerTimelineWidget
+from shared.session import OpenInstead, shell
 from shared.sources import require_source_video
 from shared.ui_loader import UiLoader
 
-# The marker timeline lives beside this file, so it is reachable two different
-# ways and only one of them works per launch mode:
-#
-#   run as a package module (main.py's `--window scanner` dispatch, tests)
-#       -> `scanner` is the scanner/ directory and this is scanner.scanner
-#   run as a script (python scanner/scanner.py, which is how launch_command
-#       starts it from source)
-#       -> sys.path[0] is scanner/ itself, and scanner.py sits in it. A regular
-#          module found anywhere on sys.path outranks a namespace portion
-#          collected elsewhere, so `scanner` resolves to *this file* and
-#          `scanner.marker_timeline` raises "'scanner' is not a package".
-#
-# So import the sibling by name when there is no package, and by path when
-# there is. `__package__` is empty for a top-level script and "scanner" for a
-# module inside the package.
-if __package__:
-    from scanner.marker_timeline import MarkerTimelineWidget
-else:
-    from marker_timeline import MarkerTimelineWidget
-
-from PySide6.QtWidgets import QMainWindow, QApplication, QStyle, QSplashScreen
+from PySide6.QtWidgets import QMainWindow, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
 from PySide6.QtGui import QPixmap, QColor
 
@@ -65,15 +46,15 @@ def _clear_temp_clips():
 
 
 def _editor_to_launch(source_path):
-    """Return the editor window name to launch if a .cmct sidecar already
-    exists for the source, else None.
+    """True if a .cmct sidecar already exists for the source, else False.
 
-    The scanner must never overwrite an existing .cmct, so when one is
-    present we hand off to the Video Editor instead of running the scanner.
+    The scanner must never overwrite an existing .cmct, so when one is present
+    the picker goes straight to the editor instead of running the scanner. The
+    sidecar is still the hand-off medium: the scanner writes it and the editor
+    reads it, so both windows agree on the model even though nothing is passed
+    in memory between them.
     """
-    if os.path.exists(sidecar_path(source_path)):
-        return 'editor'
-    return None
+    return os.path.exists(sidecar_path(source_path))
 
 
 def _model_from_midpoints(midpoints, duration, source_name):
@@ -318,11 +299,16 @@ class ScannerWindow(QMainWindow):
         model.save(sidecar)
         log(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
 
-        # Open the editor to review the .cmct we just wrote, then close the scanner.
-        # The source path travels with it: the editor works on this video, not
-        # on a default one.
-        subprocess.Popen(launch_command('editor', source), **no_console_kwargs())
-        QApplication.quit()
+        # Open the editor to review the .cmct we just wrote, then close the
+        # scanner. The source travels with it as a constructor argument: the
+        # editor works on this video, not on a default one.
+        #
+        # This used to start a process and then quit this one. Both halves
+        # change here: the editor is opened through the shell rather than
+        # launched, and "quit" becomes "close this window", which returns the
+        # user to the menu that is still running underneath.
+        shell().open_safely('editor', source=source)
+        self.close()
 
     def on_play_pause(self):
         self.bridge.toggle_play()
@@ -342,29 +328,29 @@ class ScannerWindow(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-def run(source=None):
-    """Run the scanner. Returns the process exit code.
+def create(app, source=None):
+    """Build the scanner window for `source`. Returns the window, unscaled.
 
-    Also the entry point main.py dispatches to for '--window scanner', so a
-    packaged build and a source run share this one code path. `source` is the
-    video the picker chose; without one the legacy import/test.mp4 is used, so
-    running this script directly still works.
+    `app` is the process's QApplication, owned by main.py — this window does not
+    make one and does not run an event loop, because it shares the loop with the
+    menu, the picker and the editor. The shell shows the window.
+
+    `source` is the video the picker chose. When that video already has a .cmct
+    sidecar there is nothing to scan, so no scanner window is built: this raises
+    :class:`~shared.session.OpenInstead` and the shell opens the editor on that
+    same source instead. The rule is this module's, because only it knows that
+    re-scanning would overwrite the existing model; the routing is the shell's,
+    because this window has nothing to show. Either way the caller — the picker
+    — closes itself, and the shell removes it by identity.
     """
     source_path = require_source_video(source)
     log(f"scanner working on {source_path}")
 
-    # Never overwrite an existing .cmct: if one already exists for the
-    # source, skip the scanner and open the Video Editor instead. Checked
-    # before the QApplication is built, because this process does nothing
-    # but hand off.
-    if _editor_to_launch(source_path) is not None:
-        subprocess.Popen(
-            launch_command('editor', source_path), **no_console_kwargs())
-        return 0
-
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    app = QApplication(sys.argv)
-    install_excepthook(app)
+    # Never overwrite an existing .cmct: if one already exists for the source,
+    # there is nothing to scan and nothing this window could show.
+    if _editor_to_launch(source_path):
+        log(f"{source_path} already has a sidecar; opening the editor")
+        raise OpenInstead('editor', source=source_path)
 
     # Start fresh: drop any leftover preview clips from prior runs.
     _clear_temp_clips()
@@ -380,11 +366,16 @@ def run(source=None):
             f"See the log for the ffmpeg error."
         )
 
-    # Splash while ffprobe scans keyframes. The scan runs synchronously
-    # on the GUI thread (it's typically fast); the splash gives the user
-    # something to look at. The splash is closed BEFORE the mpv player is
-    # constructed — constructing mpv (direct3d renderer) while another
-    # top-level window is the active foreground can deadlock on Windows.
+    # Splash while ffprobe scans keyframes. The scan runs synchronously on the
+    # GUI thread (it's typically fast); the splash gives the user something to
+    # look at, and it also covers the fact that the menu is now a live window in
+    # the same process and would otherwise look frozen while this runs.
+    #
+    # The splash is closed BEFORE the mpv player is constructed. The hazard that
+    # rule works around was never reproduced (experiments/mpv_foreground/ ran
+    # this exact case 20 times with no hang), but closing a splash is three
+    # lines and costs nothing when it turns out to be unnecessary, so it stays
+    # until the packaged build has run on untested hardware.
     pixmap = QPixmap(480, 270)
     pixmap.fill(QColor(30, 30, 30))
     splash = QSplashScreen(pixmap)
@@ -402,13 +393,5 @@ def run(source=None):
     window = ScannerWindow(source_path)
     window.bridge.set_keyframes(keyframes)
     window.resize(1024, 768)
-    window.show()
+    return window
 
-    return app.exec()
-
-
-if __name__ == "__main__":
-    # sys.argv[1:] is the argument main.py's dispatcher would have passed, so
-    # `python scanner/scanner.py <video>` and `commcut.exe --window scanner
-    # <video>` work on the same code path.
-    sys.exit(run(*sys.argv[1:]))

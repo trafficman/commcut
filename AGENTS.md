@@ -33,7 +33,6 @@ Run from the project root.
 | Task | Command |
 |---|---|
 | Run the app | `python main.py` |
-| Run one window on its own | `python editor/editor.py <video>`, `python scanner/scanner.py <video>` (each window is its own process; `<video>` is optional) |
 | Tests | `python -m pytest` — one file: `python -m pytest tests/test_paths.py` |
 | Build the portable app | `python packaging/build.py` — Windows only; see [packaging/README.md](packaging/README.md) |
 | Cut a release | set `VERSION` in `shared/version.py`, then `git tag v<version> && git push origin v<version>` — CI builds it and attaches a draft release; see [docs/packaging.md](docs/packaging.md#releases) |
@@ -47,7 +46,7 @@ There is no pytest config: `tests/conftest.py` puts the project root on
 
 ```
 commcut/
-├── main.py                  # entry point: argv dispatcher (--window <name>) + main menu
+├── main.py                  # the entry point: the QApplication, the menu, the shell
 ├── mainwindow.py/.ui        # main menu (Editor, Settings)
 ├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
 ├── import/                  # the only videos that can be opened; user drops them in
@@ -68,14 +67,14 @@ commcut/
 └── prototypes/              # historical; the active code is editor/ and scanner/
 ```
 
-`shared/` in one line each: `environment` (roots, binaries, `launch_command`),
-`version` (the release number `packaging/build.py` checks a tag against),
-`diagnostics` (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`),
-`timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources`
-(the `import/` policy), `ffmpeg` (preview clip + named export), `scheme`/
-`naming`/`paths` (the two schemes), `exporting` (the export planner),
-`ui_loader` (promoted widgets). Per-module detail:
-[docs/architecture.md](docs/architecture.md).
+`shared/` in one line each: `environment` (roots, binaries, `mpv_import_context`),
+`session` (the `QApplication` and the window stack), `version` (the release
+number `packaging/build.py` checks a tag against), `diagnostics`
+(log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`), `timeline` (editor
+timeline), `segments` (`SegmentModel`, `.cmct`), `sources` (the `import/`
+policy), `ffmpeg` (preview clip + named export), `scheme`/`naming`/`paths`
+(the two schemes), `exporting` (the export planner), `ui_loader` (promoted
+widgets). Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
@@ -106,14 +105,16 @@ diagnose. The linked document has the full reasoning.
    `import/`, `export/`, `temp/`, `commcut.log`. Nothing that must survive goes
    in the payload. Unfrozen they are the same folder, so a source install on
    macOS or Linux writes to the clone. → [docs/packaging.md](docs/packaging.md)
-3. **`launch_command(name, *args)` is the only way to open a window**, and its
-   `*args` are forwarded verbatim into that window's `run(*args)`. A window's
-   `__main__` must therefore `sys.exit(run(*sys.argv[1:]))`; dropping the
-   argument opens a *different* video. → [docs/packaging.md](docs/packaging.md)
-4. **A window folder can shadow its own package.** `scanner/` has no
-   `__init__.py`, so a sibling import must be guarded on `__package__`, and the
-   test for it must run in a **fresh interpreter**. →
-   [docs/packaging.md](docs/packaging.md)
+3. **The shell is the only way to open a window, and the source path is a
+   constructor argument.** `shared/session.py:Shell.open(name, **kwargs)` builds
+   a window through the registry in `_BUILDERS` and shows it; a window asks the
+   shell to open the next one. There is no `--window` flag, no per-window
+   script, and no `run(*args)`. A window that will not open is reported by
+   `Shell.open_safely`, never raised into the event loop. →
+   [docs/architecture.md](docs/architecture.md)
+4. **The shell removes windows by identity, not by popping the top.** The
+   picker's Open button opens the scanner and *then* closes itself, so the
+   window that dies is not the one on top. → [docs/architecture.md](docs/architecture.md)
 5. **Binaries resolve by absolute path, per platform, and libmpv is loaded
    and named before `import mpv`.** `get_binary_path` searches `bin/<os>/` and
    then, only on platforms that do not bundle (`_BUNDLED_BINARY_PLATFORMS`), the
@@ -128,16 +129,28 @@ diagnose. The linked document has the full reasoning.
    [docs/source-install.md](docs/source-install.md)
 6. **Close the splash before constructing any mpv-backed widget.** A splash is a
    top-level window, and constructing a player while another one is foreground
-   has deadlocked mpv's renderers.
-   → [docs/architecture.md](docs/architecture.md)
-7. **Never construct a second mpv player while another top-level window is
-   foreground.** Every window is its own process for exactly this reason; the
-   main menu stays open in the background rather than hosting a child. The
-   deadlock was found on Windows with direct3d and is not proven absent on
-   other platforms, so the rule is unconditional.
+   was *reported* to deadlock mpv's renderers. It never reproduced — see
+   [experiments/README.md](experiments/README.md) — but closing a splash is
+   three lines and is the only thing standing between a driver update and a
+   frozen window. Kept as a precaution, not as a proven requirement. →
+   [docs/architecture.md](docs/architecture.md)
+7. **The mpv foreground-construction hazard is unverified, and no longer the
+   reason for the architecture.** One process per window existed because
+   constructing a player while another top-level window is foreground was
+   believed to deadlock on Windows with direct3d. There was never a recorded
+   reproduction, and `experiments/mpv_foreground/` ran the claim directly: 120
+   runs, six cases, no hang, foreground verified rather than assumed, including
+   a frameless splash and three concurrent presenting players. That is one GPU,
+   one driver, one mpv build, and bare windows rather than the real editor — it
+   does not prove the hazard absent everywhere, so invariants 6 and 7 stand as
+   precautions. But the process boundary they justified is gone, and the windows
+   share one event loop and one libmpv. →
+   [experiments/README.md](experiments/README.md)
 8. **The source video path is an argument, not shared state.** It travels
-   `main menu → picker → scanner → editor` through argv; a window never
-   re-resolves a default of its own. → [docs/architecture.md](docs/architecture.md)
+   `main menu → picker → scanner → editor` as a constructor argument; a window
+   never re-resolves a default of its own. Navigation is the one global, and it
+   lives in the shell — the path is not. →
+   [docs/architecture.md](docs/architecture.md)
 9. **One owner per rule.** Required tags live in
    `shared/exporting.py:missing_required_tags`; the filename and folder
    grammars live in `shared/naming.py` and `shared/paths.py`. Never add a second

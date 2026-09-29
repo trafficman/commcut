@@ -42,14 +42,19 @@ def picker_factory(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(sources, "import_folder", lambda: str(folder))
     monkeypatch.setattr(picker_module, "import_folder", lambda: str(folder))
 
-    launches = []
-    monkeypatch.setattr(
-        picker_module.subprocess, "Popen",
-        lambda command, *a, **k: launches.append(command))
-    warnings = []
-    monkeypatch.setattr(
-        picker_module.QMessageBox, "warning",
-        staticmethod(lambda parent, title, text: warnings.append((title, text))))
+    # The picker hands the chosen video to the scanner by asking the shell to
+    # open it, so the recording is of window requests rather than of processes.
+    # open_safely is the only method offered, on purpose: reaching for
+    # shell().open() instead is an AttributeError here rather than an
+    # exception escaping into Qt's event loop.
+    opened = []
+
+    class RecordingShell:
+        def open_safely(self, name, **kwargs):
+            opened.append((name, kwargs))
+            return object()
+
+    monkeypatch.setattr(picker_module, "shell", RecordingShell)
 
     created = []
 
@@ -58,7 +63,7 @@ def picker_factory(qapp, monkeypatch, tmp_path):
         created.append(window)
         return window
 
-    yield make, folder, launches, warnings
+    yield make, folder, opened, []
 
     for window in created:
         window.close()
@@ -163,19 +168,17 @@ class TestSelection:
         assert window.ui.listVideos.currentRow() == 0
         assert window.ui.openButton.isEnabled()
 
-    def test_opening_launches_the_scanner_with_that_video(self, picker_factory):
-        make, folder, launches, _ = picker_factory
+    def test_opening_asks_for_the_scanner_with_that_video(self, picker_factory):
+        make, folder, opened, _ = picker_factory
         path = touch(str(folder / "compilation.mp4"))
         window = make()
 
         window.ui.openButton.click()
 
-        assert len(launches) == 1
-        assert launches[0][-1] == path
-        assert "scanner" in launches[0][-2]
+        assert opened == [("scanner", {"source": path})]
 
     def test_opening_the_right_one_when_several_are_listed(self, picker_factory):
-        make, folder, launches, _ = picker_factory
+        make, folder, opened, _ = picker_factory
         touch(str(folder / "a.mp4"))
         second = touch(str(folder / "b.mp4"))
         window = make()
@@ -183,20 +186,20 @@ class TestSelection:
         window.ui.listVideos.setCurrentRow(1)
         window.ui.openButton.click()
 
-        assert launches[0][-1] == second
+        assert opened[0][1]["source"] == second
 
     def test_double_clicking_opens_too(self, picker_factory):
-        make, folder, launches, _ = picker_factory
+        make, folder, opened, _ = picker_factory
         touch(str(folder / "compilation.mp4"))
         window = make()
 
         window.ui.listVideos.itemDoubleClicked.emit(window.ui.listVideos.item(0))
 
-        assert len(launches) == 1
+        assert len(opened) == 1
 
-    def test_the_window_closes_after_launching(self, picker_factory, qapp):
+    def test_the_window_closes_after_opening_the_scanner(self, picker_factory, qapp):
         """So a tester does not stack pickers behind several scanners."""
-        make, folder, launches, _ = picker_factory
+        make, folder, opened, _ = picker_factory
         touch(str(folder / "compilation.mp4"))
         window = make()
         window.show()
@@ -207,30 +210,41 @@ class TestSelection:
 
         assert not window.isVisible()
 
-    def test_cancelling_launches_nothing(self, picker_factory):
-        make, folder, launches, _ = picker_factory
+    def test_cancelling_opens_nothing(self, picker_factory):
+        make, folder, opened, _ = picker_factory
         touch(str(folder / "compilation.mp4"))
         window = make()
 
         window.ui.cancelButton.click()
 
-        assert launches == []
+        assert opened == []
 
 
-def test_a_failed_launch_warns_instead_of_raising(picker_factory, monkeypatch):
+def test_the_picker_stays_open_when_the_scanner_cannot_be_opened(
+        picker_factory, qapp, monkeypatch):
+    """The shell reports a window that will not open and returns None. The
+    picker must not close itself in that case, or the user would be left with
+    neither the picker nor a scanner and no way to pick a different video."""
     import picker.picker as picker_module
 
-    make, folder, launches, warnings = picker_factory
+    make, folder, opened, _ = picker_factory
     touch(str(folder / "compilation.mp4"))
     window = make()
-    monkeypatch.setattr(
-        picker_module.subprocess, "Popen",
-        lambda command, *a, **k: (_ for _ in ()).throw(OSError("no python")))
+    window.show()
+    qapp.processEvents()
+
+    class FailingShell:
+        def open_safely(self, name, **kwargs):
+            opened.append((name, kwargs))
+            return None
+
+    monkeypatch.setattr(picker_module, "shell", FailingShell)
 
     window.ui.openButton.click()
+    qapp.processEvents()
 
-    assert warnings
-    assert "no python" in warnings[0][1]
+    assert opened == [("scanner", {"source": str(folder / "compilation.mp4")})]
+    assert window.isVisible(), "the picker must stay up so a different video can be picked"
 
 
 @pytest.mark.parametrize("size,expected", [

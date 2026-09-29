@@ -14,9 +14,13 @@ The one decision that matters in here
 ------------------------------------------------------------------------------
 
 bin/win/ is deliberately NOT bundled. It is ~366 MB, and onefile re-extracts
-its whole payload on *every* launch -- including every child window, because
-each window is a separate process. Shipping the binaries inside the exe would
-re-unpack a third of a gigabyte every time you opened a window.
+its whole payload on *every* launch. Shipping the binaries inside the exe would
+re-unpack a third of a gigabyte every time you started commcut.
+
+(This used to be paid once per *window*: the app ran each of its windows as a
+separate process, so one editing session extracted the payload four times. There
+is one process now, so it is paid once. The layout is unchanged and the argument
+is if anything stronger -- see docs/packaging.md.)
 
 Keeping bin/ beside the exe instead means shared/environment.py's
 ``install_root()`` -- which is ``dirname(sys.executable)`` when frozen -- finds
@@ -76,6 +80,11 @@ datas = [
 ]
 
 # python-mpv is imported inside create_mpv_player rather than at module top.
+# That deferral is now load-bearing in a second way: shared/session.py imports
+# each window's builder lazily inside Shell.open, so the main menu reaching the
+# screen never pulls in libmpv. Pulling these modules in at the top of main.py
+# would load a compiled extension into every run of the app.
+#
 # PyInstaller's modulegraph walks nested code and would find it anyway, but a
 # deferred import of a compiled extension is exactly the kind of thing that
 # breaks silently when an analysis filter is added later, and listing it costs
