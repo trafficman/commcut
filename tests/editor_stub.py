@@ -50,6 +50,14 @@ class FakeBridge:
         self.duration = duration
         self.video_fps = fps
         self.paused = paused
+        # The real bridge's teardown. It has to be called before the window is
+        # destroyed, because the player is embedded into the video frame's
+        # native handle -- so the order of shutdown() relative to destruction
+        # is the thing under test, and the count is how a test sees it.
+        self.shutdowns = 0
+
+    def shutdown(self):
+        self.shutdowns += 1
 
     def seek_exact(self, seconds):
         self.seeks.append(seconds)

@@ -7,8 +7,8 @@ the result to the editor.
 Applies to: `scanner/scanner.py`, `scanner/marker_timeline.py`,
 `scanner/scannerwindow.ui`, `shared/ffmpeg.py:clip_to_temp`.
 
-Related: [architecture.md](architecture.md) (one process, the window stack, the
-source hand-off), [segment-model.md](segment-model.md) (what the boundaries
+Related: [architecture.md](architecture.md) (one process, the one visible window,
+the source hand-off), [segment-model.md](segment-model.md) (what the boundaries
 become).
 
 ## What it does

@@ -11,7 +11,7 @@ Applies to: `packaging/commcut.spec`, `packaging/build.py`,
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
 Linux, which this build does not cover), [architecture.md](architecture.md) (the
-same code unfrozen — one process, a window stack, diagnostics),
+same code unfrozen — one process, one visible window, diagnostics),
 [testing.md](testing.md) (how frozen behavior is tested without building an exe).
 
 ## The distributable

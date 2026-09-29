@@ -11,7 +11,87 @@ does** — an experiment whose finding is not written down has only cost time.
 
 ---
 
-## `mpv_foreground/`
+## `mpv_teardown/`
+
+### The question
+
+`create_mpv_player` hands mpv a `wid` — the native handle of the video frame's
+child `QFrame`. That handle belongs to the window, so a player left running when
+the window closes has outlived the handle it renders into. Under the old
+one-process-per-window arrangement this never surfaced: closing a window ended
+the *process*, so the OS reclaimed the handle and libmpv's threads died with it,
+in an order the OS enforced.
+
+With one process it does surface. The report is that closing the scanner or the
+editor leaves the app frozen to the mouse, and the main menu — whichever window
+is left on screen — never responds again.
+
+### Method
+
+Two cases, each in its own process under a hard timeout, on the same watchdog
+idea as `mpv_foreground/`:
+
+- **`control`** — the shipped window and shell, with `MpvBridge.shutdown` neutered
+  so the player is never released before the window goes. This is the pre-fix
+  state.
+- **`fix`** — the same, with the teardown in place.
+
+Both drive the real window through the real close path (`closeEvent` →
+`WA_DeleteOnClose` → `destroyed` → the shell returning to the menu) and then
+check that the app still responds.
+
+### What it found, and what it could not
+
+The teardown was genuinely missing, and fixing it is unambiguously right: a
+native resource must be released while the handle it depends on is alive. The
+`control` case demonstrates a real, reproducible consequence that the `fix` case
+does not have — with no teardown, an mpv observer fires *after* the player is
+gone and the editor's `on_file_loaded` runs a seek against it, which comes back
+`SystemError: Error running mpv command -12`. That is the exact hazard
+`MpvBridge.shutdown` exists to close, and it was observed rather than reasoned
+about.
+
+**The freeze itself could not be reproduced from inside the harness, and the
+harness says so rather than claiming otherwise.** A first attempt checked that a
+QTimer still fired after the close; that only proves the GUI thread is alive, and
+it passed on cases a person reported as frozen. Replacing it with a synthetic
+mouse click did not help either — `QTest.mouseClick` posts its event directly,
+so it does not travel the input path a real click does, and it too passed on
+frozen cases. Three further measurements were taken after a close, and all three
+came back negative:
+
+| Measured | Result |
+|---|---|
+| Win32 `GetCapture()` | `NULL` — nothing holds the mouse capture |
+| Qt `QWidget.mouseGrabber()` | `None` — no Qt-level grab |
+| `WindowFromPoint` at the cursor | a live, valid window belonging to this app |
+
+So the app is alive, holds no mouse capture, and has a valid window under the
+cursor, while a person reports that neither the menu nor a window opened
+afterwards will take a click. Whatever it is, it is not one of those four, and
+**the person who reported the freeze is the oracle for it** — a synthetic check
+that passes on a frozen app is not evidence of anything.
+
+Use `--hold` to leave the menu on screen for a person to try:
+
+    python experiments/mpv_teardown/probe.py --case control --hold 20
+    python experiments/mpv_teardown/probe.py --case fix --hold 20
+
+A green row in `run_matrix.py` means the process stayed responsive and the menu
+took a *posted* click. It does not mean the mouse worked. Read the note it
+prints.
+
+### An earlier version of this probe was itself wrong
+
+Worth recording because the failure is the same shape as the bug: the first
+version of the `control` case dropped the reference to the player *before*
+closing the window, which terminated the player while the handle was still alive
+— accidentally the fixed order. It passed, and would have "confirmed" a fix
+against a control that was not a control. The two cases now differ only in
+*when* the reference is dropped, and `run_matrix.py` refuses to call a green
+`fix` run meaningful if the `control` did not fail.
+
+
 
 ### The question
 
@@ -157,8 +237,8 @@ Two incidental findings worth keeping:
 The process model was removed on the strength of this result. `launch_command`,
 the `--window` dispatcher, the per-window `run()` entry points and the
 `scanner/` folder-shadowing guard are all gone; `shared/session.py` now owns one
-`QApplication` and a window stack, and the trade is written down as an accepted
-cost in [docs/status.md](../docs/status.md) rather than presented as a solved
-problem. If a hang ever does appear, this harness is the thing to re-run first:
-it is the only version of the claim in this tree that produces evidence rather
-than an assertion.
+`QApplication` and exactly one visible window, and the trade is written down as
+an accepted cost in [docs/status.md](../docs/status.md) rather than presented as
+a solved problem. If a hang ever does appear, this harness is the thing to
+re-run first: it is the only version of the claim in this tree that produces
+evidence rather than an assertion.

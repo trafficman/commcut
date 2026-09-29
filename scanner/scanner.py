@@ -313,6 +313,19 @@ class ScannerWindow(QMainWindow):
     def on_play_pause(self):
         self.bridge.toggle_play()
 
+    def closeEvent(self, event):
+        """Shut the mpv player down before this window -- and its native video
+        handle -- is destroyed.
+
+        The same rule the editor follows, for the same reason: the player is
+        embedded into the video frame's HWND, so a player still running when
+        that handle dies leaves libmpv rendering into a window that no longer
+        exists, and joining its threads blocks the GUI thread. See
+        ``MpvBridge.shutdown``.
+        """
+        self.bridge.shutdown()
+        super().closeEvent(event)
+
     def on_pause_changed(self, paused):
         self._sync_button(paused)
 

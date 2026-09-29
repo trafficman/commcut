@@ -194,26 +194,43 @@ The full vision in `README.md` has three pieces; two are not started:
   `place_end_boundary` (see [segment-model.md](segment-model.md#end-seg)).
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
-- **The one-process-per-window model has been removed.** Every window is now a
-  window in one process, on one event loop, with `shared/session.py` owning the
-  stack. `launch_command`, the `--window` dispatcher, the per-window `run()`
-  entry points and the `scanner/` folder-shadowing guard are all gone with it.
-  The trigger for that rule — constructing an mpv player while another top-level
-  window is foreground — was tested directly in `experiments/mpv_foreground/`:
-  120 runs across six cases on Windows with mpv `v0.41.0-39-ga58dd8ac4`, the
-  shipped `direct3d` driver, a verified-foreground window, a frameless splash,
-  and three concurrent presenting players, produced **no hang**. The foreground
-  was verified rather than assumed, and a negative control proved the harness
-  detects a block at that exact step. So the stated trigger does not reproduce
-  on the development machine. It is not proven absent elsewhere: one GPU, one
-  driver, one mpv build, and bare windows rather than the real editor or
-  scanner, so the splash-closing precaution stays. The trade made is that a hard
-  fault inside `libmpv-2.dll` now takes down the whole app rather than one
-  window; that is a real cost, accepted while the project is pre-release, and
-  worth revisiting once the packaged build has run on a user's machine. The
-  method and its limits are in
-  [experiments/README.md](../experiments/README.md); the architecture is in
-  [architecture.md](architecture.md#one-process-one-event-loop-a-stack-of-windows).
+- **Exactly one window is visible at a time, and the main menu no longer sits
+  open in the background.** `shared/session.py` shows one of {menu, picker,
+  scanner, editor, settings}; opening a window takes down the one it replaces
+  and shows the new one, and a non-menu window closing brings the menu back. The
+  menu is hidden and reused rather than rebuilt, so there is only ever one menu
+  and one taskbar entry. This replaced a stack in which the menu stayed open
+  behind everything else, which was both easy to lose behind another window and
+  — as a window permanently behind another one — a standing source of focus and
+  activation edge cases. Two details are load-bearing: a replaced window is
+  **closed** rather than hidden, because closing is what runs the `closeEvent`
+  that shuts its mpv player down; and the new window is built *before* the old
+  one is taken down, so a failed build leaves the user where they were and a
+  window opened from a button handler is not destroyed from inside its own
+  signal. Modal dialogs (the editor's export progress and summary) are owned by
+  their window and are not part of this. →
+  [architecture.md](architecture.md#one-process-one-event-loop-one-visible-window)
+- **A window with an mpv player must shut it down before it is destroyed, and
+  that was not being done.** `create_mpv_player` hands mpv the native handle of
+  a child frame, so a player left alive when the window closes has outlived the
+  handle it renders into. Under the one-process-per-window model this never
+  surfaced — closing a window ended the process, and the OS reclaimed the handle
+  and libmpv's threads together. It is reported as freezing the app to the mouse
+  after closing the scanner or the editor, while the process stays alive:
+  timers fire, posted events land, and a synthetic click still opens a window, so
+  it is an input lockout rather than a hung thread.
+  `MpvBridge.shutdown()` now detaches the observers and terminates the player
+  from `closeEvent` on both windows. Detaching first matters on its own — the
+  observers fire on mpv's worker thread, and a callback that lands after teardown
+  is an mpv command run against a player that has already gone, which is
+  observable. **The mechanism behind the freeze is still not identified**: a
+  blocked GUI thread, a Win32 mouse capture, a Qt mouse grab, and a dead window
+  under the cursor were each measured after a close and each came back negative.
+  What is established is that the teardown was missing, that it is wrong to
+  release a native resource after the handle it depends on, and that it is the
+  one change that separates the reported frozen and working cases. See
+  [experiments/README.md](../experiments/README.md#mpv_teardown) — a person is
+  still the oracle for the freeze.
 - **macOS and Linux are unverified.** The resolution logic is cross-platform and
   the suite covers it on any host, but nothing here has been run on either
   platform. The open assumptions, in the order worth checking: whether a

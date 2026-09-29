@@ -328,7 +328,7 @@ Three ways out, plus one that is not a way out:
 
 | Button | Effect |
 |---|---|
-| **Back to main menu** | Closes the editor. The shell removes it from the window stack and brings the main menu — which is still open underneath and is never destroyed — back to the foreground. Nothing is relaunched and no second menu is created. |
+| **Back to main menu** | Closes the editor. The shell brings the main menu back — the same window, hidden while the editor was up, never rebuilt. Nothing is relaunched and no second menu is created. |
 | **Keep editing** | Closes the dialog and hands the editor back. The default for Escape and the window close button, because leaving the wizard should be a decision rather than the absence of one. |
 | **Export the rest** | Retries the clips this run did not write, skipping the ones it did. Offered only when something was both written and failed; with nothing written there is nothing to skip, and a plain re-export would fail identically. |
 | **Open export folder** | Opens the destination in the desktop's file browser, and leaves the summary up. |

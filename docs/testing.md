@@ -71,6 +71,19 @@ imported more widely (`test_main_window.py`, `test_picker.py`).
   *visible* widget only, so any test that resizes a widget to check zoom
   behavior has to `show()` it first. Otherwise the assertion passes for the
   wrong reason.
+- **An unpatched `QMessageBox` hangs the run, it does not fail it.** `warning()`
+  and `question()` block in a nested event loop waiting for a click, so a test
+  that forgets to stub one does not fail — the whole run stops, with no output
+  after the last passing test and nothing to suggest why. `Shell.open_safely`
+  reports failures with `QMessageBox.warning`, so any test that calls it has to
+  stub that out (`monkeypatch.setattr(QMessageBox, "warning",
+  staticmethod(lambda *a: None))`), exactly as it would stub a subprocess.
+- **A synthetic click is not evidence that input works.** `QTest.mouseClick`
+  posts its event straight to the widget, so it bypasses the OS input path and
+  reports a window as responsive when a person finds it frozen. It is good for
+  "does this button open that window" and useless for "does this app respond to
+  the mouse". The latter needs a person; see
+  [experiments/README.md](../experiments/README.md#mpv_teardown).
 - **Closing a window needs its deferred delete delivered.** `WA_DeleteOnClose`
   destroys the C++ object through a `DeferredDelete` event, which
   `processEvents()` does not reliably deliver. A test that closes a window and

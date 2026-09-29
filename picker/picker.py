@@ -6,10 +6,11 @@ opens this window, the user picks one of the videos sitting in the app's
 argument. From there the journey is the one that already existed: scan
 boundaries, then the editor.
 
-Every window is in the same process, so the picker asks the shell
-(:mod:`shared.session`) for the scanner instead of starting one. The chain is
-still menu -> picker -> scanner -> editor; what changed is that it is a stack
-of windows rather than a chain of processes.
+Every window is in the same process and exactly one is on screen at a time, so
+the picker asks the shell (:mod:`shared.session`) for the scanner instead of
+starting one, and the shell takes the picker off the screen as part of the
+transition. The chain is still menu -> picker -> scanner -> editor; what changed
+is that it is a sequence of windows rather than a chain of processes.
 
 The list is not the only thing that decides what can be opened.
 :func:`shared.sources.resolve_import_video` re-validates the path the scanner
@@ -128,23 +129,21 @@ class PickerWindow(QMainWindow):
 
     # --- launching ---
     def _on_activated(self, *_args):
-        """Open the scanner on the selected video, then close this window.
+        """Open the scanner on the selected video.
 
-        The scanner is opened through the shell rather than started as a
-        process, so the chosen path is a constructor argument. This window then
-        closes itself, which is not the same as the scanner closing: the shell
-        removes windows by identity, so the scanner that was just pushed stays
-        on top of the menu.
+        The source travels as a constructor argument, and the shell takes this
+        window off the screen as part of the transition. The picker used to
+        open the scanner and then close itself, which forced the shell to
+        remove windows by identity so it could cope with a window that closed
+        after its successor was already up. That is no longer this window's
+        problem: the shell builds the scanner first, then closes whatever was
+        on screen, which cannot run until this handler has returned.
         """
         video = self._selected_video()
         if video is None:
             return
         log(f"picking {video.path}")
-        if shell().open_safely('scanner', source=video.path) is None:
-            # The scanner did not open, so this window is still the one the
-            # user is looking at. Leave it up and let them pick again.
-            return
-        self.close()
+        shell().open_safely('scanner', source=video.path)
 
 
 def create(app=None):

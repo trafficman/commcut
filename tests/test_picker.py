@@ -197,8 +197,16 @@ class TestSelection:
 
         assert len(opened) == 1
 
-    def test_the_window_closes_after_opening_the_scanner(self, picker_factory, qapp):
-        """So a tester does not stack pickers behind several scanners."""
+    def test_opening_leaves_the_window_in_the_shells_hands(self, picker_factory, qapp):
+        """The picker no longer closes itself.
+
+        Under one-window navigation the shell builds the scanner and then takes
+        down whatever was on screen. The picker used to open the scanner and
+        then close itself, which is what forced the shell to remove windows by
+        identity to cope with a window that closed after its successor was
+        already up. Doing it in both places is the bug this removes, so the
+        picker is asserted *not* to close here.
+        """
         make, folder, opened, _ = picker_factory
         touch(str(folder / "compilation.mp4"))
         window = make()
@@ -208,7 +216,8 @@ class TestSelection:
         window.ui.openButton.click()
         qapp.processEvents()
 
-        assert not window.isVisible()
+        assert opened == [("scanner", {"source": str(folder / "compilation.mp4")})]
+        assert window.isVisible(), "taking the screen down is the shell's job"
 
     def test_cancelling_opens_nothing(self, picker_factory):
         make, folder, opened, _ = picker_factory

@@ -1113,8 +1113,19 @@ class MediaPlayer(QMainWindow):
         QMessageBox.information(self, "Export cancelled", body)
 
     def closeEvent(self, event):
-        """Never destroy a running QThread: ask, then cancel and close."""
+        """Shut the player down, and never destroy a running QThread.
+
+        The two halves are in this order for two different reasons.
+
+        ``bridge.shutdown()`` goes on the accept path and nowhere else, because
+        it has to run while this window's video frame still has its native
+        handle. Calling it at the top would kill the player underneath a session
+        that is about to refuse to close. It is on the accept path rather than
+        after it because the player must be gone before the window is destroyed,
+        and closeEvent is the last code that runs before that.
+        """
         if self._export_thread is None:
+            self.bridge.shutdown()
             event.accept()
             return
         event.ignore()
@@ -1128,6 +1139,9 @@ class MediaPlayer(QMainWindow):
         if answer == QMessageBox.Yes:
             self._close_after_export = True
             self._on_export_cancel_requested()
+            # The close happens again from _on_export_finished, once
+            # _export_thread is done, and that second pass is the one that
+            # accepts -- and so the one that shuts the player down.
 
     def on_file_loaded(self, path):
         """Called when mpv finishes loading a file: snap to the active segment start."""

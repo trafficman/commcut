@@ -42,10 +42,11 @@ def run_main_menu(argv):
     app = QApplication(argv)
     diagnostics.install_excepthook(app)
 
-    # The menu is the root of the stack and is never destroyed: closing a child
-    # brings this same window back to the foreground, which is what the
-    # separate-process arrangement used to do by leaving the menu running
-    # behind everything else.
+    # The menu is the window the shell starts from and returns to. It is
+    # hidden while another window is up rather than closed, so returning to it
+    # is instant and there is only ever one menu. The separate-process
+    # arrangement got the same "come back to it" behaviour by leaving the menu
+    # running behind everything else, which is what the background menu cost.
     menu = MainWindow()
     set_shell(Shell(app, menu))
     menu.show()

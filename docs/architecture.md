@@ -53,9 +53,9 @@ commcut/
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
 ├── shared/                  # Cross-module library (editor + scanner + settings)
 │   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context
-│   ├── session.py           # the QApplication's window stack: Shell, _BUILDERS
+│   ├── session.py           # the QApplication's one visible window: Shell, _BUILDERS
 │   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
-│   ├── mpv.py               # MpvBridge, create_mpv_player, scan_keyframes
+│   ├── mpv.py               # MpvBridge + its shutdown, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
 │   ├── sources.py           # import/ policy: what can be opened, what is offered
@@ -71,7 +71,7 @@ commcut/
     └── VideoEditor/         # Pre-rename copy of the editor module
 ```
 
-## One process, one event loop, a stack of windows
+## One process, one event loop, one visible window
 
 Every window in this app is a window, not a process. `main.py` is the only entry
 point: it builds the one `QApplication`, constructs `MainWindow`, installs a
@@ -79,9 +79,60 @@ point: it builds the one `QApplication`, constructs `MainWindow`, installs a
 per-window script, and each window module exposes a `create(...)` builder rather
 than a `run()` entry point.
 
-This was not always so. One process per window existed because constructing an
-mpv player (direct3d) while another top-level window is foreground was believed
-to deadlock on Windows. There was never a recorded reproduction, and
+`shared/session.py` shows **exactly one** of {menu, picker, scanner, editor,
+settings} at a time. Opening a window builds it, takes down whatever was on
+screen, and shows the new one. When a non-menu window goes away the menu comes
+back; when the menu goes away the app quits. Modal dialogs are not part of this —
+the editor's export progress and summary dialogs are `QDialog`s owned by the
+editor, so they travel with whatever window opened them.
+
+This replaced a stack in which the main menu stayed open behind everything else.
+The stack was carrying two costs that were not obvious at the time: the menu
+could be lost behind another window and put a second entry in the taskbar, so the
+app did not present as one thing; and a window permanently behind another one is
+a permanent source of edge cases about focus and activation, which is the sort of
+thing that produces bugs nobody can attribute. With one window there are still no
+guarantees, but there is one rule instead of a set of interactions.
+
+Two details are load-bearing:
+
+- **A window the shell opens replaces the one on screen by closing it**, not by
+  hiding it. Closing is what runs `closeEvent`, and for the scanner and the
+  editor that is the only place their mpv player gets shut down while its video
+  frame still has a native handle. Hiding one of those would keep a live player
+  attached to a window the user cannot see. The menu is the exception: it is
+  hidden and reused, because it holds two buttons and rebuilding it would
+  re-parse `mainwindow.ui`.
+- **The new window is built before the old one is taken down.** A build pumps the
+  event loop to drive its splash, so closing first would mean destroying the
+  outgoing window from inside the button handler that opened the new one. Built
+  second, `WA_DeleteOnClose` only posts a deferred delete, which cannot run until
+  that handler has returned. The order also means a build that fails leaves the
+  user exactly where they were.
+
+`Shell.open_safely` is the only way a window is opened. Every window opens the
+next one from inside a button handler, and an exception escaping one of those
+reaches the event loop: with one process that takes down the window the button
+belonged to, where before it only killed a child. It logs the failure and shows
+a `QMessageBox` instead, and returns `None`.
+
+A builder has a two-way contract: return a window, or raise. One exception to
+the second is `shared/session.py:OpenInstead`, which a builder raises to say
+"I am not opening; open *this* instead", and the shell resolves it. The scanner
+is the case: a video that already has a `.cmct` must not be re-scanned, so the
+rule is the scanner's, but the routing is not — it has no window to show. This
+was a `None` return originally, and it failed the way a sentinel does: the shell
+took the `None` for a window and reported the already-scanned video as
+unopenable instead of opening the editor. `tests/test_session.py` guards it.
+
+The builders are imported lazily inside `Shell.open`, so the main menu — the
+first thing that runs — does not pull in libmpv.
+
+## Why there is one process
+
+One process per window used to be the rule, because constructing an mpv player
+(direct3d) while another top-level window is foreground was believed to deadlock
+on Windows. There was never a recorded reproduction, and
 `experiments/mpv_foreground/` ran the claim directly: 120 runs across six cases,
 no hang, with the foreground window verified rather than assumed — including the
 frameless-splash case and three concurrent presenting players in one process. See
@@ -95,9 +146,23 @@ What the change cost is worth stating plainly: a hard fault inside
 kills the app. That was a deliberate trade, made while the project is pre-release
 and the packaged build has never run on a user's machine.
 
-`shared/session.py` owns navigation. The builders are imported lazily inside
-`Shell.open`, so the main menu — the first thing that runs — does not pull in
-libmpv; `main.py` and the menu never import a window module at module level.
+## Tearing down a player
+
+`create_mpv_player` hands mpv a `wid` — the native handle of the video frame's
+child `QFrame` — and that handle belongs to the window. Under the old
+process-per-window arrangement this never surfaced: closing a window ended the
+*process*, so the OS reclaimed the handle and libmpv's threads died with it, in
+an order the OS enforced. That path is not exercised any more.
+
+Left alone, a player outlives the handle it is rendering into, and a window that
+is closed without shutting it down has been reported as freezing the app to the
+mouse — see invariant 4 and [experiments/README.md](../experiments/README.md).
+`MpvBridge.shutdown()` detaches the observers and terminates the player, and it
+runs from `closeEvent` on both the scanner and the editor, because `destroyed`
+is already too late. The observers are detached first: they fire on mpv's worker
+thread and emit Qt signals, so leaving them attached lets a callback land in a
+half-destroyed QObject — which is observable as an mpv command failing on a
+player that has already gone.
 
 ## The main menu
 
@@ -113,36 +178,16 @@ Editing Wizard — it detects clip boundaries and hands off to the editor itself
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
 Both buttons call `shell().open_safely(name)`, which is the only way a window is
-opened anywhere in the app. The menu is the **root** of the stack and is never
-destroyed, so a child closing brings this same window back to the foreground
-rather than relaunching it or making a second one — which is what the
-separate-process arrangement did by leaving the menu running behind everything
-else.
-
-`open_safely` exists because the process boundary is gone. Every window opens the
-next one from inside a button handler, and an exception escaping one of those
-reaches the event loop: with one process that takes down the window the button
-belonged to, where before it only killed a child. It logs the failure and shows
-a `QMessageBox` instead, and returns `None`.
-
-A builder has a two-way contract: return a window, or raise. One exception to
-the second is `shared/session.py:OpenInstead`, which a builder raises to say
-"I am not opening; open *this* instead", and the shell resolves it. The scanner
-is the case: a video that already has a `.cmct` must not be re-scanned, so the
-rule is the scanner's, but the routing is not — it has no window to show. This
-was a `None` return originally, and it failed the way a sentinel does: the shell
-took the `None` for a window and reported the already-scanned video as
-unopenable instead of opening the editor. `tests/test_session.py` guards it.
-
-The shell removes a closed window **by identity, not by popping the top**. The
-picker's Open button opens the scanner and *then* closes itself, so the window
-that died is not the one on top; a positional pop would discard the scanner and
-put the menu back over it. `tests/test_session.py` covers this.
+opened anywhere in the app. The menu is the one window the shell reuses: it is
+hidden while anything else is up and shown again when that window closes, so
+there is only ever one menu and one taskbar entry. Closing the menu itself ends
+the app, which the shell watches for through an event filter rather than
+`destroyed` — the menu is never destroyed, so `close()` on it only hides it.
 
 `setup_environment` resolves the project root as `install_root()`: the source
 tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
 covers the two buttons and the project-root resolution from every entry point;
-`tests/test_session.py` covers the stack.
+`tests/test_session.py` covers the navigation.
 
 ## The source video is picked from the import folder
 
@@ -209,11 +254,18 @@ The shared modules are:
   `ensure_app_folders()`. This is the cross-platform binary resolution that
   used to live in `core.py`. It used to also own `launch_command()` and
   `WINDOW_NAMES`; both went with the process model.
-- `shared/session.py` — the `Shell`: the one `QApplication`'s window stack, the
-  `_BUILDERS` registry mapping a window name to its module and builder, and
-  `shell()` / `set_shell()`. It is the only way a window is opened, and the only
+- `shared/session.py` — the `Shell`: the one `QApplication`'s single visible
+  window, the `_BUILDERS` registry mapping a window name to its module and
+  builder, `OpenInstead` for a builder that declines, and `shell()` /
+  `set_shell()`. It is the only way a window is opened, and the only
   process-wide piece of state. Imports no window module and no mpv at module
   level, so the main menu does not pull in libmpv.
+- `shared/mpv.py` — `MpvBridge` (the single Qt↔libmpv channel) and
+  `MpvBridge.shutdown()` (detach the observers, then terminate the player,
+  while the window that owns its handle is still alive), `create_mpv_player`
+  (loads libmpv, then wraps `mpv.MPV` for a `QFrame` with `WA_NativeWindow`),
+  `scan_keyframes(path)` (ffprobe I-frame scan returning sorted timestamps), and
+  `BoundaryPreview` (the editor's boundary peek).
 - `shared/diagnostics.py` — `log()`, `log_exception()`, `install_excepthook()`,
   and `fatal()`. Everything diagnostic, because a windowed build has no
   console.

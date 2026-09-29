@@ -1,8 +1,28 @@
-"""The one QApplication, and the stack of windows over it.
+"""The one QApplication, and the one window the user is looking at.
 
 Every window in this app runs in the same process, so something has to own the
 ``QApplication`` and decide what is on screen. That is this module: ``main.py``
 constructs a :class:`Shell` once, and the windows ask it to open each other.
+
+One visible window, not a stack
+------------------------------------------------------------------------------
+
+The shell shows exactly one of {menu, picker, scanner, editor, settings} at a
+time. A window opens another by asking the shell, the shell hides or closes
+what is there, and the new window takes the screen. When a non-menu window goes
+away, the menu comes back.
+
+This replaced a stack, where the main menu stayed open behind whatever else was
+up. The stack was carrying two costs that were not obvious at the time. The menu
+could be lost behind another window and put a second entry in the taskbar, so the
+app did not present as one thing; and a window permanently behind another one is
+a permanent source of edge cases about focus and activation, which is the sort
+of thing that produces bugs nobody can attribute. With one window there are
+still no guarantees, but there is one rule instead of a set of interactions.
+
+What is *not* here: modal dialogs. The editor's export progress and summary
+dialogs are ``QDialog``s owned by the editor, not shell-managed windows, so they
+travel with whatever window opened them and the shell does not track them.
 
 Why navigation is global but the source path is not
 ------------------------------------------------------------------------------
@@ -22,21 +42,28 @@ via ``shared.mpv``. Importing them eagerly would load libmpv into the process
 just to draw a two-button menu. See ``mpv_import_context`` in
 ``shared/environment.py`` for the other half of that arrangement.
 
+Closed, not hidden -- except the menu
+------------------------------------------------------------------------------
+
+Opening a window *closes* the one it replaces, and closing is what runs the
+window's ``closeEvent``. For the scanner and the editor that matters: their
+``closeEvent`` shuts their mpv player down while the video frame still has its
+native handle, and a hidden window would keep that player alive instead.
+
+The menu is the exception because it is cheap to bring back and holds nothing
+but two buttons. It is hidden and reused rather than rebuilt, so returning to it
+is instant and ``mainwindow.ui`` is not re-parsed.
+
 Closing is by identity, not by position
 ------------------------------------------------------------------------------
 
-A window can close after its successor is already on screen. The picker's Open
-button opens the scanner and *then* closes itself, so by the time the picker's
-``destroyed`` signal arrives the stack is [menu, scanner, picker] and the window
-that died is not the one on top. A stack that popped the top on every close
-would discard the scanner and put the menu back on top of it.
-
-So the shell removes the window it is told about by identity, and shows whatever
-is then on top. Closing any window, in any order, leaves the surviving ones
-visible, with the most recently opened still in front.
+A window can close after its successor is already on screen: the picker's Open
+button opens the scanner and then closes itself. The window that died is not
+the one that is current, so the shell removes the window it is told about by
+identity and shows whatever is current afterwards.
 """
 
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from shared.diagnostics import log_exception, log_path
@@ -55,7 +82,7 @@ _BUILDERS = {
 }
 
 #: The names a caller may open. Settings is listed so a bad name says what the
-#: options are, the way launch_command's error used to.
+#: options are.
 WINDOW_NAMES = tuple(sorted(_BUILDERS))
 
 #: The one shell in this process, set by main.py. None until then, which is the
@@ -109,20 +136,48 @@ class OpenInstead(Exception):
 
 
 class Shell(QObject):
-    """Owns the window stack. One per process, built by main.py."""
+    """Owns the one visible window. One per process, built by main.py."""
 
-    def __init__(self, app, root):
+    def __init__(self, app, menu):
         super().__init__()
         self.app = app
-        self._stack = [self._adopt(root, destroy_on_close=False)]
+        self._menu = menu
+        self._current = None
+        self._adopt(menu, destroy_on_close=False)
+        menu.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        """Closing the main menu ends the app.
+
+        The menu is the one window the shell never destroys, so ``destroyed`` is
+        not the signal that it went away — ``close()`` only hides it. Without
+        this, closing the menu left the process running with nothing on screen,
+        which is the one case the user cannot get out of. A child window does not
+        need this: it really is destroyed, and ``_forget`` brings the menu back.
+        """
+        if watched is self._menu and event.type() == QEvent.Close:
+            self._current = None
+            self.app.quit()
+        return False
 
     def open(self, name, **kwargs):
-        """Build a window by name, put it on top of the stack, and show it.
+        """Build a window by name and put it on screen, alone.
 
         `kwargs` go to the window's constructor; the source video is one of
-        them, and is how a window learns what to work on. The window is not
-        shown until this returns, so a caller that opens a window and then
-        closes itself leaves the new one on top.
+        them, and is how a window learns what to work on.
+
+        The new window is built *before* the old one is taken down, which is
+        both safer and less work than the other order:
+
+        - If the build fails, whatever was on screen never moved, so there is
+          nothing to put back. Losing the screen to an error is worse than the
+          error, and the caller can keep working.
+        - The outgoing window is closed *after* the build rather than before it.
+          A build pumps the event loop to drive its splash, and closing first
+          would mean the outgoing window was destroyed from inside the button
+          handler that opened the new one. Closed afterwards, ``
+          WA_DeleteOnClose`` only posts a deferred delete, which cannot run
+          until that handler has returned.
         """
         try:
             module_name, builder_name = _BUILDERS[name]
@@ -135,23 +190,12 @@ class Shell(QObject):
             ) from None
 
         window = self._build(name, kwargs)
-        window = self._adopt(window, destroy_on_close=True)
-        self._stack.append(window)
+        self._adopt(window, destroy_on_close=True)
+
+        self._stand_down()
+        self._current = window
         self._present(window)
         return window
-
-    def _build(self, name, kwargs):
-        """Call a window's builder, following a redirect if it issues one.
-
-        A redirect is resolved here rather than in the builder so that the
-        builder never has to open anything itself, and it is not an error, so
-        it does not go through the log-and-warn path in open_safely.
-        """
-        module_name, builder_name = _BUILDERS[name]
-        try:
-            return self._resolve(module_name, builder_name)(self.app, **kwargs)
-        except OpenInstead as redirect:
-            return self._build(redirect.name, redirect.kwargs)
 
     def open_safely(self, name, **kwargs):
         """Open a window, or tell the user it could not be opened. Never raises.
@@ -178,9 +222,54 @@ class Shell(QObject):
             return None
 
     @property
+    def menu(self):
+        """The main menu. Hidden while another window is up."""
+        return self._menu
+
+    @property
+    def current(self):
+        """The window the user is looking at, or None if it is the menu."""
+        return self._current
+
+    @property
     def windows(self):
-        """The stack, bottom first. Read-only: navigation goes through open()."""
-        return tuple(self._stack)
+        """The menu and the current window, for tests and diagnostics.
+
+        Kept for compatibility with code that wants to know what exists; there
+        is no longer a stack, and nothing navigates through this.
+        """
+        return (self._menu,) if self._current is None else (self._menu, self._current)
+
+    def _build(self, name, kwargs):
+        """Call a window's builder, following a redirect if it issues one.
+
+        A redirect is resolved here rather than in the builder so that the
+        builder never has to open anything itself, and it is not an error, so
+        it does not go through the log-and-warn path in open_safely.
+        """
+        module_name, builder_name = _BUILDERS[name]
+        try:
+            return self._resolve(module_name, builder_name)(self.app, **kwargs)
+        except OpenInstead as redirect:
+            return self._build(redirect.name, redirect.kwargs)
+
+    def _stand_down(self):
+        """Take the current window off the screen.
+
+        The menu is hidden, because it is reused and holds nothing. Anything
+        else is closed, because closing is what runs its closeEvent — and for
+        the two windows with an mpv player that is the only place the player
+        gets shut down while its video frame still has a native handle. Hiding
+        one of those would keep a live player attached to a window the user
+        cannot see, and would move the next window on top of a window that is
+        still alive underneath it.
+        """
+        window = self._current
+        if window is None:
+            self._menu.hide()
+            return
+        self._current = None
+        window.close()
 
     def _resolve(self, module_name, builder_name):
         import importlib
@@ -196,26 +285,27 @@ class Shell(QObject):
         """
         window.setAttribute(Qt.WA_DeleteOnClose, destroy_on_close)
         window.destroyed.connect(
-            lambda *_: self._remove(window))
+            lambda *_: self._forget(window))
         return window
 
-    def _remove(self, window):
-        """Take a closed window out of the stack and show what is left on top."""
-        if window not in self._stack:
+    def _forget(self, window):
+        """A window went away. The menu comes back, unless the menu is what went."""
+        if window is not self._current:
             return
-        self._stack.remove(window)
-        if not self._stack:
-            # The root menu is gone, so there is nothing left to run. This is
-            # the "close the main menu" case that used to be a process exit.
-            self.app.quit()
+        self._current = None
+        if not _alive(self._menu):
+            # Shutting down. Windows are destroyed in an arbitrary order and the
+            # menu can be one of the first, so there is nothing left to bring
+            # back to.
             return
-        self._present(self._stack[-1])
+        self._present(self._menu)
 
     def _present(self, window):
-        """Show a window and put it in front, without stealing the modal's
-        focus if one is up. A raised window is not necessarily an activated
-        one, and activating over a modal dialog would let the dialog lose
-        keyboard focus."""
+        """Show a window and put it in front, without stealing a modal's focus.
+
+        A raised window is not necessarily an activated one, and activating over
+        a modal dialog would let the dialog lose keyboard focus.
+        """
         window.show()
         window.raise_()
         if not any(
@@ -223,3 +313,17 @@ class Shell(QObject):
             if child.isVisible()
         ):
             window.activateWindow()
+
+
+def _alive(widget):
+    """True while a widget's C++ object still exists.
+
+    A closed window is still a Python object, and at shutdown Qt destroys them
+    in an arbitrary order, so "I have a reference to it" says nothing about
+    whether it can still be used.
+    """
+    try:
+        import shiboken6
+    except ImportError:
+        return True
+    return shiboken6.isValid(widget)

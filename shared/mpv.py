@@ -26,7 +26,7 @@ import subprocess
 
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
-from shared.diagnostics import log
+from shared.diagnostics import log, log_exception
 from shared.environment import (
     get_binary_path, mpv_import_context, no_console_kwargs, video_output,
 )
@@ -146,14 +146,65 @@ class MpvBridge(QObject):
         super().__init__(parent)
         self.player = player
         self.keyframes = []
+        self._shutdown = False
 
-        # Observers fire on mpv's worker thread. Emitting Qt signals is
-        # thread-safe and delivers the payload on the GUI thread.
-        player.observe_property("pause", self._on_pause)
-        player.observe_property("time-pos", self._on_time_pos)
-        player.observe_property("duration", self._on_duration)
-        player.observe_property("eof-reached", self._on_eof)
-        player.observe_property("path", self._on_path)
+        # The names are kept so shutdown() can detach exactly what was
+        # attached, rather than re-listing them and letting the two drift.
+        self._observed = (
+            ("pause", self._on_pause),
+            ("time-pos", self._on_time_pos),
+            ("duration", self._on_duration),
+            ("eof-reached", self._on_eof),
+            ("path", self._on_path),
+        )
+        for name, callback in self._observed:
+            player.observe_property(name, callback)
+
+    # --- teardown ---
+    def shutdown(self):
+        """Stop playback and destroy the player, while its window is still alive.
+
+        This has to happen from ``closeEvent``, before the window is destroyed,
+        and that ordering is the whole point. The player is embedded into the
+        native handle of a child frame (``WA_NativeWindow``, handed to mpv as
+        ``wid``), so closing the window destroys that handle. If the player is
+        still alive when that happens, libmpv is left rendering into a window
+        that no longer exists, and the ``mpv.MPV`` finalizer then joins
+        libmpv's threads from inside the GUI thread -- which hangs the process,
+        not just the window.
+
+        Under the old one-process-per-window model this was invisible: closing a
+        window ended the process, and the OS reclaimed the handle and the
+        threads together. See ``experiments/mpv_teardown/`` for the reproduction.
+
+        The observers are detached first. They fire on mpv's worker thread and
+        emit Qt signals, so leaving them attached during teardown lets a
+        callback land in a half-destroyed QObject.
+
+        Idempotent, because ``closeEvent`` can fire more than once. After it
+        returns the bridge is dead and the command surface below must not be
+        called again; that is deliberate, since a silent no-op on a destroyed
+        player is harder to diagnose than an error.
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+
+        for name, callback in self._observed:
+            try:
+                self.player.unobserve_property(name, callback)
+            except Exception as error:
+                log_exception(f"could not detach the {name} observer", error)
+
+        try:
+            self.player.pause = True
+        except Exception as error:
+            log_exception("could not pause before teardown", error)
+
+        try:
+            self.player.terminate()
+        except Exception as error:
+            log_exception("could not terminate the player", error)
 
     # --- state callbacks (mpv worker thread) ---
     def _on_pause(self, name, value):

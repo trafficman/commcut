@@ -47,8 +47,7 @@ There is no pytest config: `tests/conftest.py` puts the project root on
 ```
 commcut/
 ├── main.py                  # the entry point: the QApplication, the menu, the shell
-├── mainwindow.py/.ui        # main menu (Editor, Settings)
-├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
+├── mainwindow.py/.ui        # main menu (Editor, Settings)├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
 ├── import/                  # the only videos that can be opened; user drops them in
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
@@ -68,13 +67,14 @@ commcut/
 ```
 
 `shared/` in one line each: `environment` (roots, binaries, `mpv_import_context`),
-`session` (the `QApplication` and the window stack), `version` (the release
+`session` (the `QApplication` and the one visible window), `version` (the release
 number `packaging/build.py` checks a tag against), `diagnostics`
-(log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`), `timeline` (editor
-timeline), `segments` (`SegmentModel`, `.cmct`), `sources` (the `import/`
-policy), `ffmpeg` (preview clip + named export), `scheme`/`naming`/`paths`
-(the two schemes), `exporting` (the export planner), `ui_loader` (promoted
-widgets). Per-module detail: [docs/architecture.md](docs/architecture.md).
+(log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, and
+`MpvBridge.shutdown`), `timeline` (editor timeline), `segments` (`SegmentModel`,
+`.cmct`), `sources` (the `import/` policy), `ffmpeg` (preview clip + named
+export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
+planner), `ui_loader` (promoted widgets). Per-module detail:
+[docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
@@ -105,16 +105,24 @@ diagnose. The linked document has the full reasoning.
    `import/`, `export/`, `temp/`, `commcut.log`. Nothing that must survive goes
    in the payload. Unfrozen they are the same folder, so a source install on
    macOS or Linux writes to the clone. → [docs/packaging.md](docs/packaging.md)
-3. **The shell is the only way to open a window, and the source path is a
-   constructor argument.** `shared/session.py:Shell.open(name, **kwargs)` builds
-   a window through the registry in `_BUILDERS` and shows it; a window asks the
-   shell to open the next one. There is no `--window` flag, no per-window
-   script, and no `run(*args)`. A window that will not open is reported by
-   `Shell.open_safely`, never raised into the event loop. →
+3. **The shell is the only way to open a window, the source path is a
+   constructor argument, and exactly one window is visible at a time.**
+   `shared/session.py:Shell.open(name, **kwargs)` builds a window through the
+   registry in `_BUILDERS`, takes down whatever was on screen, and shows the
+   new one. There is no `--window` flag, no per-window script, and no
+   `run(*args)`. A window that will not open is reported by `Shell.open_safely`,
+   never raised into the event loop. The main menu is the one window that is
+   *hidden* rather than closed; every other window is **closed** when replaced,
+   because closing is what runs its `closeEvent`. →
    [docs/architecture.md](docs/architecture.md)
-4. **The shell removes windows by identity, not by popping the top.** The
-   picker's Open button opens the scanner and *then* closes itself, so the
-   window that dies is not the one on top. → [docs/architecture.md](docs/architecture.md)
+4. **An mpv-backed window must shut its player down before it is destroyed.**
+   `create_mpv_player` hands mpv a `wid` — the native handle of a child frame —
+   so a player still alive when the window dies leaves libmpv attached to a
+   window that no longer exists. `MpvBridge.shutdown()` detaches the observers
+   and terminates the player, and it runs from `closeEvent` on both the scanner
+   and the editor, because `destroyed` is already too late. Never hide a window
+   that owns a player, and never let a `MediaPlayer` be collected without it. →
+   [docs/architecture.md](docs/architecture.md)
 5. **Binaries resolve by absolute path, per platform, and libmpv is loaded
    and named before `import mpv`.** `get_binary_path` searches `bin/<os>/` and
    then, only on platforms that do not bundle (`_BUNDLED_BINARY_PLATFORMS`), the
@@ -142,8 +150,8 @@ diagnose. The linked document has the full reasoning.
    runs, six cases, no hang, foreground verified rather than assumed, including
    a frameless splash and three concurrent presenting players. That is one GPU,
    one driver, one mpv build, and bare windows rather than the real editor — it
-   does not prove the hazard absent everywhere, so invariants 6 and 7 stand as
-   precautions. But the process boundary they justified is gone, and the windows
+   does not prove the hazard absent everywhere, so invariant 6 stands as a
+   precaution. But the process boundary it justified is gone, and the windows
    share one event loop and one libmpv. →
    [experiments/README.md](experiments/README.md)
 8. **The source video path is an argument, not shared state.** It travels

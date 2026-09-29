@@ -7,19 +7,20 @@ boundaries and then hands off to the editor itself — so picker, scanner, and
 editor are one journey rather than three menu items. "Settings" opens the
 standalone scheme editor.
 
-Every window in the app is in this process, and this one is the root of the
-stack the shell (:mod:`shared.session`) keeps. It is not destroyed when a child
-opens or closes, so "Back to main menu" from the editor brings this same window
-back to the foreground — which is what the separate-process arrangement did by
-leaving it running behind everything else. It never waits for or observes a
-child; it only opens one.
+Every window in the app is in this process, and exactly one of them is on screen
+at a time. This one is the shell's (:mod:`shared.session`) starting point: it is
+hidden while another window is up and shown again when that window closes, so
+there is never a second menu or a second taskbar entry. It never waits for or
+observes the other windows; it only opens one, and closing this one ends the app.
 
-The one thing that used to be different: children were separate processes, and
-that was done because constructing an mpv player while another top-level window
-is foreground was believed to deadlock on Windows. That hazard was tested
-directly and did not reproduce (see ``experiments/mpv_foreground/``), so the
-process boundary came out. The windows still each own their own mpv instance,
-and now share one Qt event loop.
+The two things that used to be different here, and are worth not reintroducing:
+children were separate processes, and this window stayed open behind them.
+Constructing an mpv player while another top-level window is foreground was
+believed to deadlock on Windows, which is what the processes were for; that
+hazard was tested directly and did not reproduce (see
+``experiments/mpv_foreground/``). Leaving a window permanently behind another one
+is the second cost — see ``docs/architecture.md`` for why the process boundary and
+the background menu both came out.
 """
 
 import os
