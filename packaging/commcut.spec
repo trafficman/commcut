@@ -37,6 +37,15 @@ Only meaningful in onedir mode (``COMMCUT_ONEFILE=0``), where PyInstaller 6
 would otherwise put the payload in dist/commcut/_internal/ while leaving the
 exe at dist/commcut/. That would break the same bin/win lookup. "." keeps
 everything flat. Onefile has no contents directory and ignores it.
+
+hiddenimports
+------------------------------------------------------------------------------
+
+The four windows are named there, and reading the comment on the assignment is
+the way to find out why. In short: they used to be Analysis() entry points, so
+they were bundled by construction, and the lazy import that replaced them is the
+one shape of import modulegraph cannot see. A build missing them starts and
+shows a menu whose two buttons both fail.
 """
 
 import os
@@ -79,18 +88,41 @@ datas = [
     for source, destination in UI_DATAS
 ]
 
-# python-mpv is imported inside create_mpv_player rather than at module top.
-# That deferral is now load-bearing in a second way: shared/session.py imports
-# each window's builder lazily inside Shell.open, so the main menu reaching the
-# screen never pulls in libmpv. Pulling these modules in at the top of main.py
-# would load a compiled extension into every run of the app.
+# Two kinds of module have to be named here rather than reached by the analysis.
 #
-# PyInstaller's modulegraph walks nested code and would find it anyway, but a
-# deferred import of a compiled extension is exactly the kind of thing that
-# breaks silently when an analysis filter is added later, and listing it costs
-# nothing.
+# mpv is imported inside create_mpv_player rather than at module top. That
+# deferral is load-bearing in a second way: shared/session.py imports each
+# window's builder lazily inside Shell.open, so the main menu reaching the
+# screen never pulls in libmpv. PyInstaller's modulegraph walks nested code and
+# would find this one anyway, but a deferred import of a compiled extension is
+# exactly the kind of thing that breaks silently when an analysis filter is
+# added later, and listing it costs nothing.
+#
+# The windows are the harder case, and the one that bites. session._BUILDERS
+# maps a name to (module, builder) and Shell._resolve loads it with
+# importlib.import_module(module_name) -- module_name is a variable. modulegraph
+# cannot follow that: its _Visitor implements visit_Import and visit_ImportFrom
+# and aliases every other expression node, visit_Call included, to a no-op. All
+# four windows are therefore invisible to the graph, and this list is the only
+# place they can be named.
+#
+# Before the app became one process they were Analysis() entry points, so they
+# were bundled by construction and nothing imported them. Deleting the per-window
+# entry points is what made that true no longer, and it is invisible from source
+# and from the suite, which both import these modules directly, where
+# importlib.import_module simply works. build.py's post-build checks are about
+# the .ui files and bin/, and CI does not run the built exe. A build missing
+# these starts normally, shows the main menu, and then cannot open either of
+# its two buttons.
+#
+# tests/test_frozen_mode.py holds this list and session._BUILDERS to each other
+# so a new window cannot be added to one and forgotten in the other.
 hiddenimports = [
     'mpv',
+    'editor.editor',
+    'picker.picker',
+    'scanner.scanner',
+    'settings.settings',
 ]
 
 # Qt ships a tkinter binding and a large set of unused Qt modules. Excluding

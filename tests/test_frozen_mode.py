@@ -998,3 +998,65 @@ def test_every_ui_file_in_the_tree_is_listed_and_bundled():
             assert (folder, name) in UI_FILES, f"{relative} is not in UI_FILES"
             source = f"{folder}/{name}" if folder else name
             assert f"('{source}', '{folder or '.'}')" in spec_text, relative
+
+
+# ---------------------------------------------------------------------------
+# Bundled modules
+# ---------------------------------------------------------------------------
+
+def _spec_hiddenimports():
+    """The spec's hiddenimports list, read by parsing the spec.
+
+    Parsed rather than substring-matched, which is what the .ui tests above do
+    and which would be wrong here: the claim is membership of a list, and a
+    module named in a comment satisfies a substring test without being in it.
+    """
+    spec_path = os.path.join(PROJECT_ROOT, "packaging", "commcut.spec")
+    with open(spec_path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=spec_path)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, "id", None) == "hiddenimports"
+                   for t in node.targets):
+            continue
+        return [element.value for element in node.value.elts]
+    raise AssertionError(f"{spec_path} assigns no hiddenimports")
+
+
+def test_every_window_the_shell_can_open_is_bundled():
+    """Every module in session._BUILDERS has to be in the spec's hiddenimports.
+
+    This is the guard on the one place the move to one process broke the build.
+    The windows used to be Analysis() entry points, so PyInstaller bundled them
+    by construction and nothing had to import them. Shell._resolve now loads
+    them with importlib.import_module(module_name) on a variable, and
+    modulegraph cannot follow that -- its _Visitor implements visit_Import and
+    visit_ImportFrom and aliases every other expression node, visit_Call
+    included, to a no-op.
+
+    Nothing else in the suite or in build.py would catch a spec that lost them.
+    The tests here import the windows straight from the source tree, where
+    importlib.import_module works, and build.py checks the .ui files and bin/
+    rather than the module set. The result is a build that starts, shows the
+    main menu, and then fails to open either of its two buttons.
+
+    This only has force because the names are known to be real:
+    test_every_registered_window_resolves_to_a_builder imports each one. A
+    rename reflected in the spec but not in _BUILDERS would otherwise satisfy
+    this test on a name that bundles nothing.
+
+    The reverse direction -- a hiddenimport left behind by a rename -- is not
+    asserted, because a module bundled on the strength of an entry the shell no
+    longer uses is dead weight rather than a broken build.
+    """
+    from shared.session import _BUILDERS
+
+    reachable = {module_name for module_name, _ in _BUILDERS.values()}
+    bundled = set(_spec_hiddenimports())
+    missing = sorted(reachable - bundled)
+    assert not missing, (
+        f"{', '.join(missing)} can be opened by the shell but is not in the "
+        f"spec's hiddenimports, so a packaged build would not contain it. "
+        f"Add it there, or a frozen build starts and then cannot open a window."
+    )

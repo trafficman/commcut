@@ -112,9 +112,65 @@ the claim it rested on and found no hang in 120 runs; see
 [architecture.md](architecture.md) and
 [experiments/README.md](../experiments/README.md).
 
-The one consequence for the spec is favourable. Under onefile, PyInstaller
+One consequence for the spec was favourable. Under onefile, PyInstaller
 extracts the whole payload on **every** launch, so the old model extracted it
 once per window — four extractions for one editing session. There is one now.
+
+### The windows are named in the spec, not found by it
+
+The second consequence broke the build, and it is the reason this section
+exists.
+
+**The four windows are in `hiddenimports` because nothing in the source imports
+them in a way PyInstaller can see.** `shared/session.py:_BUILDERS` maps a name
+to a `(module, builder)` pair and `Shell._resolve` loads it with
+`importlib.import_module(module_name)` — where `module_name` is a variable.
+modulegraph cannot follow that. Its `_Visitor` implements `visit_Import` and
+`visit_ImportFrom` and aliases every other expression node to a no-op:
+
+```python
+visit_Call = visit_Expression     # line 899
+
+def visit_Expression(self, node):
+    # Expression node's cannot contain import statements or
+    # other nodes that are relevant for us.
+    pass
+```
+
+So a `Call` node is discarded, and the four window modules are absent from the
+graph. Not "absent from the payload when the name is a variable" — absent
+*either way*, because a string literal would not help.
+
+**What made this invisible is that the windows used to be entry points.** Under
+the process model the spec's `Analysis` listed all five scripts, so the windows
+were bundled by construction and nothing had to import them. Deleting the
+per-window entry points is exactly what broke the build, and the lazy import that
+replaced them is the one shape of import the analysis cannot perform. Nothing in
+`AGENTS.md` or [architecture.md](architecture.md) said the entry points were
+load-bearing for packaging; they were load-bearing for both reasons at once.
+
+The failure is the quiet kind. `mainwindow` is a normal import and
+`mainwindow.ui` is in `datas`, so the exe starts and shows a menu with two
+buttons on it. Both call `Shell.open_safely`, which catches the
+`ModuleNotFoundError` and reports it as *"The picker window could not start"* —
+so the app is a menu whose every button is dead, and it says so in a dialog
+rather than in a traceback. `build.py`'s post-build checks are about the `.ui`
+files and `bin/` and never look at the module set; `zip_portable` checks the
+same six paths. **CI cannot catch it either**, because CI does not run the exe.
+
+`tests/test_frozen_mode.py::test_every_window_the_shell_can_open_is_bundled`
+parses the spec's `hiddenimports` and requires every module in `_BUILDERS` to be
+in it. It is the module-side counterpart of
+`test_source_and_payload_layouts_agree`, and it exists for the same reason: a
+`.ui` file that moves cannot be silently mis-bundled, and neither can a window
+that the shell can open but the spec has forgotten.
+
+Two properties of the fix are worth keeping in mind. The four directories have
+no `__init__.py` and are PEP 420 namespace portions, and `hiddenimports`
+resolves a module inside one correctly — the build log prints `Analyzing hidden
+import 'scanner.scanner'` and the module lands in the PYZ. And because the
+hidden import is a real module rather than a name, its own imports are followed
+normally: `scanner.marker_timeline` arrives with it, with no entry of its own.
 
 **A folder named after an installed library cannot be imported.** `packaging/`
 has no `__init__.py`, and the `packaging` that PyInstaller depends on is a real
@@ -322,8 +378,8 @@ into, and two releases extracted side by side do not merge each other's
 not require editing the source. `tests/test_release_build.py` covers the layout,
 the required entries, the sidecar, and the version rule.
 
-Deflate is doing real work here: the ~412 MB folder lands at roughly 170 MB,
-just under the 2 GiB per-asset limit, and zipping it takes about twenty
+Deflate is doing real work here: the ~412 MB folder lands at roughly 190 MB,
+comfortably under the 2 GiB per-asset limit, and zipping it takes about twenty
 seconds. The bytes are not reproducible — PyInstaller embeds a build timestamp
 — but the *entry order* is, so two archives of one tree diff on their contents
 rather than on their ordering.

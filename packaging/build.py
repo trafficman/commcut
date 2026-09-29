@@ -18,11 +18,13 @@ The output is dist/commcut-portable/:
     settings.json    written when you save in Settings
 
 Why the binaries are NOT inside the exe: onefile re-extracts its entire
-payload on every launch, and each window is a separate process (the main menu
-stays open while the scanner runs, and the scanner launches the editor). With
-the binaries bundled that is ~366 MB of extraction per window open. Kept
-outside, the exe carries only Python and Qt -- around 120 MB -- and bin/win/
-is found immediately, with no extraction step.
+payload on every launch. That used to be paid once per *window* -- each window
+ran as its own process, so one editing session extracted the payload four
+times -- and is now paid once, which is a better argument for this layout rather
+than a different one. With the binaries bundled it would still be ~366 MB of
+writes before a window appeared, every time. Kept outside, the exe carries only
+Python and Qt -- around 46 MB -- and bin/win/ is found immediately, with no
+extraction step.
 
 Why onefile rather than a folder with a SFX installer: this is a portable
 smoke-test build, so "copy the folder and run commcut.exe" is the whole
