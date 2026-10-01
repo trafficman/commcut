@@ -23,6 +23,7 @@ from shared.segments import (
 )
 from shared.sources import require_source_video
 from shared.exporting import (
+    export_folder,
     load_export_schemes,
     missing_required_tags,
     model_with_tag_locks,
@@ -1080,7 +1081,7 @@ class MediaPlayer(QMainWindow):
             return (
                 model_with_tag_locks(self.segment_model, self.tag_locks),
                 load_export_schemes(os.path.join(PROJECT_ROOT, "settings.json")),
-                os.path.join(PROJECT_ROOT, "export"),
+                export_folder(),
             )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Export could not start", str(error))

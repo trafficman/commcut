@@ -7,10 +7,12 @@ import pytest
 
 from shared.exporting import (
     DEFAULT_FILE_NAMING_SCHEME,
+    EXPORT_FOLDER_NAME,
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
     ExportPlanError,
     ExportSchemes,
+    export_folder,
     load_export_schemes,
     model_with_tag_locks,
     plan_export,
@@ -41,6 +43,29 @@ def schemes():
         file_scheme="{title}",
         folder_scheme=DEFAULT_FOLDER_SCHEME,
     )
+
+
+def test_the_export_folder_follows_the_install_root(tmp_path, monkeypatch):
+    """Not a project root derived from __file__: frozen, that is PyInstaller's
+    extraction folder, which is deleted on exit along with every clip in it.
+
+    This was `shared/ffmpeg.py:_export_dir`, then a literal in the editor, and
+    about to be a third copy in the library walk. It is one function now, and
+    this is the guard on the property all three spellings had in common.
+    """
+    monkeypatch.setattr("shared.exporting.install_root", lambda: str(tmp_path))
+
+    assert export_folder() == os.path.join(str(tmp_path), EXPORT_FOLDER_NAME)
+
+
+def test_the_export_folder_is_not_the_import_folders_neighbour_by_accident():
+    """The import folder is a source-video folder and this is a clip folder.
+    They sit side by side under the install root, and a mixed-up constant would
+    put a library walk's records into the folder the picker offers as sources."""
+    from shared.sources import IMPORT_FOLDER_NAME
+
+    assert EXPORT_FOLDER_NAME != IMPORT_FOLDER_NAME
+    assert export_folder().rsplit(os.sep, 1)[-1] == "export"
 
 
 def make_model(duration=10.0, tags_list=None):

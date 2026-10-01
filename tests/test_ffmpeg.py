@@ -543,16 +543,6 @@ def test_a_failed_copy_leaves_nothing_behind(
     assert not list((root / "Network").glob(".commcut-export-*.mp4"))
 
 
-def test_the_export_directory_follows_the_install_root(tmp_path, monkeypatch):
-    """Not a project root derived from __file__: frozen, that is PyInstaller's
-    extraction folder, which is deleted on exit along with every clip in it."""
-    from shared.ffmpeg import _export_dir
-
-    monkeypatch.setattr("shared.ffmpeg.install_root", lambda: str(tmp_path))
-
-    assert _export_dir() == os.path.join(str(tmp_path), "export")
-
-
 # ---------------------------------------------------------------------------
 # The clip record written beside each export
 # ---------------------------------------------------------------------------

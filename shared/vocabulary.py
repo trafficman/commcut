@@ -49,7 +49,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 
 from shared.diagnostics import log
 from shared.environment import install_root
@@ -84,6 +85,40 @@ DEFAULT_VALUES: Mapping[str, tuple[str, ...]] = {
         "Up Next",
     ),
 }
+
+
+@dataclass(frozen=True)
+class PruneResult:
+    """What a `prune_to` did, split into the two things it can do.
+
+    `protected` exists because "nothing was removed" is ambiguous on its own:
+    a caller that cannot tell a spared default from a value still in use will
+    report that nothing was unused, which is not true. Both are
+    `(namespace, value)` pairs in raw, display-cased form.
+    """
+
+    #: Gone from the file.
+    removed: tuple[tuple[str, str], ...] = ()
+    #: Left in place despite being unused, because they are shipped defaults.
+    protected: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def kept(self) -> bool:
+        """Whether the prune spared anything, protected or in use."""
+        return bool(self.protected)
+
+
+def _is_shipped_default(namespace: str, dedup: str) -> bool:
+    """Whether the entry `dedup` names in `namespace` is one of the defaults.
+
+    Compared in the dedup key space, because that is the only way the file can
+    express identity: a user who typed `PROMO` has an entry that casefolds to
+    the same key as the default `Promo`, and `record()` would not have stored
+    theirs alongside it. So an entry whose key matches a default *is* that
+    default, whatever casing it happens to be filed under.
+    """
+    return any(_dedup_key(value) == dedup
+               for value in DEFAULT_VALUES.get(namespace, ()))
 
 
 def vocabulary_path() -> str:
@@ -196,6 +231,64 @@ class Vocabulary:
             return False
         entries[dedup] = normalized
         return True
+
+    def prune_to(
+        self, in_use: Mapping[str, Collection[str]]
+    ) -> PruneResult:
+        """Remove every unused value except the shipped defaults.
+
+        Returns a `PruneResult`, so a caller can report what it removed *and*
+        what it deliberately kept.
+
+        The opposite of `record`, and the only place a value ever leaves this
+        module. Three choices make it the safe operation it has to be:
+
+        - `in_use` holds **raw values**, run through `_dedup_key` here rather
+          than by the caller. Removal happens in the same key space `record()`
+          dedupes in, so `Cartoon/Network` and `cartoon network` cannot survive
+          a prune that was given `Cartoon Network`.
+        - What comes back is what went away, so a caller can report it. A prune
+          that deleted silently would be indistinguishable from one that did
+          nothing.
+        - **A shipped default is never removed.** `DEFAULT_VALUES` is this
+          module's own data, so the rule that protects it belongs here rather
+          than at each call site, where the next caller would have to remember
+          it. The reasoning is that a default is not library residue: it is the
+          project's starter vocabulary, offered before the user has staged a
+          single clip, and it says nothing about what their library contains.
+          Pruning it on the strength of a thin library is what would make a new
+          user's dropdowns collapse the first time they exported one clip.
+          Deleting one is still possible by hand-editing the file, which is the
+          only way it was possible before the sync existed.
+
+        A namespace absent from `in_use` entirely is left alone, because "this
+        library has no `block` tag at all" and "keep whatever is in `block`" are
+        different questions and only the caller knows which one it asked. A
+        namespace listed with no values is emptied, save for its defaults.
+
+        Sets `dirty` when it removes anything. Sparing a default does not, since
+        it changed nothing.
+        """
+        removed: list[tuple[str, str]] = []
+        protected: list[tuple[str, str]] = []
+        for namespace, values in (in_use or {}).items():
+            canonical = canonical_tag_name(namespace) or namespace
+            if canonical not in self._values:
+                continue
+            keep = {
+                _dedup_key(_normalize_value(value))
+                for value in values
+                if isinstance(value, str) and _normalize_value(value)
+            }
+            entries = self._values[canonical]
+            for dedup in [key for key in entries if key not in keep]:
+                if _is_shipped_default(canonical, dedup):
+                    protected.append((canonical, entries[dedup]))
+                    continue
+                removed.append((canonical, entries.pop(dedup)))
+        if removed:
+            self.dirty = True
+        return PruneResult(removed=tuple(removed), protected=tuple(protected))
 
     def save(self) -> str:
         """Write the vocabulary out, atomically.

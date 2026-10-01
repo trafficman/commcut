@@ -88,8 +88,13 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
 - Main menu, picker, and source-video policy (`shared/sources.py`): what the
   picker offers, what a window will accept, and the "nothing to open" messages.
 - Settings (`settings/settings.py`): independent file/folder scheme defaults,
-  validation, production-resolver previews, atomic `QSaveFile` persistence, and
-  cancel/window-close restoration.
+  validation, production-resolver previews, atomic `QSaveFile` persistence,
+  cancel/window-close restoration, and the **Sync from Export Library** button
+  that reconciles `vocabulary.json` with the clips on disk.
+- Library catalog (`shared/catalog.py`): the walk that reads the export library
+  back — a record with a sibling video is a clip — plus the sync that uses it.
+  No window displays it yet. →
+  [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
@@ -145,10 +150,13 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
 
 The full vision in `README.md` has three pieces; two are not started:
 
-- The **Rename Wizard** (batch-rename already-cut clips) does not exist.
+- The **Rename Wizard** (batch-rename already-cut clips) does not exist. The walk
+  it needs now exists — see "Next".
 - **Smart-cut export** does not exist — export re-encodes each whole segment
   instead. See "Next" below.
 - The import and export folders are fixed beside the executable (see "Next").
+- **Nothing displays the library.** The catalog and one button that reads it are
+  built; there is no browser, and the picker still has no tags.
 
 ## Next
 
@@ -163,29 +171,43 @@ The full vision in `README.md` has three pieces; two are not started:
   it off the GUI thread behind a progress dialog.
 - **Choosing folders**: import/ and export/ are fixed beside the executable for
   this alpha, and the Settings rows say so. When they become configurable,
-  `shared/sources.py:import_folder()` and the export root in
-  `shared/exporting.py` are the two places that resolve them, and the picker's
-  folder label follows `import_folder()` automatically.
-- **Reading the library back.** The records exist and `shared/records.py` can
-  parse them, but nothing scans `export/` yet: there is no catalog and no
-  browser. The intended shape is a scan that builds an in-memory catalog on
-  first use rather than at launch — the export root becomes user-configurable,
-  and a launch-time walk of a network share or a USB stick is the thing that
-  hangs the app before a window appears. The scan rule the writer is built
-  around is **a record with a sibling video is a clip**, and anything under
-  `export/` without a record is ignored. The **Rename Wizard** is the other
-  consumer: it reads tags from a record and rewrites the path, and never the
-  reverse. → [naming-and-organization.md](naming-and-organization.md#the-clip-record)
-- **Syncing the vocabulary.** The tag dropdowns are fed from
-  `install_root()/vocabulary.json` as segments are staged, so the file drifts
-  from the library: a value typed for a segment that was then skipped is there
-  without a clip, and a clip deleted from `export/` leaves its values behind.
-  That is tolerable precisely because the file is advisory — nothing validates
-  against it — so what is missing is the **manual sync** in Settings and the
-  library walk behind it. When the catalog above lands, the walk should union
-  the two rather than replace either: it must not delete a value the user
-  typed, and it must not resurrect a shipped default the user deleted.
-  → [tag-vocabulary.md](tag-vocabulary.md)
+  `shared/sources.py:import_folder()` and
+  `shared/exporting.py:export_folder()` are the two places that resolve them, and
+  the picker's folder label follows `import_folder()` automatically. Both are
+  single functions on purpose: the export root was spelled out in three places
+  before `export_folder()` existed — `editor/editor.py` joined it onto
+  `PROJECT_ROOT`, and `shared/ffmpeg.py` kept a private `_export_dir()` — and a
+  fourth was about to appear for the library walk. They happened to agree, since
+  `setup_environment` returns `install_root()` as its `project_root`, but three
+  spellings of one path is three places for the configurable version to be missed.
+- **Reading the library back, and syncing the vocabulary.** Both are built.
+  `shared/catalog.py:build_catalog` walks `export/` and applies the scan rule
+  the writer is built around — **a record with a sibling video is a clip**,
+  anything under `export/` without a record is ignored — returning the clips, the
+  records it could not read, and whether it was cancelled. Settings gained a
+  **Sync from Export Library** button that unions the library's tags into
+  `vocabulary.json` and prunes what no clip uses, on a worker thread behind a
+  progress dialog.
+
+  Two rules in that sync are worth knowing before changing either. **A shipped
+  default is never removed** — a default is the project's starter vocabulary
+  rather than library residue, so a user who has exported one clip has not
+  thereby said anything about the other ten filler types, and pruning on that
+  basis would collapse a new user's dropdowns on the first press. The rule lives
+  in `Vocabulary.prune_to`, next to `DEFAULT_VALUES`, so the next caller of it
+  cannot reintroduce the bug. And **an empty library does not prune at all**,
+  which is a separate rule covering the other half: it keeps a fresh install's
+  *user* values from being deleted by the first press. A cancelled sync likewise
+  writes nothing, because pruning against half a library would delete every value
+  the other half uses.
+
+  Still not built: **a library browser**. The walk exists and one button reads
+  it; nothing shows a user what is in `export/`. The **Rename Wizard** is the next
+  consumer — it reads tags from a record and rewrites the path, never the reverse.
+  Counts per value are derivable from `Catalog.clips` when something wants them,
+  and deliberately are not cached. →
+  [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
+  [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
 
 ## Known gaps and traps
 

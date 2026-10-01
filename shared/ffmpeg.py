@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from shared.environment import (
     REQUIRED_VIDEO_ENCODER,
     get_binary_path,
-    install_root,
     no_console_kwargs,
 )
 from shared.diagnostics import log
@@ -24,6 +23,7 @@ from shared.exporting import (
     ExportPlan,
     ExportPlanError,
     ExportSchemes,
+    export_folder,
     plan_export,
     preflight_export_plan,
     validate_export_parent,
@@ -35,11 +35,6 @@ from shared.records import (
     write_record_document,
 )
 from shared.segments import sidecar_path, SegmentModel
-
-
-def _export_dir():
-    """The default export folder, beside the app's own writable data."""
-    return os.path.join(install_root(), "export")
 
 
 @dataclass(frozen=True)
@@ -510,7 +505,7 @@ def export_segment_clips(source_path, out_dir=None, crf=18):
     source_path = os.path.abspath(source_path)
     ffmpeg_path = get_binary_path("ffmpeg")
     if out_dir is None:
-        out_dir = _export_dir()
+        out_dir = export_folder()
     os.makedirs(out_dir, exist_ok=True)
 
     model = SegmentModel.load(sidecar_path(source_path))

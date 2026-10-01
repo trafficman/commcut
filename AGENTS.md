@@ -73,7 +73,8 @@ number `packaging/build.py` checks a tag against), `diagnostics`
 `MpvBridge.shutdown`), `timeline` (editor timeline), `segments` (`SegmentModel`,
 `.cmct`), `sources` (the `import/` policy), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
-planner), `ui_loader` (promoted widgets). Per-module detail:
+planner and `export_folder()`), `catalog` (reading the library back), 
+`ui_loader` (promoted widgets). Per-module detail:
 [docs/architecture.md](docs/architecture.md).
 
 ## Documentation

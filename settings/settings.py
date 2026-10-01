@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -8,12 +9,32 @@ from shared.environment import resource_path, setup_environment
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from PySide6.QtCore import QFile, QIODevice, QSaveFile, QTimer
-from PySide6.QtWidgets import QMainWindow, QMessageBox
+from PySide6.QtCore import (
+    QFile,
+    QIODevice,
+    QObject,
+    QSaveFile,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressDialog,
+    QVBoxLayout,
+)
+from shared.catalog import VocabularySync, sync_vocabulary
 from shared.diagnostics import log, log_exception
 from shared.exporting import (
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
+    export_folder,
 )
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
@@ -30,6 +51,7 @@ from shared.paths import (
     render_folder_components,
 )
 from shared.ui_loader import UiLoader
+from shared.vocabulary import get_vocabulary, vocabulary_path
 
 DEFAULT_FILE_SCHEME = DEFAULT_FILE_NAMING_SCHEME
 PREVIEW_ERROR_STYLE = "color: red; background-color: #ffebee;"
@@ -71,6 +93,174 @@ def folder_scheme_error(scheme: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Vocabulary sync reporting
+# ---------------------------------------------------------------------------
+
+#: Past this many removed values the summary counts them instead of listing
+#: them. A library that has drifted a long way from the file produces a list long
+#: enough to be unreadable in a dialog, and the count is what answers "what
+#: happened".
+_REMOVED_LIST_LIMIT = 12
+
+
+def format_removed(values, limit: int = _REMOVED_LIST_LIMIT) -> str:
+    """One line per `(namespace, value)` pair, or a count once there are too many."""
+    pairs = list(values)
+    if not pairs:
+        return ""
+    if len(pairs) <= limit:
+        return "\n".join(f"  - {namespace}: {value}"
+                         for namespace, value in pairs)
+    return "\n".join(
+        [f"  - {namespace}: {value}" for namespace, value in pairs[:limit]]
+        + [f"  ... and {len(pairs) - limit} more"]
+    )
+
+
+def vocabulary_sync_summary(result: VocabularySync) -> str:
+    """What one sync did, as the body of the screen that reports it.
+
+    A pure function over the result, so the screen shows the run's own
+    accounting rather than a recount -- the same reasoning as the editor's
+    `_export_summary`.
+    """
+    if result.cancelled:
+        return (
+            "Cancelled.\n\n"
+            "Nothing was written to the tag vocabulary. A half-read library "
+            "cannot say which values are unused, so nothing was removed."
+        )
+
+    lines = [f"Read {result.clips_found} clip(s) from:", result.root]
+
+    if result.skipped_prune:
+        lines.append(
+            "\nNo clips were found, so nothing was added and nothing was "
+            "removed. An empty library is not evidence that a tag value is "
+            "unused -- it is evidence there is no library."
+        )
+    else:
+        lines.append(
+            f"\nAdded {result.values_added} value(s) to the tag dropdown lists."
+        )
+        if result.values_removed:
+            lines.append(
+                f"Removed {len(result.values_removed)} value(s) no clip uses:"
+            )
+            lines.append(format_removed(result.values_removed))
+        else:
+            lines.append("No values were removed.")
+        if result.values_kept:
+            # Said even when nothing was removed, and said first, because "no
+            # values were removed" on its own reads as the sync having found
+            # nothing to do -- when in fact the prune was prevented from acting
+            # on values it had every reason to consider unused.
+            lines.append(
+                f"{len(result.values_kept)} value(s) no clip uses were kept "
+                "anyway, because they are shipped defaults:"
+            )
+            lines.append(format_removed(result.values_kept))
+
+    if result.problems:
+        lines.append(
+            f"\n{len(result.problems)} record(s) could not be read, so those "
+            "clips contributed nothing:"
+        )
+        lines.extend(f"  - {problem.path}\n    {problem.message}"
+                     for problem in result.problems)
+
+    return "\n".join(lines)
+
+
+class SyncWorker(QObject):
+    """Runs one vocabulary sync off the GUI thread.
+
+    The walk reads every `.cnfo` under the export root, which is a network share
+    or a USB stick as often as it is a local folder and is slow enough there to
+    be felt. `shared/catalog.py` holds no Qt types and takes the progress and
+    cancel callbacks, so this worker is the same thin shape as the editor's
+    `ExportWorker`: plain data in, signals out, never a widget.
+
+    `finished` is emitted exactly once on every path, including a failed one, so
+    the window has one place that tears the run down. The broad
+    `except Exception` is deliberate -- an unhandled exception in a `QThread`
+    slot reaches PySide6's abort path and `install_excepthook` does not stop it.
+    """
+
+    #: clips read so far, and the record now being read
+    advanced = Signal(int, str)
+    finished = Signal(object)
+
+    def __init__(self, root: str, vocabulary, cancel_event=None):
+        super().__init__()
+        self.root = root
+        #: The cached instance, passed in rather than resolved here: a fresh
+        #: load would write a correct file and leave the cache stale, so an
+        #: editor opened later in the same session would offer the old
+        #: dropdowns.
+        self.vocabulary = vocabulary
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = sync_vocabulary(
+                self.root,
+                self.vocabulary,
+                on_progress=lambda found, path: self.advanced.emit(found, path),
+                should_cancel=self.cancel_event.is_set,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception(f"the tag vocabulary sync over {self.root} failed", error)
+            result = error
+        self.finished.emit(result)
+
+
+class VocabularySyncDialog(QDialog):
+    """The screen that ends a sync, built in code rather than from a `.ui`.
+
+    Transient and modal with no layout worth designing -- the same reasoning as
+    the editor's `ExportSummaryDialog`: no `resource_path`, nothing to add to the
+    packaged payload. It reports rather than asks, so the only button is Close.
+    """
+
+    def __init__(self, result, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Tag Vocabulary Sync")
+        self._error = isinstance(result, Exception)
+
+        if self._error:
+            body = (
+                "The tag vocabulary could not be synced.\n\n"
+                f"{type(result).__name__}: {result}\n\n"
+                "Nothing was written."
+            )
+        else:
+            body = vocabulary_sync_summary(result)
+
+        layout = QVBoxLayout(self)
+        heading = QLabel(
+            "The sync did not finish" if self._error else "Tag vocabulary synced",
+            self,
+        )
+        heading.setStyleSheet("font-weight: bold;")
+        details = QPlainTextEdit(body, self)
+        details.setReadOnly(True)
+        details.setMinimumSize(560, 320)
+        layout.addWidget(heading)
+        layout.addWidget(details)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def summary_text(self) -> str:
+        """The body on screen, for a test to assert on."""
+        return self.findChild(QPlainTextEdit).toPlainText()
+
+
+# ---------------------------------------------------------------------------
 # Settings window
 # ---------------------------------------------------------------------------
 
@@ -81,6 +271,15 @@ class SettingsWindow(QMainWindow):
         self._saved_file_scheme: str | None = None
         self._saved_folder_scheme: str | None = None
         self._pending_warning: tuple[str, str] | None = None
+        #: The vocabulary sync's own state. `_sync_close_after` is how a close
+        #: requested mid-run is deferred until the thread has actually stopped --
+        #: destroying a running QThread aborts the process.
+        self._sync_thread: QThread | None = None
+        self._sync_worker: SyncWorker | None = None
+        self._sync_dialog: QProgressDialog | None = None
+        self._sync_cancel = threading.Event()
+        self._sync_result = None
+        self._sync_close_after = False
 
         ui_file = QFile(resource_path("settings", "settingswindow.ui"))
         if not ui_file.open(QFile.ReadOnly):
@@ -111,6 +310,7 @@ class SettingsWindow(QMainWindow):
         self.ui.buttonBox.rejected.connect(self.reject_changes)
         self.ui.lineEditFileScheme.textChanged.connect(self._update_file_preview)
         self.ui.lineEditFolderScheme.textChanged.connect(self._update_folder_preview)
+        self.ui.buttonSyncVocabulary.clicked.connect(self.start_vocabulary_sync)
         self._update_file_preview()
         self._update_folder_preview()
         self._lock_folder_choices()
@@ -360,8 +560,149 @@ class SettingsWindow(QMainWindow):
         self._restore_schemes()
         self.close()
 
+    # --- the tag vocabulary sync ---
+
+    def start_vocabulary_sync(self, root: str | None = None):
+        """Reconcile the tag vocabulary with the clips in the export library.
+
+        `root` defaults to the export folder and is a parameter so a test can
+        point the walk at a temporary library: `export_folder()` resolves
+        through the install root, and the Settings tests redirect
+        `PROJECT_ROOT` rather than the install root.
+
+        The window is disabled for the duration rather than just the button,
+        because the worker holds the live cached vocabulary instance and an edit
+        made mid-run would silently not reach the file.
+        """
+        if self._sync_thread is not None:
+            return None
+
+        library = root or export_folder()
+        self._sync_cancel = threading.Event()
+        self._sync_result = None
+        self._sync_close_after = False
+
+        progress = QProgressDialog("Reading the export library...", None, 0, 0, self)
+        progress.setWindowTitle("Tag Vocabulary Sync")
+        # Parentless: setEnabled(False) below cascades to child widgets, and a
+        # disabled dialog's Cancel button does nothing -- `self._sync_dialog`
+        # keeps it alive instead. Deliberately not application modal either, so
+        # this window's own close button still reaches closeEvent and can ask
+        # about cancelling. Both are the export dialog's reasoning, for the same
+        # reason.
+        progress.setParent(None)
+        progress.setModal(False)
+        progress.setMinimumDuration(0)
+        # An indeterminate dialog closes itself on reaching its maximum, which
+        # would read as a cancel of a sync that had nothing to cancel.
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.canceled.connect(self.request_vocabulary_sync_cancel)
+        self._sync_dialog = progress
+
+        worker = SyncWorker(library, get_vocabulary(vocabulary_path()),
+                            cancel_event=self._sync_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.advanced.connect(self._on_sync_advanced)
+        worker.finished.connect(self._on_sync_finished)
+        thread.finished.connect(self._on_sync_stopped)
+
+        self._sync_worker = worker
+        self._sync_thread = thread
+
+        self.setEnabled(False)
+        # Shown before the thread starts, so the dialog is on screen before the
+        # walk begins rather than racing it.
+        progress.show()
+        thread.start()
+        log(f"syncing the tag vocabulary from {library}")
+        return worker
+
+    def _on_sync_advanced(self, clips_found: int, relative_path: str):
+        """Progress arrives with no total -- `os.walk` cannot know one -- so the
+        dialog counts clips and names the record being read."""
+        if self._sync_dialog is None:
+            return
+        self._sync_dialog.setLabelText(
+            f"Read {clips_found} clip(s)\n{relative_path}")
+
+    def request_vocabulary_sync_cancel(self):
+        """Ask the walk to stop. Nothing is written when it does -- a half-read
+        library cannot say which values are unused."""
+        self._sync_cancel.set()
+
+    def _on_sync_finished(self, result):
+        """Stash the outcome and ask the thread to stop. One code path for a
+        completed walk, a cancelled one, and a failed one."""
+        self._sync_result = result
+        if isinstance(result, Exception):
+            log(f"the tag vocabulary sync failed: {result}")
+        else:
+            log(
+                f"tag vocabulary synced from {result.root}: "
+                f"{result.clips_found} clip(s), "
+                f"{result.values_added} added, "
+                f"{len(result.values_removed)} removed"
+            )
+        if self._sync_thread is not None:
+            self._sync_thread.quit()
+
+    def _on_sync_stopped(self):
+        """Tear the run down and report it. Reached only from `thread.finished`,
+        which is why there is no `wait()` anywhere in this flow: the thread has
+        already stopped by the time the window lets go of it."""
+        if self._sync_dialog is not None:
+            self._sync_dialog.deleteLater()
+        thread = self._sync_thread
+        if thread is not None:
+            thread.deleteLater()
+        if self._sync_worker is not None:
+            self._sync_worker.deleteLater()
+        self._sync_dialog = None
+        self._sync_thread = None
+        self._sync_worker = None
+        self._sync_cancel = threading.Event()
+        self.setEnabled(True)
+
+        if self._sync_close_after:
+            self._sync_close_after = False
+            self._sync_result = None
+            self.close()
+            return
+
+        result = self._sync_result
+        self._sync_result = None
+        dialog = VocabularySyncDialog(result, self)
+        dialog.exec()
+        dialog.deleteLater()
+
     def closeEvent(self, event):
-        """Treat window-manager close like Cancel when the window is reused."""
+        """Treat window-manager close like Cancel when the window is reused, and
+        refuse it outright while a sync is running."""
+        if self._sync_thread is not None:
+            if self._sync_close_after:
+                event.ignore()
+                return
+            answer = QMessageBox.question(
+                self,
+                "A vocabulary sync is running",
+                "The export library is being read.\n\n"
+                "Cancel the sync and close?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            # Cancel first, then close from _on_sync_finished. Destroying a
+            # QThread that is still running aborts the process, so there is no
+            # path that lets this window go first.
+            self._sync_cancel.set()
+            self._sync_close_after = True
+            event.ignore()
+            return
         self._restore_schemes()
         super().closeEvent(event)
 

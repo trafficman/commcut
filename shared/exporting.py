@@ -11,6 +11,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Real
 
+from shared.environment import install_root
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
@@ -34,6 +35,11 @@ from shared.scheme import canonical_tag_name
 
 FILE_NAMING_SCHEME_KEY = "file_naming_scheme"
 FOLDER_ORGANIZATION_SCHEME_KEY = "folder_organization_scheme"
+
+#: Folder under the install root that named clips are written to. Fixed for this
+#: alpha, like `shared/sources.py:IMPORT_FOLDER_NAME` beside it.
+EXPORT_FOLDER_NAME = "export"
+
 REQUIRED_EXPORT_TAG_NAMES: frozenset[str] = frozenset({
     "title",
     "network",
@@ -41,6 +47,24 @@ REQUIRED_EXPORT_TAG_NAMES: frozenset[str] = frozenset({
     "time_period",
 })
 OUTPUT_EXTENSION = ".mp4"
+
+
+def export_folder() -> str:
+    """Absolute path of the folder named clips are written to.
+
+    The one owner of that path. It was written out in three places before this
+    existed -- `editor/editor.py` joined it onto `PROJECT_ROOT`, and
+    `shared/ffmpeg.py` kept a private `_export_dir()` -- and a fourth copy was
+    about to appear for the library walk. They happened to agree, because
+    `shared/environment.py:setup_environment` returns `install_root()` as its
+    `project_root`, but three spellings of one path is three places for the
+    configurable version to be missed in.
+
+    `plan_export` still takes the root as an argument: a caller that wants to
+    plan a batch somewhere other than the default should say so. This is the
+    default they get when they do not.
+    """
+    return os.path.join(install_root(), EXPORT_FOLDER_NAME)
 
 
 class ExportSettingsError(ValueError):

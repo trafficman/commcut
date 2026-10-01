@@ -235,6 +235,217 @@ def test_recording_an_empty_mapping_changes_nothing():
 
 
 # ---------------------------------------------------------------------------
+# Pruning
+# ---------------------------------------------------------------------------
+
+def test_a_prune_removes_what_the_caller_did_not_name_and_reports_it():
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+    vocabulary.record({"network": "Nickelodeon"})
+    vocabulary.dirty = False
+
+    result = vocabulary.prune_to({"network": ["Nickelodeon"]})
+
+    assert result.removed == (("network", "Cartoon Network"),)
+    assert result.protected == ()
+    assert vocabulary.values("network") == ("Nickelodeon",)
+    assert vocabulary.dirty is True
+
+
+def test_a_prune_removes_and_never_adds():
+    """Adding is `record()`'s job. A prune handed a value the file does not
+    have stores nothing, so the two operations cannot be confused at a call
+    site -- and `sync_vocabulary` has to union before it prunes, or it would
+    prune away everything it had just added."""
+    vocabulary = Vocabulary()
+
+    assert vocabulary.prune_to({"network": ["Nickelodeon"]}).removed == ()
+    assert vocabulary.namespaces() == ()
+
+
+def test_a_prune_matches_in_the_dedup_key_space_rather_than_on_raw_strings():
+    """The whole reason removal goes through `_dedup_key` internally: a prune
+    handed `Cartoon Network` has to take `Cartoon/Network` and `cartoon network`
+    with it, because `record()` would never have stored them as three entries
+    and the export preflight would render them as one folder."""
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+    vocabulary.record({"network": "cartoon network"})
+
+    assert vocabulary.values("network") == ("Cartoon Network",)
+    assert vocabulary.prune_to({"network": ["Cartoon Network"]}).removed == ()
+
+
+def test_a_prune_resolves_a_scheme_alias_to_its_canonical_namespace():
+    vocabulary = Vocabulary()
+    vocabulary.record({"type": "Promo"})
+
+    assert vocabulary.prune_to({"filler_type": ["Promo"]}).removed == ()
+    assert vocabulary.values("filler_type") == ("Promo",)
+
+
+def test_a_prune_leaves_a_namespace_it_was_not_asked_about():
+    """Naming a namespace is how a caller asks for it to be reconciled, so a
+    namespace missing from `in_use` is not touched. `shared/catalog.py` lists
+    every namespace the library uses, including ones with nothing in them, so a
+    namespace the library never mentions at all keeps whatever the file had."""
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network", "block": "Toonami"})
+
+    vocabulary.prune_to({"network": ["Cartoon Network"]})
+
+    assert vocabulary.values("block") == ("Toonami",)
+
+
+def test_a_prune_of_an_empty_namespace_empties_it():
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network", "block": "Toonami"})
+
+    assert vocabulary.prune_to({"network": []}).removed == (
+        ("network", "Cartoon Network"),)
+    assert vocabulary.values("network") == ()
+    assert vocabulary.namespaces() == ("block", "network")
+
+
+def test_a_prune_of_nothing_at_all_removes_nothing():
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+    vocabulary.dirty = False
+
+    assert vocabulary.prune_to({}).removed == ()
+    assert vocabulary.values("network") == ("Cartoon Network",)
+    assert vocabulary.dirty is False
+
+
+def test_a_prune_that_removes_nothing_leaves_the_file_alone():
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+    vocabulary.dirty = False
+
+    assert vocabulary.prune_to({"network": ["Cartoon Network"]}).removed == ()
+    assert vocabulary.dirty is False
+
+
+def test_a_prune_of_a_namespace_the_file_does_not_have_is_not_an_error():
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+
+    assert vocabulary.prune_to(
+        {"special": ["Kids"], "network": ["Cartoon Network"]},
+    ).removed == ()
+
+
+def test_a_prune_ignores_blank_and_non_string_entries_rather_than_keeping_them():
+    """`in_use` holds raw values from records, and an empty one in a list is a
+    value nobody uses, not a reason to keep anything."""
+    vocabulary = Vocabulary()
+    vocabulary.record({"network": "Cartoon Network"})
+
+    assert vocabulary.prune_to({"network": ["  ", None, 3]}).removed == (
+        ("network", "Cartoon Network"),)
+    assert vocabulary.values("network") == ()
+
+
+def test_a_prune_survives_the_round_trip_to_the_file(path):
+    vocabulary = Vocabulary(path=path)
+    vocabulary.record({"network": "Cartoon Network"})
+    vocabulary.record({"block": "Toonami"})
+    vocabulary.record({"special": "Kids"})
+    vocabulary.prune_to({
+        "network": ["Cartoon Network"], "special": ["Kids"], "block": [],
+    })
+    vocabulary.save()
+
+    reloaded = Vocabulary.load(path)
+    assert reloaded.values("block") == ()
+    assert reloaded.values("network") == ("Cartoon Network",)
+    assert reloaded.values("special") == ("Kids",)
+
+
+# ---------------------------------------------------------------------------
+# Defaults are not library residue
+# ---------------------------------------------------------------------------
+
+def test_a_prune_never_removes_a_shipped_default():
+    """A default is the project's starter vocabulary, not something the library
+    stopped using. A user who has exported one clip has a `filler_type` list
+    that says nothing about the other ten defaults, and pruning on that basis is
+    what would collapse a new user's dropdowns on their first sync."""
+    vocabulary = Vocabulary.defaults()
+
+    result = vocabulary.prune_to({"filler_type": ["Bumper"]})
+
+    assert result.removed == ()
+    # Bumper is the one value in use, so the other ten are the ones spared.
+    assert len(result.protected) == len(DEFAULT_VALUES["filler_type"]) - 1
+    assert vocabulary.values("filler_type") == tuple(
+        sorted(DEFAULT_VALUES["filler_type"]))
+
+
+def test_a_prune_keeps_the_defaults_while_still_removing_everything_else():
+    """The paired case, and the one that matters most: without it, a fix that
+    simply stopped `prune_to` removing anything would pass every other test
+    here."""
+    vocabulary = Vocabulary.defaults()
+    vocabulary.record({"block": "Toonami"})
+    vocabulary.record({"network": "Cartoon Network"})
+
+    result = vocabulary.prune_to({
+        "filler_type": ["Bumper"], "block": [], "network": ["Cartoon Network"],
+    })
+
+    assert result.removed == (("block", "Toonami"),)
+    assert len(vocabulary.values("filler_type")) == len(
+        DEFAULT_VALUES["filler_type"])
+    assert vocabulary.values("network") == ("Cartoon Network",)
+
+
+def test_a_default_is_recognised_through_the_dedup_key_not_the_raw_string():
+    """The stored value here is `PROMO`, which is not literally in
+    `DEFAULT_VALUES` -- but its key is the default `Promo`'s, and `record()`
+    would never have filed them as two entries. So this is the default, whatever
+    casing it is under, and it is protected."""
+    vocabulary = Vocabulary()
+    vocabulary.record({"filler_type": "PROMO"})
+
+    assert vocabulary.values("filler_type") == ("PROMO",)
+    assert vocabulary.prune_to({"filler_type": ["Bumper"]}).removed == ()
+    assert vocabulary.values("filler_type") == ("PROMO",)
+
+
+def test_protecting_the_defaults_does_not_extend_to_another_namespace():
+    """`filler_type` is the only seeded namespace. A value that happens to share
+    a default's spelling in `block` is an ordinary value and goes like any
+    other."""
+    vocabulary = Vocabulary.defaults()
+    vocabulary.record({"block": "Bumper"})
+
+    result = vocabulary.prune_to({
+        "filler_type": ["Bumper"], "block": [],
+    })
+
+    assert result.removed == (("block", "Bumper"),)
+
+
+def test_a_prune_of_nothing_removes_nothing_and_writes_nothing(path):
+    """`prune_to({})` touches no namespace at all, so it must not even mark the
+    vocabulary dirty -- otherwise a sync whose prune had nothing to do would
+    rewrite the file and a test that watched the mtime would see it."""
+    vocabulary = Vocabulary.defaults(path)
+    vocabulary.record({"block": "Toonami"})
+    vocabulary.save()
+    vocabulary.dirty = False
+
+    assert vocabulary.prune_to({}).removed == ()
+    assert vocabulary.dirty is False
+
+    reloaded = Vocabulary.load(path)
+    assert reloaded.values("block") == ("Toonami",)
+    assert reloaded.values("filler_type") == tuple(
+        sorted(DEFAULT_VALUES["filler_type"]))
+
+
+# ---------------------------------------------------------------------------
 # The file
 # ---------------------------------------------------------------------------
 

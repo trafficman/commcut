@@ -7,7 +7,7 @@ schemes.
 
 Applies to: `shared/scheme.py`, `shared/naming.py`, `shared/paths.py`,
 `shared/exporting.py`, `shared/ffmpeg.py`, `shared/records.py`,
-`settings/settings.py`, `settings/settingswindow.ui`.
+`shared/catalog.py`, `settings/settings.py`, `settings/settingswindow.ui`.
 
 Related: [segment-model.md](segment-model.md) (the tags and the required-field
 rule), [packaging.md](packaging.md) (the export root beside the exe).
@@ -309,12 +309,48 @@ a legal video filename and an illegal record name. Checking each name against it
 own extension would leave that as a trap; `record_filename` checks the record's,
 and `plan_export` refuses the batch for it before anything encodes.
 
+### Reading the library back: the catalog
+
+`shared/catalog.py:build_catalog` applies the same rule from the other direction.
+A clip is **a record with a sibling video**; anything else under the export root
+is ignored. `export/` is also where a person drops a half-organized working
+folder, and a scan that turned those into clips would have to invent tags from
+folder names — the reverse parse [above](#why-nothing-parses-a-filename-back-into-tags)
+refuses, and for the same reasons.
+
+So the reader is the one place that is allowed to say a clip's tags, and it says
+them only from the record. A clip whose filename looks like commcut rendered it —
+`Cartoon Network - Promo - 2000s - Toonami Worlds Finest.mp4` — and whose record
+says otherwise reports the record, which
+`tests/test_catalog.py::test_tags_come_from_the_record_and_never_from_the_filename`
+pins as invariant 12's guard.
+
+What it returns is `Catalog(clips, problems, cancelled)`. A clip carries its
+video path, a root-relative posix path, its raw tags, and its record. A **problem**
+is a record that could not be read, named with its path and the reason: a corrupt
+record, one from a schema version this build does not know, one holding a tag key
+that is not a tag. They are collected rather than raised, which deliberately
+differs from the export preflight's walk — that one is about to *write* into the
+tree, so an unreadable directory must refuse the batch, while a read-only scan has
+nothing to protect and should cost that one record rather than the library. A
+missing root is an empty catalog, not an error, the same stance
+`shared/sources.py:list_source_videos` takes.
+
+Two things it deliberately does not do: follow directory symlinks (`followlinks=False`,
+matching the preflight), and count anything. Counts are derivable from
+`Catalog.clips` and `Catalog.tag_index` when a consumer wants them, so no cache
+here can be a second place for them to be wrong.
+
 ### What is not built
 
-No scan, no catalog, and no vocabulary dropdown. `parse_record_xml` and
-`load_record` exist so the format can be round-tripped and so the version field
-has a reader; nothing reads the library yet. Clips already exported have no
-records and cannot be backfilled from — the records *are* the source of truth.
+Nothing **shows** a user what is in `export/`. The walk exists and
+[one button](tag-vocabulary.md#syncing-from-the-library) reads it; a library
+browser does not. The picker likewise has no tags yet — when it does, the rule is
+filename when there is no `.cmct` and the sidecar when there is one.
+
+Clips exported before this build have no records and cannot be backfilled from —
+the records *are* the source of truth, so there is nothing to derive them from.
+The catalog sees them as videos with no record and yields nothing for them.
 
 The editor's tag fields do offer previously-used values, from a separate file
 that is deliberately *not* derived from these records — see
@@ -509,9 +545,11 @@ editor for folder schemes:
 `tests/test_scheme.py` (strict parsing), `tests/test_paths.py` (folder grammar
 and sanitation), `tests/test_naming.py` (filename rendering, including the
 README pattern), `tests/test_records.py` (the record format, its reader, and how
-it is published), `tests/test_settings.py` (the window, previews, atomic save,
-and the help panels), `tests/test_exporting.py` (settings, planning, preflight,
-resume skips, and the record's destination), `tests/test_ffmpeg.py` (plan
-execution, progress, cancel, partial failures, and the record beside each clip),
-and `tests/test_editor_export.py` (the worker, the progress dialog, cancel,
-resume, and closing mid-run).
+it is published), `tests/test_catalog.py` (the library walk: what a clip is, what
+is ignored, what is reported, and the record-over-filename guard),
+`tests/test_settings.py` (the window, previews, atomic save, the help panels, and
+the vocabulary sync button), `tests/test_exporting.py` (settings, planning,
+preflight, resume skips, the record's destination, and the export folder),
+`tests/test_ffmpeg.py` (plan execution, progress, cancel, partial failures, and
+the record beside each clip), and `tests/test_editor_export.py` (the worker, the
+progress dialog, cancel, resume, and closing mid-run).

@@ -64,6 +64,7 @@ commcut/
 │   ├── naming.py            # Filename scheme policy + render_filename()
 │   ├── paths.py             # Folder scheme validation, sanitization, safe components
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
+│   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── tests/                   # pytest suite (see testing.md)
 └── prototypes/              # Earlier exploration / alternatives
@@ -306,7 +307,20 @@ The shared modules are:
    planner. It validates the segment model and every destination, enforces the
    four required tags, compiles both schemes, materializes session tag locks,
    and rejects duplicate, existing, case-variant, reparse-point, traversal,
-   and byte-limit conflicts before ffmpeg starts.
+   and byte-limit conflicts before ffmpeg starts. It also owns
+   **`export_folder()`**, the single place the export root is spelled out —
+   `plan_export` still takes the root as an argument, and that function is the
+   default for a caller that does not.
+ - `shared/catalog.py` — the walk that reads the export library back:
+   `build_catalog()` returns the clips it holds (a record with a sibling video),
+   the records it could not read, and whether it was cancelled. A read-only
+   scan, so a walk error is reported rather than raised — deliberately unlike
+   the preflight's walk, which is about to write into the same tree.
+   `sync_vocabulary()` uses it to reconcile `vocabulary.json` against the
+   library. It holds no Qt types; the Settings window's `SyncWorker` is the
+   thin wrapper that runs it off the GUI thread. See
+   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
+   and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.
