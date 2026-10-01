@@ -206,7 +206,7 @@
           </size>
          </property>
          <property name="text">
-          <string>Year</string>
+          <string>Year (O)</string>
          </property>
         </widget>
        </item>
@@ -266,7 +266,7 @@
         </widget>
        </item>
        <item row="0" column="1">
-<widget class="QLineEdit" name="lineEditTitle"/>
+        <widget class="QLineEdit" name="lineEditTitle"/>
        </item>
        <item row="1" column="1">
         <widget class="QComboBox" name="lineEditType">
