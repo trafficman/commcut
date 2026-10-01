@@ -8,6 +8,7 @@ exists before you build it.
 
 Related: [architecture.md](architecture.md), [segment-model.md](segment-model.md),
 [scanner.md](scanner.md), [naming-and-organization.md](naming-and-organization.md),
+[tag-vocabulary.md](tag-vocabulary.md),
 [packaging.md](packaging.md), [source-install.md](source-install.md),
 [testing.md](testing.md).
 
@@ -72,6 +73,13 @@ Detail in [scanner.md](scanner.md).
   beside its video holding its raw tags and the segment it came from, rendered
   between a successful encode and the commit of the video. The filename and
   folder are a projection of the tags, and nothing parses a filename back.
+- Tag suggestions (`shared/vocabulary.py`): nine of the ten tag fields are
+  editable combos offering values the user has already used, drawn from
+  `vocabulary.json`, leading with the most recently used ones for this source.
+  Title stays a plain text box — it is unique per clip, so there is nothing to
+  suggest. Seeded with a `filler_type` list. The file is advisory — nothing
+  validates against it, so it is allowed to be wrong. →
+  [tag-vocabulary.md](tag-vocabulary.md)
 
 Detail in [naming-and-organization.md](naming-and-organization.md).
 
@@ -159,18 +167,25 @@ The full vision in `README.md` has three pieces; two are not started:
   `shared/exporting.py` are the two places that resolve them, and the picker's
   folder label follows `import_folder()` automatically.
 - **Reading the library back.** The records exist and `shared/records.py` can
-  parse them, but nothing scans `export/` yet: there is no catalog, no
-  autocomplete of tag values, and no browser. The intended shape is a scan that
-  builds an in-memory catalog on first use rather than at launch — the export
-  root becomes user-configurable, and a launch-time walk of a network share or a
-  USB stick is the thing that hangs the app before a window appears. The scan
-  rule the writer is built around is **a record with a sibling video is a clip**,
-  and anything under `export/` without a record is ignored. Tag values then come
-  from the catalog rather than a separate vocabulary file, since the catalog can
-  already be asked; a separate list is only worth keeping for values typed for a
-  clip that was skipped before it ever reached the library. The **Rename Wizard**
-  is the other consumer: it reads tags from a record and rewrites the path, and
-  never the reverse. → [naming-and-organization.md](naming-and-organization.md#the-clip-record)
+  parse them, but nothing scans `export/` yet: there is no catalog and no
+  browser. The intended shape is a scan that builds an in-memory catalog on
+  first use rather than at launch — the export root becomes user-configurable,
+  and a launch-time walk of a network share or a USB stick is the thing that
+  hangs the app before a window appears. The scan rule the writer is built
+  around is **a record with a sibling video is a clip**, and anything under
+  `export/` without a record is ignored. The **Rename Wizard** is the other
+  consumer: it reads tags from a record and rewrites the path, and never the
+  reverse. → [naming-and-organization.md](naming-and-organization.md#the-clip-record)
+- **Syncing the vocabulary.** The tag dropdowns are fed from
+  `install_root()/vocabulary.json` as segments are staged, so the file drifts
+  from the library: a value typed for a segment that was then skipped is there
+  without a clip, and a clip deleted from `export/` leaves its values behind.
+  That is tolerable precisely because the file is advisory — nothing validates
+  against it — so what is missing is the **manual sync** in Settings and the
+  library walk behind it. When the catalog above lands, the walk should union
+  the two rather than replace either: it must not delete a value the user
+  typed, and it must not resurrect a shipped default the user deleted.
+  → [tag-vocabulary.md](tag-vocabulary.md)
 
 ## Known gaps and traps
 

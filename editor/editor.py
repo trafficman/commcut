@@ -39,9 +39,10 @@ from shared.ffmpeg import (
 from PySide6.QtWidgets import (
     QMainWindow, QDialog, QHBoxLayout, QLabel, QMessageBox,
     QPlainTextEdit, QProgressDialog, QPushButton, QStyle, QSplashScreen,
-    QVBoxLayout,
+    QVBoxLayout, QComboBox, QCompleter,
 )
 from shared.ui_loader import UiLoader
+from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 from PySide6.QtCore import Qt, QFile, QObject, QUrl, Signal, Slot, QThread
 from PySide6.QtGui import QDesktopServices, QPixmap, QColor
 
@@ -299,9 +300,12 @@ class ExportWorker(QObject):
         ))
 
 
-# Tag key → attribute name on self.ui for the corresponding QLineEdit.
-_TAG_FIELDS = {
-    "title":       "lineEditTitle",
+# Tag key → attribute name on self.ui for the tag fields that suggest from the
+# vocabulary. Title is deliberately absent, for the same reason it is absent from
+# _LOCK_BUTTONS below: it is unique per clip, so there is nothing worth carrying
+# forward to the next segment and nothing worth suggesting back — a list of every
+# title ever typed is a list with one use each. It stays a plain QLineEdit.
+_SUGGESTED_TAG_FIELDS = {
     "network":     "lineEditNetwork",
     "block":       "lineEditBlock",
     "filler_type": "lineEditType",
@@ -311,6 +315,14 @@ _TAG_FIELDS = {
     "special":     "lineEditSpecial",
     "length":      "lineEditLength",
     "information": "lineEditInfo",
+}
+
+# Every tag field on the form, in form order. Title is the odd one out, so the
+# split is expressed once above rather than as two parallel lists to keep in
+# step: a new tag goes in _SUGGESTED_TAG_FIELDS and lands here automatically.
+_TAG_FIELDS = {
+    "title": "lineEditTitle",
+    **_SUGGESTED_TAG_FIELDS,
 }
 
 # Tag key → attribute name on self.ui for the corresponding lock toggle button.
@@ -339,8 +351,57 @@ _REQUIRED_TAG_FIELDS = {
     "time_period": "Time Period",
 }
 
-# Inline style for a required field that still needs a value.
-_REQUIRED_FIELD_STYLE = "QLineEdit { border: 1px solid #c0392b; }"
+# The border on a required field that still needs a value. Built into a
+# selector from the field's own class at use time, so changing a field's widget
+# class cannot leave this selecting nothing -- which would remove the warning
+# silently, since a non-matching QSS rule is not an error.
+_REQUIRED_FIELD_BORDER = "1px solid #c0392b"
+
+# Shown in a dropdown that has nothing in it yet, so an empty list reads as an
+# instruction rather than as a broken control.
+_EMPTY_VOCABULARY_HINT = "Populate this list by staging tags"
+
+
+def _field_text(field):
+    """The text a tag field currently holds.
+
+    One accessor for one reason: the tag fields are two different widget types,
+    and they disagree about both their accessors (`QLineEdit.text()`,
+    `QComboBox.currentText()`) and their change signals. Every reader goes
+    through here rather than each call site choosing one, so a widget type
+    changing breaks one function instead of the ones nobody looked at. The
+    editable combo's `currentText()` is the line edit's text when nothing in the
+    list matches, which is what the form means -- a typed value, not a selection.
+    """
+    if isinstance(field, QComboBox):
+        return field.currentText()
+    return field.text()
+
+
+def _field_change_signal(field):
+    """The signal a tag field emits when the user changes its text.
+
+    `QLineEdit` has no `editTextChanged` and `QComboBox` has no `textChanged`,
+    so the choice lives here. Either way it fires on typing *and*, for the combo,
+    on picking from the popup -- and the blockSignals pair around
+    `_write_tags_to_form` keeps the programmatic write out of it.
+    """
+    if isinstance(field, QComboBox):
+        return field.editTextChanged
+    return field.textChanged
+
+
+def _set_field_text(field, value):
+    """Write a tag field's text, whichever of the two widget types it is.
+
+    The counterpart to `_field_text`, for the same reason: `setEditText` exists
+    only on the combo, and setting one field with the other's setter is a
+    `AttributeError` at runtime rather than a mistake a reader can see.
+    """
+    if isinstance(field, QComboBox):
+        field.setEditText(value)
+    else:
+        field.setText(value)
 
 
 class MediaPlayer(QMainWindow):
@@ -446,7 +507,7 @@ class MediaPlayer(QMainWindow):
             getattr(self.ui, attr).toggled.connect(
                 lambda checked, k=key: self.on_toggle_lock(k, checked))
         for key, attr in _TAG_FIELDS.items():
-            getattr(self.ui, attr).textChanged.connect(
+            _field_change_signal(getattr(self.ui, attr)).connect(
                 lambda text, k=key: self.on_tag_edited(k, text))
 
         # Cache the authored stylesheets so the required-field outline can be
@@ -455,6 +516,7 @@ class MediaPlayer(QMainWindow):
             key: getattr(self.ui, _TAG_FIELDS[key]).styleSheet()
             for key in _REQUIRED_TAG_FIELDS
         }
+        self._init_tag_vocabulary()
 
         # Stage button doubles as the "unsaved changes" indicator: checkable +
         # enabled when dirty, unchecked + disabled when clean. The click action
@@ -548,7 +610,173 @@ class MediaPlayer(QMainWindow):
 
     def _read_tags_from_form(self):
         """Snapshot the current form values into a tags dict."""
-        return {key: getattr(self.ui, attr).text() for key, attr in _TAG_FIELDS.items()}
+        return {key: _field_text(getattr(self.ui, attr)) for key, attr in _TAG_FIELDS.items()}
+
+    def _configure_tag_combo(self, combo):
+        """Make one tag field an editable combo that suggests from the vocabulary.
+
+        The combo owns its own item list and refuses to grow one from typing:
+        the default insert policy turns every half-remembered value into a
+        permanent entry, which would quietly duplicate what the vocabulary file
+        is for and leave the user scrolling through their own typos.
+
+        The completer is what makes this more than a list to scroll: it narrows
+        as you type, case-insensitively and by substring, so `toon` finds
+        `Toonami`. `UnfilteredPopupCompletion` is the part that matters for
+        correctness -- the default inline mode rewrites what you typed to match
+        a completion, so pressing Enter commits `Toonami Kids` when you wrote
+        `Toonami`.
+
+        The popup is opened by calling the completer on each edit rather than by
+        `QComboBox.setCompleterPopupVisible(True)`, which PySide6 does not
+        expose. Signals are already blocked around every programmatic write, so
+        this fires for typing and for picking, and not for the form being
+        repopulated.
+        """
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        combo.setCompleter(combo.completer())
+        completer = combo.completer()
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
+        combo.editTextChanged.connect(
+            lambda text: completer.complete() if text and combo.count() else None
+        )
+
+    def _init_tag_vocabulary(self, path=None):
+        """Bind the tag dropdowns to a vocabulary file.
+
+        `path` exists for the widget tests, which point it at a temp folder so a
+        suite run cannot write to the real install root. Production leaves it
+        alone and gets the file beside the executable.
+
+        The most-recently-used order is per editor, not per process: a session
+        is one source video, and opening the next one should not inherit the
+        last one's habits at the top of every list.
+
+        Configuring the combo lives here rather than in a separate call so there
+        is one place that makes a tag field a dropdown at all -- a field that is
+        populated but not configured is a closed list, which looks fine right up
+        until someone tries to type.
+        """
+        for attr in _SUGGESTED_TAG_FIELDS.values():
+            self._configure_tag_combo(getattr(self.ui, attr))
+        self._vocabulary_path = path or vocabulary_path()
+        self._vocabulary = get_vocabulary(self._vocabulary_path)
+        self._recent_tag_values = {key: [] for key in _SUGGESTED_TAG_FIELDS}
+        self._refresh_tag_combos()
+
+    def _ordered_tag_values(self, namespace):
+        """The values to offer for a namespace: most recently used first.
+
+        "Recently" means this editing session -- one source video -- which is
+        why the order lives on the editor rather than in the vocabulary file.
+        The remainder is alphabetical so the list is deterministic and a value
+        the user has not touched this session is still findable.
+        """
+        recent = [
+            value for value in self._recent_tag_values.get(namespace, [])
+            if value
+        ]
+        available = self._vocabulary.values(namespace)
+        ordered = list(dict.fromkeys(recent))
+        ordered.extend(
+            value for value in available if value not in set(ordered)
+        )
+        return ordered
+
+    def _refresh_tag_combos(self):
+        """Repopulate every dropdown from the vocabulary, most recent first.
+
+        `QComboBox.clear()` empties the line edit as well as the item list and
+        emits change signals, so each field's text is saved and restored around
+        the refill. Without that, a Stage would erase what the user is in the
+        middle of typing into every *other* field.
+
+        This is called when a stage adds values, never on segment navigation:
+        repopulating while someone is mid-entry would eat the entry.
+        """
+        vocabulary = self._vocabulary
+        for key, attr in _SUGGESTED_TAG_FIELDS.items():
+            combo = getattr(self.ui, attr)
+            values = self._ordered_tag_values(key)
+            if not values and combo.count() == 1 and combo.itemText(0) == (
+                _EMPTY_VOCABULARY_HINT
+            ):
+                continue
+            # Saved and restored through the same accessor the form is read with, or a
+            # refresh would hand back a different value than _read_tags_from_form
+            # reports.
+            typed = _field_text(combo)
+            combo.blockSignals(True)
+            combo.clear()
+            for value in values:
+                combo.addItem(value)
+            if not values:
+                combo.addItem(_EMPTY_VOCABULARY_HINT)
+                # Disabled so it cannot be chosen as a tag by clicking it; the
+                # line edit is still free text, so a typed value is unaffected.
+                item = combo.model().item(0)
+                if item is not None:
+                    item.setEnabled(False)
+            combo.setEditText(typed)
+            combo.blockSignals(False)
+
+    def _note_recent_tags(self, tags):
+        """Move the values just committed to the front of their dropdowns.
+
+        Takes only the suggestable tags -- see `_commit_form_tags_to_model`,
+        which filters once and passes the result here and to `record_use`.
+
+        Returns whether any ordering changed. Using a value already in the
+        vocabulary changes no file, but it does change what the dropdown should
+        lead with -- so the refresh cannot hang off the vocabulary's own
+        "changed" answer, or re-using a value would leave the list showing
+        whatever the last *new* value put there.
+        """
+        moved = False
+        for key, value in tags.items():
+            value = value.strip()
+            if not value:
+                continue
+            recent = self._recent_tag_values.setdefault(key, [])
+            if recent[:1] == [value]:
+                continue
+            if value in recent:
+                recent.remove(value)
+            recent.insert(0, value)
+            moved = True
+        return moved
+
+    def _commit_form_tags_to_model(self):
+        """Write the form's tags into the model and note them as used.
+
+        The one place form-typed values become model tags. The boundary
+        operations deliberately pass the lock values rather than the form, so
+        these two call sites -- Stage and export preparation -- are the complete
+        definition of "a tag was used". That matters because the vocabulary is
+        fed here rather than from a keystroke: a form read mid-entry holds
+        `Cartoon N`, which is not a tag anybody means.
+
+        Both run after their own required-tag check, so a stage refused for a
+        missing required field records nothing.
+
+        The whole record goes to the model; only the *suggestable* tags go to
+        the vocabulary, because the file exists to populate dropdowns and title
+        has no dropdown. Filtering once here rather than in `record_use` keeps
+        `shared/vocabulary.py` a plain store that does not need to know which of
+        the tags are worth remembering.
+        """
+        tags = self._read_tags_from_form()
+        self.segment_model.segments[self.current_index]["tags"] = tags
+        suggested = {
+            key: value for key, value in tags.items()
+            if key in _SUGGESTED_TAG_FIELDS
+        }
+        reordered = self._note_recent_tags(suggested)
+        if record_use(suggested, self._vocabulary_path) or reordered:
+            self._refresh_tag_combos()
 
     def _write_tags_to_form(self, tags):
         """Populate the form from a tags dict.
@@ -556,18 +784,18 @@ class MediaPlayer(QMainWindow):
         On a still-unedited segment, locked tags are pre-filled from
         self.tag_locks (overriding any stored empty value), since locks are
         the only source of input for unedited segments. Signals are blocked
-        during setText so the dirty flag isn't set by the programmatic write.
+        around the write so the dirty flag isn't set by it.
         """
         unedited = not self._is_segment_edited(self.current_index)
         for key, attr in _TAG_FIELDS.items():
-            line_edit = getattr(self.ui, attr)
+            field = getattr(self.ui, attr)
             if unedited and key in self.tag_locks:
                 value = self.tag_locks[key]
             else:
                 value = tags.get(key, "")
-            line_edit.blockSignals(True)
-            line_edit.setText(value)
-            line_edit.blockSignals(False)
+            field.blockSignals(True)
+            _set_field_text(field, value)
+            field.blockSignals(False)
 
     def _is_segment_edited(self, index):
         """True if the segment has any non-empty tag value."""
@@ -585,7 +813,7 @@ class MediaPlayer(QMainWindow):
         for key, attr in _LOCK_BUTTONS.items():
             btn = getattr(self.ui, attr)
             locked = self.tag_locks.get(key)
-            current = getattr(self.ui, _TAG_FIELDS[key]).text()
+            current = _field_text(getattr(self.ui, _TAG_FIELDS[key]))
             desired = locked is not None and locked == current
             btn.blockSignals(True)
             btn.setChecked(desired)
@@ -600,7 +828,7 @@ class MediaPlayer(QMainWindow):
         this value" or "release the pin".
         """
         if checked:
-            self.tag_locks[key] = getattr(self.ui, _TAG_FIELDS[key]).text()
+            self.tag_locks[key] = _field_text(getattr(self.ui, _TAG_FIELDS[key]))
         else:
             self.tag_locks.pop(key, None)
         self._refresh_lock_buttons()
@@ -650,10 +878,10 @@ class MediaPlayer(QMainWindow):
         """
         missing = set(self._missing_required_labels())
         for key, label in _REQUIRED_TAG_FIELDS.items():
-            line_edit = getattr(self.ui, _TAG_FIELDS[key])
-            line_edit.setStyleSheet(
-                _REQUIRED_FIELD_STYLE if label in missing
-                else self._required_base_styles[key]
+            field = getattr(self.ui, _TAG_FIELDS[key])
+            field.setStyleSheet(
+                f"{type(field).__name__} {{ border: {_REQUIRED_FIELD_BORDER}; }}"
+                if label in missing else self._required_base_styles[key]
             )
 
     def _update_stage_button(self):
@@ -774,7 +1002,7 @@ class MediaPlayer(QMainWindow):
                 "exported.",
             )
             return
-        self.segment_model.segments[self.current_index]["tags"] = self._read_tags_from_form()
+        self._commit_form_tags_to_model()
         self.segment_model.save(sidecar_path(self.media_path))
         self.dirty = False
         self._update_stage_button()
@@ -844,9 +1072,7 @@ class MediaPlayer(QMainWindow):
                     "can be saved:\n- " + "\n- ".join(missing)
                 )
             if 0 <= self.current_index < self.segment_model.segment_count():
-                self.segment_model.segments[self.current_index]["tags"] = (
-                    self._read_tags_from_form()
-                )
+                self._commit_form_tags_to_model()
             validate_segment_model(self.segment_model)
             self.segment_model.save(sidecar_path(self.media_path))
             self.dirty = False

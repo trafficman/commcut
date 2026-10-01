@@ -4,12 +4,19 @@ The editor window itself needs libmpv and a real video, so tests bind the
 real ``MediaPlayer`` methods onto this stub, which supplies only the ``ui``
 namespace and the segment model. That keeps the code under test the shipped
 code rather than a re-implementation.
+
+The stubbed widgets are built from the *same classes* the ``.ui`` file
+declares -- the tag fields are editable ``QComboBox``, not ``QLineEdit``. That
+is not cosmetic: a stubbed ``QLineEdit`` would let the locks, required-tag and
+export suites stay green after the shipped window switched to combos, which is
+precisely the conversion they exist to catch.
 """
 
 import os
+import tempfile
 
 from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton
 
 from editor.editor import (
     ACTION_KEEP_EDITING,
@@ -17,7 +24,11 @@ from editor.editor import (
     MediaPlayer,
     _LOCK_BUTTONS,
     _REQUIRED_TAG_FIELDS,
+    _SUGGESTED_TAG_FIELDS,
     _TAG_FIELDS,
+    _field_change_signal,
+    _field_text,
+    _set_field_text,
 )
 from shared.mpv import BoundaryPreview
 from shared.segments import SegmentModel
@@ -283,6 +294,12 @@ class EditorStub:
     _refresh_lock_buttons = MediaPlayer._refresh_lock_buttons
     _refresh_required_fields = MediaPlayer._refresh_required_fields
     _read_tags_from_form = MediaPlayer._read_tags_from_form
+    _commit_form_tags_to_model = MediaPlayer._commit_form_tags_to_model
+    _configure_tag_combo = MediaPlayer._configure_tag_combo
+    _init_tag_vocabulary = MediaPlayer._init_tag_vocabulary
+    _ordered_tag_values = MediaPlayer._ordered_tag_values
+    _refresh_tag_combos = MediaPlayer._refresh_tag_combos
+    _note_recent_tags = MediaPlayer._note_recent_tags
     _update_stage_button = MediaPlayer._update_stage_button
     _inherited_tags = MediaPlayer._inherited_tags
     _missing_required_labels = MediaPlayer._missing_required_labels
@@ -322,8 +339,20 @@ class EditorStub:
     def __init__(self, segments, duration=120.0, media_path=None):
         ensure_qapp()
         self.ui = type("Ui", (), {})()
-        for attr in _TAG_FIELDS.values():
-            setattr(self.ui, attr, QLineEdit())
+        for key, attr in _SUGGESTED_TAG_FIELDS.items():
+            # Editable combos, matching editorwindow.ui. The suggestable tag
+            # fields are QComboBox in the shipped window, and a stubbed
+            # QLineEdit would let every test in the suite stay green while the
+            # real widget's API and required-field styling were both wrong.
+            field = QComboBox()
+            field.setEditable(True)
+            field.setInsertPolicy(QComboBox.NoInsert)
+            setattr(self.ui, attr, field)
+        for key, attr in _TAG_FIELDS.items():
+            if attr not in _SUGGESTED_TAG_FIELDS.values():
+                # Title: a plain QLineEdit, as in the shipped window, because
+                # a per-clip-unique tag has nothing to suggest.
+                setattr(self.ui, attr, QLineEdit())
         for attr in _LOCK_BUTTONS.values():
             button = QPushButton()
             button.setCheckable(True)  # matches checkable=true in editorwindow.ui
@@ -337,8 +366,16 @@ class EditorStub:
             getattr(self.ui, attr).toggled.connect(
                 lambda checked, k=key: self.on_toggle_lock(k, checked))
         for key, attr in _TAG_FIELDS.items():
-            getattr(self.ui, attr).textChanged.connect(
+            _field_change_signal(getattr(self.ui, attr)).connect(
                 lambda text, k=key: self.on_tag_edited(k, text))
+        # The tag dropdowns, pointed at a private temp folder per instance so a
+        # suite run cannot write to the real install root and no two editors
+        # share a vocabulary. The production path is covered by
+        # test_vocabulary.py, which has no widgets to get wrong.
+        self._init_tag_vocabulary(
+            os.path.join(tempfile.mkdtemp(prefix="commcut-editor-vocab-"),
+                         "vocabulary.json")
+        )
         for attr in ("clipEnd", "clipStart", "exportButton"):
             setattr(self.ui, attr, QPushButton())
         self.ui.clipIgnore.toggled.connect(self.on_toggle_ignore)
@@ -416,10 +453,27 @@ class EditorStub:
     # --- helpers ---
 
     def set_tag(self, key, value):
-        getattr(self.ui, _TAG_FIELDS[key]).setText(value)
+        _set_field_text(getattr(self.ui, _TAG_FIELDS[key]), value)
 
     def get_tag(self, key):
-        return getattr(self.ui, _TAG_FIELDS[key]).text()
+        return _field_text(getattr(self.ui, _TAG_FIELDS[key]))
+
+    def combo_for(self, key):
+        """The tag field's combo, so a test can read the offered values.
+
+        Raises for a field that is not a dropdown -- title -- which is the
+        assertion a test that pokes at this is really making.
+        """
+        combo = getattr(self.ui, _TAG_FIELDS[key])
+        assert isinstance(combo, QComboBox), f"{key} is not a dropdown"
+        return combo
+
+    def offered_values(self, key):
+        """The values a dropdown currently lists, in the order it lists them."""
+        return tuple(
+            self.combo_for(key).itemText(index)
+            for index in range(self.combo_for(key).count())
+        )
 
     def fill_required(self, **overrides):
         """Populate the four base record fields with usable defaults."""
@@ -450,8 +504,9 @@ class EditorStub:
         )
 
     def form(self):
-        return {k: getattr(self.ui, v).text() for k, v in _TAG_FIELDS.items()
-                if getattr(self.ui, v).text()}
+        return {k: _field_text(getattr(self.ui, v))
+                for k, v in _TAG_FIELDS.items()
+                if _field_text(getattr(self.ui, v))}
 
     def go_to(self, index):
         self.current_index = index

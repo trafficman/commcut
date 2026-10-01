@@ -84,7 +84,8 @@ planner), `ui_loader` (promoted widgets). Per-module detail:
 | [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, diagnostics |
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
-| [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the Settings scheme UI |
+| [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
+| [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, what counts as "used" |
 | [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the tag-driven release pipeline |
 | [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |
 | [docs/testing.md](docs/testing.md) | how to run the suite, the widget/`FakeBridge` harness, which test file covers what, the Qt/import gotchas |
@@ -185,6 +186,16 @@ diagnose. The linked document has the full reasoning.
     video, and it replaces rather than refuses, so `video present ⟹ record
     present` holds without any reconciliation. →
     [docs/naming-and-organization.md](docs/naming-and-organization.md#the-clip-record)
+13. **The tag vocabulary is advisory; nothing validates a tag against it.**
+    `shared/vocabulary.py` records values the user has used and the editor offers
+    them back as dropdowns, but a value absent from the file is always accepted
+    — the fields are editable combos, not closed lists. That is what lets the
+    file be an imperfect cache instead of a catalog, and it is the reason the
+    shipped defaults live in code: deleting `vocabulary.json` must stay a safe
+    troubleshooting step. Turning the list into a validator is the one change
+    that would make a tag untypeable. Only the nine suggestable tags go in the
+    file at all — Title is unique per clip, so it has no dropdown and no lock. →
+    [docs/tag-vocabulary.md](docs/tag-vocabulary.md)
 
 ## Working agreements
 

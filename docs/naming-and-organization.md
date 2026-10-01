@@ -316,6 +316,10 @@ No scan, no catalog, and no vocabulary dropdown. `parse_record_xml` and
 has a reader; nothing reads the library yet. Clips already exported have no
 records and cannot be backfilled from — the records *are* the source of truth.
 
+The editor's tag fields do offer previously-used values, from a separate file
+that is deliberately *not* derived from these records — see
+[tag-vocabulary.md](tag-vocabulary.md).
+
 ### The export runs off the GUI thread
 
 `on_export` splits in two. `_prepare_export` stays on the GUI thread, because it

@@ -41,11 +41,31 @@ Six test files bind the real `MediaPlayer` through `EditorStub`:
 `test_boundary_preview.py` additionally uses `FakeBridge`; `ensure_qapp` is
 imported more widely (`test_main_window.py`, `test_picker.py`).
 
+**The stub's widgets must match the classes the `.ui` file declares.** The nine
+suggestable tag fields are editable `QComboBox` and Title is a `QLineEdit`, both
+built in `EditorStub.__init__` rather than loaded from `editorwindow.ui`. That is
+not tidiness: a stubbed `QLineEdit` everywhere would let the locks, required-tag
+and export suites stay green after the shipped window switched to combos, which
+is exactly the conversion those suites exist to catch — and the required-field
+outline is the quietest version of it, because a QSS selector that matches
+nothing is not an error, it just removes the warning.
+
+For the same reason `test_editor_vocabulary.py` loads the real `.ui` through the
+app's own `UiLoader` and asserts the classes and properties there. The stub
+cannot see the form; only that test can.
+
+Each stub instance points its tag vocabulary at its own `mkdtemp` folder, so a
+suite run cannot write to the real `install_root()` and no two editors share
+state.
+
 ## Which file covers what
 
 | File | Covers |
 |---|---|
 | `test_boundary_preview.py` | the boundary peek: the seek sequence, and every rule that cancels a pending one |
+| `test_records.py` | the clip record: the XML format, its reader, and the atomic publish |
+| `test_vocabulary.py` | `vocabulary.json`: the shipped defaults, the unusable-file fallbacks, the dedup rule, and the atomic write |
+| `test_editor_vocabulary.py` | the tag dropdowns: what they offer, the most-recently-used ordering, what counts as "used", and that a refresh cannot eat a value being typed |
 | `test_editor_locks.py` | tag-lock display, pinned-value semantics, locked-only segment carry-over |
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
 | `test_end_boundary.py` | `place_end_boundary` — insert vs. move, and the refusal guards |

@@ -236,12 +236,57 @@ check reflects what the user is looking at. It gates three things:
   [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
 - `_refresh_required_fields()` outlines the missing fields in red. It is
   recomputed on every keystroke, on the Skip toggle, and on every segment
-  change, so the outline always states what Stage will demand right now.
+  change, so the outline always states what Stage will demand right now. The
+  selector is built from `type(field).__name__` rather than hardcoding
+  `QLineEdit`, because a QSS rule that matches nothing is not an error — the
+  outline just disappears.
 
 Note that the `.cmct` is still *expected* to contain empty tags for segments
 the user has never staged — lock materialization happens at export time, not
 at save time. The front-end rule applies to what a user actively stages and to
 the active segment on export, not to the whole file.
+
+## Tag suggestions
+
+Nine of the ten tag fields are **editable `QComboBox`es**, not line edits, and
+each offers values the user has already used. **Title is the exception** and
+stays a `QLineEdit`: it is unique per clip, so there is nothing to suggest and
+nothing worth locking — both are ways of saying the value belongs to one
+segment. `shared/vocabulary.py` owns the file and the values; the editor owns
+the widgets. See [tag-vocabulary.md](tag-vocabulary.md) for the format, the
+dedup rule, and why nothing validates against it.
+
+Three things the widget change makes load-bearing:
+
+- **Three helpers, because there are two widget types.** `_field_text`,
+  `_set_field_text` and `_field_change_signal` are the only places that know a
+  combo answers `currentText()`/`setEditText()`/`editTextChanged` and a line edit
+  answers `text()`/`setText()`/`textChanged`. Every call site goes through them;
+  picking the wrong one is an `AttributeError` at runtime, not a mistake a
+  reader can see.
+- **`NoInsert`.** The default insert policy adds every typed value as a
+  permanent item, which would grow the list from the user's typos instead of
+  from the vocabulary.
+- **Signals blocked around `_write_tags_to_form`.** It writes the form
+  programmatically on every segment change; without that it would mark the
+  editor dirty.
+
+`_SUGGESTED_TAG_FIELDS` names the nine dropdowns and `_TAG_FIELDS` is
+`{title, **_SUGGESTED_TAG_FIELDS}`, so the split is stated once and a new tag
+lands on the suggestable side automatically.
+
+`MediaPlayer._init_tag_vocabulary()` is the one place that turns a field into a
+dropdown: it configures the combo, resolves the file, and populates. Its
+optional `path` argument exists for the widget tests, which point it at a temp
+folder — production passes nothing and gets the file beside the executable.
+
+`_commit_form_tags_to_model()` is the one place form-typed values become model
+tags, and therefore the complete definition of "a tag was used". The boundary
+operations pass `_inherited_tags()` — the lock values — rather than the form,
+so the two call sites are **Stage** (`on_stage`) and **export preparation**
+(`_prepare_export`). A stage refused for a missing required field records
+nothing, because the check runs first. It writes all ten tags to the model and
+only the nine suggestable ones to the vocabulary.
 
 ## Conventions and gotchas
 
