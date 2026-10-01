@@ -28,6 +28,12 @@ from shared.exporting import (
     preflight_export_plan,
     validate_export_parent,
 )
+from shared.records import (
+    ClipRecord,
+    RecordError,
+    render_record_xml,
+    write_record_document,
+)
 from shared.segments import sidecar_path, SegmentModel
 
 
@@ -185,7 +191,21 @@ def _run_planned_clip(
     relative_parent: tuple[str, ...],
     crf: int,
     should_cancel=None,
+    before_commit=None,
 ) -> str:
+    """Encode one planned clip to a temporary file and commit it.
+
+    `before_commit()` runs once the encode has succeeded and the temporary file
+    has been re-verified, and immediately before the commit publishes it. That
+    is the only window in which a step that must precede the video -- the clip
+    record -- can run and still be undone by a failure: anything it raises
+    leaves the uncommitted temporary file to the `finally` below, so the clip
+    ends with nothing on disk at all.
+
+    It deliberately does not run before the encode. Writing a record for a clip
+    the encoder then failed would litter the library with a file per failure,
+    which is the one thing a library directory should not accumulate silently.
+    """
     parent = os.path.dirname(destination)
     validate_export_parent(export_root, relative_parent)
     descriptor, temporary_path = tempfile.mkstemp(
@@ -226,6 +246,8 @@ def _run_planned_clip(
             or (current_stat.st_dev, current_stat.st_ino) != temporary_identity
         ):
             raise RuntimeError("Temporary export file changed during ffmpeg execution")
+        if before_commit is not None:
+            before_commit()
         _commit_temporary_output(temporary_path, destination)
         return destination
     finally:
@@ -311,6 +333,16 @@ def execute_export_plan(
     current clip is terminated, its uncommitted temporary file is discarded,
     and it is recorded as cancelled rather than failed. Clips already
     committed stay committed.
+
+    Each clip's record is published in the window between a successful encode
+    and the commit of its video, and a record that cannot be published fails the
+    clip with nothing on disk. That ordering is what makes `video present`
+    imply `record present`: a record written for a clip the encoder failed is
+    litter in a library directory, while the reverse order would leave a gap
+    that a resumed run skips past forever, because a skip is decided by
+    destination. Replacement rather than no-clobber is deliberate too --
+    the preflight has already refused any destination whose video exists, so
+    overwriting the record for a free video slot cannot cost the user anything.
     """
     if not isinstance(plan, ExportPlan):
         raise TypeError("plan must be an ExportPlan")
@@ -361,6 +393,33 @@ def execute_export_plan(
             clip.relative_components[:-1],
         )
         destination = os.path.join(plan.export_root, *clip.relative_components)
+        record_path = os.path.join(
+            plan.export_root, *clip.record_relative_components
+        )
+        try:
+            # Rendered here, published below. A tag the record cannot hold is
+            # worth finding out about before spending an encode on a clip that
+            # is going to be refused, and an encode is the expensive part of
+            # this pipeline.
+            record_document = render_record_xml(
+                ClipRecord(
+                    source=os.path.basename(source_path),
+                    segment_index=clip.segment_index,
+                    start=clip.start,
+                    duration=clip.duration,
+                    tags=clip.tags,
+                )
+            )
+        except RecordError as error:
+            failures.append(
+                ExportClipFailure(
+                    segment_index=clip.segment_index,
+                    destination=clip.relative_path,
+                    message=str(error),
+                )
+            )
+            continue
+
         try:
             written.append(
                 _run_planned_clip(
@@ -372,6 +431,9 @@ def execute_export_plan(
                     clip.relative_components[:-1],
                     crf,
                     should_cancel=should_cancel,
+                    before_commit=lambda: write_record_document(
+                        record_path, record_document
+                    ),
                 )
             )
             written_relative.append(clip.relative_path)

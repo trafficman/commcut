@@ -68,6 +68,10 @@ Detail in [scanner.md](scanner.md).
   creates their directory trees, and frame-accurately re-encodes each named MP4
   (libx264/aac, not `-c copy`). Unique temporary files and no-clobber commits
   prevent overwrites; per-clip failures are returned as a partial result.
+- The clip record (`shared/records.py`): every exported clip gets a `<stem>.cnfo`
+  beside its video holding its raw tags and the segment it came from, rendered
+  between a successful encode and the commit of the video. The filename and
+  folder are a projection of the tags, and nothing parses a filename back.
 
 Detail in [naming-and-organization.md](naming-and-organization.md).
 
@@ -154,6 +158,19 @@ The full vision in `README.md` has three pieces; two are not started:
   `shared/sources.py:import_folder()` and the export root in
   `shared/exporting.py` are the two places that resolve them, and the picker's
   folder label follows `import_folder()` automatically.
+- **Reading the library back.** The records exist and `shared/records.py` can
+  parse them, but nothing scans `export/` yet: there is no catalog, no
+  autocomplete of tag values, and no browser. The intended shape is a scan that
+  builds an in-memory catalog on first use rather than at launch — the export
+  root becomes user-configurable, and a launch-time walk of a network share or a
+  USB stick is the thing that hangs the app before a window appears. The scan
+  rule the writer is built around is **a record with a sibling video is a clip**,
+  and anything under `export/` without a record is ignored. Tag values then come
+  from the catalog rather than a separate vocabulary file, since the catalog can
+  already be asked; a separate list is only worth keeping for values typed for a
+  clip that was skipped before it ever reached the library. The **Rename Wizard**
+  is the other consumer: it reads tags from a record and rewrites the path, and
+  never the reverse. → [naming-and-organization.md](naming-and-organization.md#the-clip-record)
 
 ## Known gaps and traps
 

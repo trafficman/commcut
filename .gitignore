@@ -13,6 +13,7 @@ commcut.log
 *.mkv
 *.cmct
 *.json
+*.cnfo
 
 # Agent harness
 .kilo/

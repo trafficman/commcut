@@ -2,14 +2,17 @@
 
 The shared tag syntax, parser, and conditional renderer live in
 ``shared.scheme``.  This module keeps filename-specific requirements and the
-public filename rendering API while re-exporting the shared tag helpers.
+public filename rendering API while re-exporting the shared tag helpers, and it
+owns the name of the clip record written beside each exported clip.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from shared.paths import sanitize_path_component
+from shared.records import RECORD_EXTENSION
 from shared.scheme import (
     CANONICAL_TAG_KEYS,
     GroupNode,
@@ -112,6 +115,36 @@ def sanitize_filename_stem(stem: str, extension: str = ".mp4") -> str:
             f"Filename exceeds {MAX_FILENAME_BYTES} UTF-8 bytes"
         )
     return filename
+
+
+def record_filename(filename: str, extension: str = RECORD_EXTENSION) -> str:
+    """The clip record's filename, derived from an exported clip's filename.
+
+    The record is published before the video it describes, so a stem it cannot
+    name is a stem that has to be refused while planning rather than discovered
+    after an encode. The limit is checked against the record's own extension:
+    `.cnfo` is one character longer than `.mp4`, so a stem of exactly 251 bytes
+    is a legal video filename and an illegal record filename. Checking each name
+    against its own extension alone would leave that one byte as a trap.
+
+    `filename` is expected to be an already-sanitized, already-checked video
+    filename; the extension is replaced rather than the whole name re-derived,
+    so this cannot become a second implementation of the stem policy above.
+    """
+    if not isinstance(filename, str) or not filename:
+        raise FilenameSchemeError("Video filename must be a non-empty string")
+    if not isinstance(extension, str) or not extension.startswith("."):
+        raise FilenameSchemeError("Output extension must begin with a dot")
+    if any(character in extension for character in '/\\:*?"<>|'):
+        raise FilenameSchemeError("Output extension contains invalid path characters")
+
+    stem, _ = os.path.splitext(filename)
+    record = f"{stem}{extension}"
+    if len(record.encode("utf-8")) > MAX_FILENAME_BYTES:
+        raise FilenameSchemeError(
+            f"Clip record filename exceeds {MAX_FILENAME_BYTES} UTF-8 bytes"
+        )
+    return record
 
 
 def render_filename(scheme: str, tags: dict[str, str]) -> str:

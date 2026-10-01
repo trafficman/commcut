@@ -15,6 +15,7 @@ from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
     compile_filename_scheme,
+    record_filename,
     render_compiled_filename,
     sanitize_filename_stem,
 )
@@ -27,6 +28,7 @@ from shared.paths import (
     render_folder_components,
     sanitize_path_component,
 )
+from shared.records import RECORD_EXTENSION
 from shared.segments import SegmentModel
 from shared.scheme import canonical_tag_name
 
@@ -61,6 +63,14 @@ class PlannedExportClip:
     start: float
     duration: float
     relative_components: tuple[str, ...]
+    #: The clip's canonical tags, sorted. The record written beside the video
+    #: is rendered from exactly these, so the file a user reads and the name
+    #: the user sees cannot come from two different dicts.
+    tags: tuple[tuple[str, str], ...]
+    #: Where the clip record goes: the video's components with the last one
+    #: replaced. Resolved here rather than at write time so a stem the record
+    #: cannot name refuses the batch before anything encodes.
+    record_relative_components: tuple[str, ...]
 
     @property
     def filename(self) -> str:
@@ -69,6 +79,10 @@ class PlannedExportClip:
     @property
     def relative_path(self) -> str:
         return "/".join(self.relative_components)
+
+    @property
+    def record_relative_path(self) -> str:
+        return "/".join(self.record_relative_components)
 
 
 @dataclass(frozen=True)
@@ -320,6 +334,81 @@ def _existing_destination_conflicts(
     return conflicts
 
 
+def _checked_relative_components(
+    components: tuple[str, ...],
+    label: str,
+    required_extension: str,
+    errors: list[str],
+) -> list[str] | None:
+    """Validate one relative path, appending every problem found to `errors`.
+
+    Returns the components as a list, or None when the path is too malformed for
+    the checks that follow to say anything useful about it. One implementation
+    for the video and its record is the point: two copies of the component
+    policy would eventually disagree about what a safe destination is.
+    """
+    if not isinstance(components, tuple) or not components:
+        errors.append(f"{label} has invalid relative components")
+        return None
+    safe_components: list[str] = []
+    for component in components:
+        if not isinstance(component, str) or not component:
+            errors.append(f"{label} has an empty path component")
+            continue
+        if os.path.isabs(component) or os.path.splitdrive(component)[0]:
+            errors.append(f"{label} has an absolute path component")
+            continue
+        try:
+            sanitized = sanitize_path_component(component)
+        except (TypeError, ValueError) as error:
+            errors.append(f"{label} has an unsafe component: {error}")
+            continue
+        if sanitized != component:
+            errors.append(f"{label} has an unsanitized path component")
+            continue
+        safe_components.append(component)
+    if len(safe_components) != len(components):
+        return None
+    if not components[-1].endswith(required_extension):
+        errors.append(f"{label} does not end in {required_extension}")
+    return safe_components
+
+
+def _validate_record_components(
+    clip: PlannedExportClip,
+    label: str,
+    root: str,
+    errors: list[str],
+) -> None:
+    """Check a clip record's destination as strictly as the video's.
+
+    The record has to sit beside its clip: a catalog entry is a record with a
+    sibling video, so a record written anywhere else is one nothing will ever
+    find. That makes the shared parent part of the invariant rather than a
+    convention, and `plan_export` satisfies it by construction -- this is what
+    catches a hand-built plan that does not.
+    """
+    record_components = clip.record_relative_components
+    record_label = f"{label} record"
+    if _checked_relative_components(
+        record_components, record_label, RECORD_EXTENSION, errors
+    ) is None:
+        return
+
+    if record_components[:-1] != clip.relative_components[:-1]:
+        errors.append(f"{record_label} is not beside its clip")
+        return
+
+    destination = os.path.abspath(os.path.join(root, *record_components))
+    if os.path.commonpath((root, destination)) != root:
+        errors.append(f"{record_label} escapes the export root")
+        return
+    if len("/".join(record_components).encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES:
+        errors.append(
+            f"{record_label} exceeds {MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
+        )
+
+
 def _validate_plan_structure(plan: ExportPlan) -> str:
     errors: list[str] = []
     root = _validate_export_root(plan.export_root)
@@ -357,37 +446,12 @@ def _validate_plan_structure(plan: ExportPlan) -> str:
         elif numeric_duration <= 0:
             errors.append(f"Plan entry {position} has a non-positive duration")
 
+        label = f"Plan entry {position}"
         components = clip.relative_components
-        if not isinstance(components, tuple) or not components:
-            errors.append(f"Plan entry {position} has invalid relative components")
+        if _checked_relative_components(
+            components, label, OUTPUT_EXTENSION, errors
+        ) is None:
             continue
-        safe_components: list[str] = []
-        for component in components:
-            if not isinstance(component, str) or not component:
-                errors.append(f"Plan entry {position} has an empty path component")
-                continue
-            if os.path.isabs(component) or os.path.splitdrive(component)[0]:
-                errors.append(
-                    f"Plan entry {position} has an absolute path component"
-                )
-                continue
-            try:
-                sanitized = sanitize_path_component(component)
-            except (TypeError, ValueError) as error:
-                errors.append(f"Plan entry {position} has an unsafe component: {error}")
-                continue
-            if sanitized != component:
-                errors.append(
-                    f"Plan entry {position} has an unsanitized path component"
-                )
-                continue
-            safe_components.append(component)
-        if len(safe_components) != len(components):
-            continue
-        if not components[-1].endswith(OUTPUT_EXTENSION):
-            errors.append(
-                f"Plan entry {position} does not end in {OUTPUT_EXTENSION}"
-            )
 
         destination = os.path.abspath(os.path.join(root, *components))
         if os.path.commonpath((root, destination)) != root:
@@ -407,6 +471,8 @@ def _validate_plan_structure(plan: ExportPlan) -> str:
                 f"Plan entry {position} exceeds "
                 f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
             )
+
+        _validate_record_components(clip, label, root, errors)
 
     directory_owners: dict[tuple[str, ...], tuple[str, ...]] = {}
     for position, components in safe_plan_entries:
@@ -565,13 +631,19 @@ def plan_export(
             folder_components = render_folder_components(folder_scheme, tags)
             stem = render_compiled_filename(filename_scheme, tags)
             filename = sanitize_filename_stem(stem, OUTPUT_EXTENSION)
+            record = record_filename(filename, RECORD_EXTENSION)
         except (ExportPlanError, FilenameSchemeError, FolderSchemeError, ValueError) as error:
             errors.append(str(error))
             continue
 
         relative_components = (*folder_components, filename)
+        record_components = (*folder_components, record)
         relative_text = "/".join(relative_components)
-        if len(relative_text.encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES:
+        record_text = "/".join(record_components)
+        if (
+            len(relative_text.encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES
+            or len(record_text.encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES
+        ):
             errors.append(
                 f"Segment {segment_index + 1} relative destination exceeds "
                 f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
@@ -583,6 +655,8 @@ def plan_export(
             start=float(start),
             duration=float(duration),
             relative_components=relative_components,
+            tags=tuple(sorted(tags.items())),
+            record_relative_components=record_components,
         )
         if key in skip_keys:
             skipped.append(clip)

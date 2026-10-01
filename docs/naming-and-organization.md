@@ -6,8 +6,8 @@ segment into a file on disk, and the Settings window that edits the two
 schemes.
 
 Applies to: `shared/scheme.py`, `shared/naming.py`, `shared/paths.py`,
-`shared/exporting.py`, `shared/ffmpeg.py`, `settings/settings.py`,
-`settings/settingswindow.ui`.
+`shared/exporting.py`, `shared/ffmpeg.py`, `shared/records.py`,
+`settings/settings.py`, `settings/settingswindow.ui`.
 
 Related: [segment-model.md](segment-model.md) (the tags and the required-field
 rule), [packaging.md](packaging.md) (the export root beside the exe).
@@ -211,6 +211,111 @@ failures are returned as a partial result (`ExportExecutionResult` with
 Still pending is the smart-cut (keyframe-bracketed lossless copy +
 partial-keyframe transcode + concat) version — see [status.md](status.md).
 
+## The clip record
+
+Every exported clip gets a `<stem>.cnfo` beside its `<stem>.mp4`. The record
+holds the clip's tags and the segment it was cut from; **the filename and
+folder are a projection of those tags** under the two schemes. That direction is
+one-way on purpose — sanitation, `{a,b}` fallbacks and `[{a}|{b}]` OR groups all
+make rendering lossy, so nothing recovers a tag from a path. Whatever needs a
+clip's tags reads the record. **There is no reverse parser and there must never
+be one**; that shortcut is reachable in a year and it does not work.
+
+`shared/records.py` owns the format, `shared/naming.py:record_filename` owns the
+name, and `shared/ffmpeg.py:execute_export_plan` does the writing.
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<commcut-clip version="1">
+  <source>Cartoon Network - April Fools 2000.mp4</source>
+  <segment index="7" start="314.2" duration="29.9" />
+  <tag key="title">Toonami Worlds Finest</tag>
+  <tag key="network">Cartoon Network</tag>
+  <tag key="filler_type">Promo</tag>
+</commcut-clip>
+```
+
+### Choices behind that shape
+
+**`.cnfo`, not `.nfo`.** The `.nfo` extension belongs to media servers, which
+scan for it and expect a schema commcut does not write. A file in the wrong
+dialect is worse than no file, because the tool may act on its absent keys. The
+distinct extension keeps them out of the folder and leaves a real `.nfo` free
+for a derived compatibility file if one is ever wanted.
+
+**`version` is an attribute, and it is not `shared/version.py:VERSION`.** It is
+a schema integer owned by `shared/records.py:RECORD_SCHEMA_VERSION`. A record
+outlives the release that wrote it, and a migration has to be able to name what
+it is migrating from. `parse_record_xml` refuses a version above the one it
+implements, and treats a missing attribute as `1`. It also refuses an unknown
+element or tag key rather than dropping data silently.
+
+**`<tag key="...">`, not one element per tag.** The tag vocabulary already has
+an owner — `shared/scheme.py:CANONICAL_TAG_KEYS`, checked by
+`canonical_tag_name`. Named elements would duplicate it into the file format, so
+adding a tag would mean a schema bump. Values are **raw**, sorted, and empty
+ones omitted; a missing tag and an empty one mean the same thing.
+
+**`<source>` is a basename.** A record travels with its clip, and the user's
+folder layout is not part of the clip's identity.
+
+**No stored path.** It is a pure function of the tags and the two schemes, so
+persisting it would mean a second thing to go stale the moment a scheme changes.
+Recompute it.
+
+### Ordering, and what a failure leaves
+
+The record is **rendered before the encode and published in the window between a
+successful encode and the commit of the video** (`_run_planned_clip`'s
+`before_commit`). Both halves matter:
+
+- rendering early refuses a clip before spending an encode on it, and an encode
+  is the expensive part;
+- publishing late means a clip the encoder failed leaves **nothing** — not a
+  video, not a record, and the temporary file goes with the `finally` that has
+  always cleaned it up.
+
+The rule that makes the ordering safe is: **a catalog entry is a record with a
+sibling video**. So `video present ⟹ record present`, and the only recoverable
+state is a record with no video, which a scan ignores and the next run replaces.
+
+**Replacement, not no-clobber.** The preflight has already refused any
+destination whose *video* exists, so the video slot is free and overwriting the
+record for it cannot destroy anything of the user's. The no-clobber rule would
+instead make a re-export fail on the orphan a previous failure left behind — the
+delete-a-clip-and-cut-it-again case, which is exactly when the user is most
+likely to retry. An orphan record also never blocks anything: the
+existing-destination check keys on the `.mp4` path and never sees it.
+
+A record that cannot be published fails **its own clip** with nothing on disk,
+and a value XML cannot represent fails it before the encode. `ElementTree`
+escapes `&`, `<` and `>` but emits control characters raw, producing a file its
+own parser then refuses — and a carriage return, while legal XML, is normalized
+to a line feed on the way back in, which would drift the tag silently. Both are
+refused by `render_record_xml`, naming the tag.
+
+### Where the name comes from
+
+`shared/naming.py:record_filename` derives the record's name from the video's,
+and the record's destination is resolved in `plan_export` and validated in
+`_validate_plan_structure` — including that it **sits beside its clip**. A record
+written anywhere else is one nothing will ever find, so the shared parent is part
+of the invariant rather than a convention, and `plan_export` satisfies it by
+construction.
+
+`.cnfo` is one character longer than `.mp4`, and `sanitize_filename_stem` counts
+the extension in its 255-byte limit, so there is exactly one stem length that is
+a legal video filename and an illegal record name. Checking each name against its
+own extension would leave that as a trap; `record_filename` checks the record's,
+and `plan_export` refuses the batch for it before anything encodes.
+
+### What is not built
+
+No scan, no catalog, and no vocabulary dropdown. `parse_record_xml` and
+`load_record` exist so the format can be round-tripped and so the version field
+has a reader; nothing reads the library yet. Clips already exported have no
+records and cannot be backfilled from — the records *are* the source of truth.
+
 ### The export runs off the GUI thread
 
 `on_export` splits in two. `_prepare_export` stays on the GUI thread, because it
@@ -399,8 +504,10 @@ editor for folder schemes:
 
 `tests/test_scheme.py` (strict parsing), `tests/test_paths.py` (folder grammar
 and sanitation), `tests/test_naming.py` (filename rendering, including the
-README pattern), `tests/test_settings.py` (the window, previews, atomic save,
+README pattern), `tests/test_records.py` (the record format, its reader, and how
+it is published), `tests/test_settings.py` (the window, previews, atomic save,
 and the help panels), `tests/test_exporting.py` (settings, planning, preflight,
-resume skips), `tests/test_ffmpeg.py` (plan execution, progress, cancel,
-partial failures), and `tests/test_editor_export.py` (the worker, the progress
-dialog, cancel, resume, and closing mid-run).
+resume skips, and the record's destination), `tests/test_ffmpeg.py` (plan
+execution, progress, cancel, partial failures, and the record beside each clip),
+and `tests/test_editor_export.py` (the worker, the progress dialog, cancel,
+resume, and closing mid-run).

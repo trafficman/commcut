@@ -1,6 +1,7 @@
 """Tests for named-export settings, destination planning, and preflight."""
 
 import json
+import os
 
 import pytest
 
@@ -16,6 +17,7 @@ from shared.exporting import (
     preflight_export_plan,
 )
 from shared.paths import DEFAULT_FOLDER_SCHEME
+from shared.records import RECORD_EXTENSION
 from shared.segments import SegmentModel
 
 
@@ -217,17 +219,38 @@ def test_plan_export_rejects_existing_destination(
         plan_export(make_model(tags_list=[required_tags]), schemes, str(root))
 
 
+def make_clip(segment_index=0, start=0.0, duration=1.0, components=None,
+              record_components=None, tags=()):
+    """A hand-built clip, for the tests that exercise the preflight directly.
+
+    `plan_export` is the only thing that should produce a real plan; these tests
+    need to hand it one that `plan_export` could never emit.
+    """
+    from shared.exporting import PlannedExportClip
+
+    if components is None:
+        components = ("Network", "Clip.mp4")
+    if record_components is None:
+        record_components = (
+            *components[:-1],
+            os.path.splitext(components[-1])[0] + RECORD_EXTENSION,
+        )
+    return PlannedExportClip(
+        segment_index=segment_index,
+        start=start,
+        duration=duration,
+        relative_components=components,
+        tags=tags,
+        record_relative_components=record_components,
+    )
+
+
 def test_preflight_rejects_forged_unsafe_plan(tmp_path):
-    from shared.exporting import ExportPlan, PlannedExportClip
+    from shared.exporting import ExportPlan
 
     plan = ExportPlan(
         export_root=str(tmp_path / "library"),
-        clips=(PlannedExportClip(
-            segment_index=0,
-            start=0.0,
-            duration=1.0,
-            relative_components=("..", "outside.mp4"),
-        ),),
+        clips=(make_clip(components=("..", "outside.mp4")),),
     )
 
     with pytest.raises(ExportPlanError, match="unsafe component"):
@@ -235,7 +258,7 @@ def test_preflight_rejects_forged_unsafe_plan(tmp_path):
 
 
 def test_preflight_rejects_forged_empty_and_duplicate_plans(tmp_path):
-    from shared.exporting import ExportPlan, PlannedExportClip
+    from shared.exporting import ExportPlan
 
     with pytest.raises(ExportPlanError, match="contains no clips"):
         preflight_export_plan(ExportPlan(
@@ -243,12 +266,7 @@ def test_preflight_rejects_forged_empty_and_duplicate_plans(tmp_path):
             clips=(),
         ))
 
-    duplicate = PlannedExportClip(
-        segment_index=0,
-        start=0.0,
-        duration=1.0,
-        relative_components=("Network", "Clip.mp4"),
-    )
+    duplicate = make_clip()
     plan = ExportPlan(
         export_root=str(tmp_path / "library"),
         clips=(duplicate, duplicate),
@@ -258,19 +276,13 @@ def test_preflight_rejects_forged_empty_and_duplicate_plans(tmp_path):
 
 
 def test_preflight_rejects_destination_used_as_parent_directory(tmp_path):
-    from shared.exporting import ExportPlan, PlannedExportClip
+    from shared.exporting import ExportPlan
 
-    parent_file = PlannedExportClip(
-        segment_index=0,
-        start=0.0,
-        duration=1.0,
-        relative_components=("Network", "Clip.mp4"),
-    )
-    child_file = PlannedExportClip(
+    parent_file = make_clip()
+    child_file = make_clip(
         segment_index=1,
         start=1.0,
-        duration=1.0,
-        relative_components=("Network", "Clip.mp4", "Child.mp4"),
+        components=("Network", "Clip.mp4", "Child.mp4"),
     )
     plan = ExportPlan(
         export_root=str(tmp_path / "library"),
@@ -278,6 +290,163 @@ def test_preflight_rejects_destination_used_as_parent_directory(tmp_path):
     )
 
     with pytest.raises(ExportPlanError, match="parent directory"):
+        preflight_export_plan(plan)
+
+
+# ---------------------------------------------------------------------------
+# The clip record's destination
+# ---------------------------------------------------------------------------
+
+def test_the_plan_carries_the_tags_the_record_is_written_from(schemes, tmp_path):
+    """The record and the filename have to come from one canonicalization, or
+    they can disagree about what a clip is."""
+    root = tmp_path / "library"
+    tags = {
+        "title": "Worlds Finale",
+        "network": "Cartoon Network",
+        "filler_type": "Promo",
+        "time_period": "2000s",
+        "block": "Toonami",
+    }
+
+    plan = plan_export(make_model(tags_list=[tags]), schemes, str(root))
+
+    assert plan.clips[0].tags == tuple(sorted(tags.items()))
+
+
+def test_the_record_sits_beside_the_clip_it_describes(schemes, required_tags,
+                                                      tmp_path):
+    root = tmp_path / "library"
+
+    plan = plan_export(make_model(tags_list=[required_tags]), schemes, str(root))
+    clip = plan.clips[0]
+
+    assert clip.record_relative_components[:-1] == clip.relative_components[:-1]
+    assert clip.record_relative_components[-1] == "Worlds Finale" + RECORD_EXTENSION
+    assert clip.record_relative_path == clip.relative_path.replace(
+        ".mp4", RECORD_EXTENSION
+    )
+
+
+def test_a_skipped_clip_still_carries_its_record_destination(
+    schemes, required_tags, tmp_path
+):
+    """A resume never revisits a skipped clip, so its record destination has to
+    be on the plan entry -- it is the first run that wrote it."""
+    root = tmp_path / "library"
+    model = make_model(
+        duration=20.0,
+        tags_list=[required_tags, {**required_tags, "title": "Second"}],
+    )
+    first = plan_export(
+        make_model(tags_list=[required_tags]), schemes, str(root)
+    ).clips[0].relative_path
+
+    plan = plan_export(model, schemes, str(root), skip_destinations=(first,))
+
+    assert len(plan.skipped) == 1
+    assert plan.skipped[0].record_relative_components[-1].endswith(RECORD_EXTENSION)
+    assert plan.clips[0].record_relative_components[-1].endswith(RECORD_EXTENSION)
+
+
+def test_a_stem_the_record_cannot_name_refuses_the_batch(tmp_path):
+    """`.cnfo` is one character longer than `.mp4`, so there is exactly one stem
+    length that is a legal video filename and an illegal record name. Refusing
+    it here means the batch reports it before anything encodes."""
+    root = tmp_path / "library"
+    stem = "T" * 251
+    model = make_model(tags_list=[{
+        "title": stem,
+        "network": "Cartoon Network",
+        "filler_type": "Promo",
+        "time_period": "2000s",
+    }])
+    schemes = ExportSchemes(file_scheme="{title}",
+                            folder_scheme=DEFAULT_FOLDER_SCHEME)
+
+    assert len(stem + ".mp4") <= 255, "the fixture must be legal as a video name"
+
+    with pytest.raises(ExportPlanError, match="Clip record filename exceeds"):
+        plan_export(model, schemes, str(root))
+
+
+def test_a_stem_that_fits_both_names_is_accepted(tmp_path):
+    root = tmp_path / "library"
+    stem = "T" * 250
+    model = make_model(tags_list=[{
+        "title": stem,
+        "network": "Cartoon Network",
+        "filler_type": "Promo",
+        "time_period": "2000s",
+    }])
+    schemes = ExportSchemes(file_scheme="{title}",
+                            folder_scheme=DEFAULT_FOLDER_SCHEME)
+
+    plan = plan_export(model, schemes, str(root))
+
+    assert plan.clips[0].record_relative_components[-1].endswith(RECORD_EXTENSION)
+
+
+def test_preflight_rejects_a_record_written_outside_its_clips_folder(tmp_path):
+    """A record beside nothing is a record nothing will ever find."""
+    from shared.exporting import ExportPlan
+
+    plan = ExportPlan(
+        export_root=str(tmp_path / "library"),
+        clips=(make_clip(record_components=("Elsewhere", "Clip" + RECORD_EXTENSION)),),
+    )
+
+    with pytest.raises(ExportPlanError, match="record is not beside its clip"):
+        preflight_export_plan(plan)
+
+
+def test_preflight_rejects_a_record_named_with_the_wrong_extension(tmp_path):
+    from shared.exporting import ExportPlan
+
+    plan = ExportPlan(
+        export_root=str(tmp_path / "library"),
+        clips=(make_clip(record_components=("Network", "Clip.mp4")),),
+    )
+
+    with pytest.raises(ExportPlanError, match=f"does not end in {RECORD_EXTENSION}"):
+        preflight_export_plan(plan)
+
+
+def test_preflight_rejects_an_unsafe_record_component(tmp_path):
+    from shared.exporting import ExportPlan
+
+    plan = ExportPlan(
+        export_root=str(tmp_path / "library"),
+        clips=(make_clip(record_components=("Network", "...")),),
+    )
+
+    with pytest.raises(ExportPlanError, match="unsafe component"):
+        preflight_export_plan(plan)
+
+
+def test_preflight_rejects_a_record_name_the_policy_would_rewrite(tmp_path):
+    """`CON` becomes `_CON` on every render, so a plan asking for `CON` is
+    asking for a file the export would never write."""
+    from shared.exporting import ExportPlan
+
+    plan = ExportPlan(
+        export_root=str(tmp_path / "library"),
+        clips=(make_clip(record_components=("Network", "CON")),),
+    )
+
+    with pytest.raises(ExportPlanError, match="unsanitized path component"):
+        preflight_export_plan(plan)
+
+
+def test_preflight_rejects_a_plan_entry_that_is_not_a_clip(tmp_path):
+    from shared.exporting import ExportPlan
+
+    plan = ExportPlan(
+        export_root=str(tmp_path / "library"),
+        clips=("not a clip",),
+    )
+
+    with pytest.raises(ExportPlanError, match="not a PlannedExportClip"):
         preflight_export_plan(plan)
 
 

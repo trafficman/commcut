@@ -176,6 +176,15 @@ diagnose. The linked document has the full reasoning.
     where the child joins the developer's terminal. The rule's one owner is
     `shared/environment.py:no_console_kwargs`; `tests/test_frozen_mode.py` sweeps
     the app's modules and fails without it. → [docs/packaging.md](docs/packaging.md)
+12. **A clip's tags live in its record; the filename is a projection of them.**
+    Every export writes a `<stem>.cnfo` beside the video, and rendering the name
+    under the two schemes is a one-way function — sanitation, `{a,b}` fallbacks
+    and `[{a}|{b}]` OR groups all make it lossy. Nothing parses a filename back
+    into tags, ever; the Rename Wizard reads the record and rewrites the path.
+    The record is published between a successful encode and the commit of the
+    video, and it replaces rather than refuses, so `video present ⟹ record
+    present` holds without any reconciliation. →
+    [docs/naming-and-organization.md](docs/naming-and-organization.md#the-clip-record)
 
 ## Working agreements
 

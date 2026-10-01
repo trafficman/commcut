@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared import ffmpeg as shared_ffmpeg
 from shared.exporting import ExportPlan, ExportPlanError, ExportSchemes, PlannedExportClip
 from shared.ffmpeg import check_video_encoder, execute_export_plan, export_named_model
 from shared.paths import DEFAULT_FOLDER_SCHEME
+from shared.records import RECORD_EXTENSION, RecordError, load_record
 from shared.segments import SegmentModel
 
 
@@ -35,7 +37,20 @@ def source_path(tmp_path):
     return str(path)
 
 
-def make_plan(root, clips):
+def make_plan(root, clips, tags=None):
+    """Build a plan the way `plan_export` does, from bare components.
+
+    The record path is derived rather than passed so the tests below can keep
+    describing clips by the one name they care about, and so a test that never
+    thinks about records still exercises the same path the export takes.
+    """
+    if tags is None:
+        tags = (
+            ("filler_type", "Promo"),
+            ("network", "Cartoon Network"),
+            ("time_period", "2000s"),
+            ("title", "Clip"),
+        )
     return ExportPlan(
         export_root=str(root),
         clips=tuple(
@@ -44,6 +59,11 @@ def make_plan(root, clips):
                 start=float(start),
                 duration=float(duration),
                 relative_components=components,
+                tags=tags,
+                record_relative_components=(
+                    *components[:-1],
+                    os.path.splitext(components[-1])[0] + RECORD_EXTENSION,
+                ),
             )
             for segment_index, start, duration, components in clips
         ),
@@ -531,6 +551,215 @@ def test_the_export_directory_follows_the_install_root(tmp_path, monkeypatch):
     monkeypatch.setattr("shared.ffmpeg.install_root", lambda: str(tmp_path))
 
     assert _export_dir() == os.path.join(str(tmp_path), "export")
+
+
+# ---------------------------------------------------------------------------
+# The clip record written beside each export
+# ---------------------------------------------------------------------------
+
+def test_a_successful_export_writes_a_record_beside_every_clip(
+    tmp_path, source_path, monkeypatch
+):
+    """The record is the clip's tags. It has to be there, beside the video, with
+    the tags the filename was rendered from and the segment it came from."""
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 4.5, ("Network", "Promo", "2000s", "First.mp4")),
+            (1, 4.5, 2.0, ("Network", "Promo", "2000s", "Second.mp4")),
+        ],
+        tags=(("filler_type", "Promo"), ("network", "Cartoon Network"),
+              ("time_period", "2000s"), ("title", "Toonami Worlds Finest")),
+    )
+    install_fake_ffmpeg(monkeypatch)
+
+    execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    record = load_record(str(root / "Network" / "Promo" / "2000s" / "First.cnfo"))
+    assert record.tag_dict == {
+        "filler_type": "Promo",
+        "network": "Cartoon Network",
+        "time_period": "2000s",
+        "title": "Toonami Worlds Finest",
+    }
+    assert record.source == "source.mp4"
+    assert (record.segment_index, record.start, record.duration) == (0, 0.0, 4.5)
+    assert (root / "Network" / "Promo" / "2000s" / "Second.cnfo").exists()
+
+
+def test_a_clip_the_encoder_failed_leaves_no_record(
+    tmp_path, source_path, monkeypatch
+):
+    """The ordering is the whole point: video present implies record present, so
+    a record for a clip that does not exist is the one state a scan can drop."""
+    root = tmp_path / "library"
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "Failed.mp4"))])
+    install_fake_ffmpeg(monkeypatch, Encoding(returncode=1, stderr="encoder failed"))
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert result.failed == 1
+    assert not (root / "Network" / "Failed.mp4").exists()
+    assert not (root / "Network" / "Failed.cnfo").exists()
+
+
+def test_a_tag_the_record_cannot_hold_fails_the_clip_before_encoding(
+    tmp_path, source_path, monkeypatch
+):
+    """A clip that cannot be recorded is not properly exported, and the error
+    says which tag -- rather than an unreadable file appearing in the library."""
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [(0, 0.0, 2.0, ("Network", "Clip.mp4"))],
+        tags=(("network", "Cartoon Network"), ("time_period", "2000s"),
+              ("filler_type", "Promo"), ("title", "Bad\x0bValue")),
+    )
+    processes = install_fake_ffmpeg(monkeypatch)
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert processes == [], "the encode ran before the record was refused"
+    assert result.failed == 1
+    assert "'title'" in result.failures[0].message
+    assert not (root / "Network" / "Clip.mp4").exists()
+    assert not (root / "Network" / "Clip.cnfo").exists()
+
+
+def test_a_record_that_cannot_be_written_fails_only_its_own_clip(
+    tmp_path, source_path, monkeypatch
+):
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    install_fake_ffmpeg(monkeypatch)
+    real_write = shared_ffmpeg.write_record_document
+
+    def fail_on_second(path, document):
+        if "Second" in path:
+            raise OSError(28, "No space left on device")
+        return real_write(path, document)
+
+    monkeypatch.setattr("shared.ffmpeg.write_record_document", fail_on_second)
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert result.written_relative_paths == ("Network/First.mp4",)
+    assert result.failures[0].destination == "Network/Second.mp4"
+    assert (root / "Network" / "First.cnfo").exists()
+    assert not (root / "Network" / "Second.cnfo").exists()
+    assert not (root / "Network" / "Second.mp4").exists()
+
+
+def test_an_orphan_record_from_an_earlier_failure_does_not_block_the_export(
+    tmp_path, source_path, monkeypatch
+):
+    """Delete a clip from the library and cut it again.
+
+    The preflight refuses a destination whose *video* exists, so the leftover
+    record cannot be what stops the re-export, and the write replaces it rather
+    than failing on a file that is commcut's own metadata for a clip nobody has.
+    """
+    root = tmp_path / "library"
+    orphan = root / "Network" / "Clip.cnfo"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("<commcut-clip version='1'><stale /></commcut-clip>")
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "Clip.mp4"))])
+    install_fake_ffmpeg(monkeypatch)
+
+    result = execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert result.succeeded == 1
+    assert load_record(str(orphan)).segment_index == 0
+
+
+def test_a_cancelled_clip_gets_no_record(tmp_path, source_path, monkeypatch):
+    root = tmp_path / "library"
+    plan = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Second.mp4")),
+        ],
+    )
+    install_fake_ffmpeg(monkeypatch, Encoding(), Encoding(poll_count=5))
+    calls = []
+
+    result = execute_export_plan(
+        source_path, plan, ffmpeg_path="ffmpeg",
+        should_cancel=lambda: (calls.append(1), len(calls) > 1)[1],
+    )
+
+    assert result.cancelled is True
+    assert (root / "Network" / "First.cnfo").exists()
+    assert not (root / "Network" / "Second.cnfo").exists()
+
+
+def test_a_resumed_run_leaves_a_skipped_clips_record_alone(
+    tmp_path, source_path, monkeypatch
+):
+    """A skip is decided by destination, so a skipped clip's record is never
+    revisited -- which is exactly why the first run has to write it."""
+    root = tmp_path / "library"
+    skipped_directory = root / "Network"
+    skipped_directory.mkdir(parents=True)
+    for name in ("First", "Keep"):
+        (skipped_directory / f"{name}.mp4").write_bytes(b"already written")
+        (skipped_directory / f"{name}.cnfo").write_text("<commcut-clip />")
+    full = make_plan(
+        root,
+        [
+            (0, 0.0, 2.0, ("Network", "First.mp4")),
+            (1, 2.0, 2.0, ("Network", "Keep.mp4")),
+            (2, 4.0, 2.0, ("Network", "Fresh.mp4")),
+        ],
+    )
+    resumed = ExportPlan(
+        export_root=full.export_root,
+        clips=full.clips[2:],
+        skipped=full.clips[:2],
+    )
+    install_fake_ffmpeg(monkeypatch)
+
+    result = execute_export_plan(source_path, resumed, ffmpeg_path="ffmpeg")
+
+    assert result.written_relative_paths == ("Network/Fresh.mp4",)
+    assert (skipped_directory / "Fresh.cnfo").exists()
+    for name in ("First", "Keep"):
+        assert (skipped_directory / f"{name}.cnfo").read_text() == "<commcut-clip />"
+
+
+def test_the_record_holds_raw_tag_values_not_the_sanitized_filename_form(
+    tmp_path, source_path, monkeypatch
+):
+    """The filename is sanitized at render time and the record is not.
+
+    Both facts are load-bearing and they point opposite ways: the record has to
+    keep exactly what the user typed, because it is what anything reads back,
+    while the name on disk has to be portable. Writing the rendered form into
+    the record would make the source of truth lossy.
+    """
+    root = tmp_path / "library"
+    raw_title = "A & B <Promo>"
+    plan = make_plan(
+        root,
+        [(0, 0.0, 2.0, ("Network", "Clip.mp4"))],
+        tags=(("network", "Cartoon Network"), ("time_period", "2000s"),
+              ("filler_type", "Promo"), ("title", raw_title)),
+    )
+    install_fake_ffmpeg(monkeypatch)
+
+    execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert load_record(
+        str(root / "Network" / "Clip.cnfo")
+    ).tag_dict["title"] == raw_title
 
 
 # ---------------------------------------------------------------------------

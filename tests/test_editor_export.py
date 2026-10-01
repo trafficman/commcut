@@ -48,6 +48,7 @@ from shared.ffmpeg import (
     ExportExecutionResult,
 )
 from shared.paths import DEFAULT_FOLDER_SCHEME
+from shared.records import RECORD_EXTENSION
 from shared.segments import SegmentModel, sidecar_path
 
 
@@ -128,6 +129,15 @@ def make_plan(clips):
                 start=0.0,
                 duration=2.0,
                 relative_components=("Network", f"Clip {index + 1}.mp4"),
+                tags=(
+                    ("filler_type", "Promo"),
+                    ("network", "Cartoon Network"),
+                    ("time_period", "2000s"),
+                    ("title", f"Clip {index + 1}"),
+                ),
+                record_relative_components=(
+                    "Network", f"Clip {index + 1}{RECORD_EXTENSION}",
+                ),
             )
             for index in range(clips)
         ),
@@ -667,14 +677,7 @@ def test_the_summary_names_the_clips_a_resume_left_alone(export_editor, monkeypa
     skipped_plan = ExportPlan(
         export_root=plan.export_root,
         clips=plan.clips,
-        skipped=(
-            PlannedExportClip(
-                segment_index=0,
-                start=0.0,
-                duration=2.0,
-                relative_components=("Network", "Clip 1.mp4"),
-            ),
-        ),
+        skipped=(make_plan(2).clips[0],),
     )
     install_batch(
         monkeypatch,
@@ -812,18 +815,11 @@ def test_a_completed_run_names_how_many_clips_it_skipped(export_editor, monkeypa
     plan = make_plan(1)
     install_batch(
         monkeypatch,
-        plan=ExportPlan(
-            export_root=plan.export_root,
-            clips=plan.clips,
-            skipped=(
-                PlannedExportClip(
-                    segment_index=0,
-                    start=0.0,
-                    duration=2.0,
-                    relative_components=("Network", "Clip 0.mp4"),
-                ),
+plan=ExportPlan(
+                export_root=plan.export_root,
+                clips=plan.clips,
+                skipped=(make_plan(3).clips[0],),
             ),
-        ),
         result=make_result(written=("Network/Clip 1.mp4",)),
     )
 
