@@ -24,21 +24,18 @@ commcut/
 │   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
 │   ├── linux/               # Linux binaries (placeholders, none shipped yet)
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
-├── import/                  # Source videos; the picker offers what is in here
+├── import/                  # Finished clips to import; not source videos
 ├── export/                  # Named clips are written here
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
 ├── commcut.log              # Written beside the exe (override with COMMCUT_LOG)
 ├── main.py                  # Application entry point: argv dispatcher + main menu
-├── mainwindow.py            # MainWindow: launches the picker / settings as
-│                            # child processes
+├── mainwindow.py            # MainWindow: asks for a source video with a file
+│                            # dialog, or opens the settings window
 ├── mainwindow.ui            # Qt Designer file for the main menu
 ├── packaging/               # PyInstaller build (see packaging.md)
 │   ├── commcut.spec         # onefile (default) and onedir modes
 │   ├── build.py             # pre-flight checks + portable folder assembly
 │   └── README.md            # build instructions and the shipped layout
-├── picker/                  # Source video picker (front door of the wizard)
-│   ├── picker.py            # Lists import/, launches the scanner on the choice
-│   └── pickerwindow.ui      # List + status line + Refresh/Open/Cancel
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
@@ -80,12 +77,12 @@ point: it builds the one `QApplication`, constructs `MainWindow`, installs a
 per-window script, and each window module exposes a `create(...)` builder rather
 than a `run()` entry point.
 
-`shared/session.py` shows **exactly one** of {menu, picker, scanner, editor,
-settings} at a time. Opening a window builds it, takes down whatever was on
-screen, and shows the new one. When a non-menu window goes away the menu comes
-back; when the menu goes away the app quits. Modal dialogs are not part of this —
-the editor's export progress and summary dialogs are `QDialog`s owned by the
-editor, so they travel with whatever window opened them.
+`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings} at
+a time. Opening a window builds it, takes down whatever was on screen, and shows
+the new one. When a non-menu window goes away the menu comes back; when the menu
+goes away the app quits. Modal dialogs are not part of this — the main menu's
+file dialog and the editor's export progress and summary dialogs are `QDialog`s
+owned by the window that opened them, so they travel with it.
 
 This replaced a stack in which the main menu stayed open behind everything else.
 The stack was carrying two costs that were not obvious at the time: the menu
@@ -172,14 +169,17 @@ player that has already gone.
 
 Two buttons: **Editor** and **Settings**.
 
-**"Editor" opens the picker, not the editor.** The picker chooses which video
-in `import/` to work on; the scanner is then the pre-process phase of the
-Editing Wizard — it detects clip boundaries and hands off to the editor itself
-— so picker, scanner, and editor are one journey, not three menu items. The
+**"Editor" opens a file dialog, not the editor.** The dialog chooses which video
+to work on, from anywhere on disk; the scanner is then the pre-process phase of
+the Editing Wizard — it detects clip boundaries and hands off to the editor itself
+— so the dialog, scanner, and editor are one journey, not three menu items. The
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
-Both buttons call `shell().open_safely(name)`, which is the only way a window is
-opened anywhere in the app. The menu is the one window the shell reuses: it is
+The dialog is modal, which puts it outside the shell: only the **Settings**
+button calls `shell().open_safely(name)` directly, and **Editor** calls it with
+`source=...` once the user has answered. `shell().open_safely(name)` is still the
+only way a window is opened anywhere in the app. The menu is the one window the
+shell reuses: it is
 hidden while anything else is up and shown again when that window closes, so
 there is only ever one menu and one taskbar entry. Closing the menu itself ends
 the app, which the shell watches for through an event filter rather than
@@ -187,50 +187,85 @@ the app, which the shell watches for through an event filter rather than
 
 `setup_environment` resolves the project root as `install_root()`: the source
 tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
-covers the two buttons and the project-root resolution from every entry point;
-`tests/test_session.py` covers the navigation.
+covers the file dialog, the two buttons, and the project-root resolution from
+every entry point; `tests/test_session.py` covers the navigation.
 
-## The source video is picked from the import folder
+## The source video is picked from anywhere
 
-This is an alpha: the app deliberately does not let anyone point it at an
-arbitrary path. The only videos that can be opened are the ones in the app's
-own `import/` folder, and the user picks one in the **picker** window
-(`picker/picker.py`), which the main menu's **Editor** button opens.
+A source video can be any video file on any writable path. The main menu's
+**Editor** button asks for one with a native `QFileDialog` and hands the answer
+to the scanner. There is no folder a source has to be in, which is what freed
+`import/` to be the Library Importer's staging folder instead of a source-video
+drop.
 
-`shared/sources.py` owns the whole policy, and it is deliberately the only way
-to turn an argument into a source path:
+Two things about that dialog:
 
-- `list_source_videos(folder=None)` — what the picker offers. Filters on
-  `VIDEO_EXTENSIONS`, because `import/` ships a `README.txt` placeholder (empty
-  folders do not survive a zip) and it must never appear as a selectable video.
-  Sorted by name, case-insensitively, and reports `size_bytes` and
-  `has_sidecar`.
-- `resolve_import_video(value, folder)` — the *policy* check: the path must
-  resolve inside `import/` (real paths, so a symlink in the folder cannot reach
-  a file outside it, and `commonpath` so `import_backup` is not "inside"
-  `import`) and must be a video extension. This is what actually enforces the
-  restriction — the picker is only a convenience over it, and a hand-edited
-  call still has to pass.
-- `require_source_video(value, folder)` — the same check plus existence, and it
-  owns the "nothing to open" message. Without it a missing video fails as a
-  *codec* problem: ffprobe returns nothing, a placeholder `.cmct` is written
-  with `duration=0.0`, and mpv then reports an opaque load failure.
-- `DEFAULT_SOURCE_NAME` is the no-argument fallback (`import/test.mp4`) so a
-  hand-edited call still has something to fall back on. The picker always
-  supplies an explicit path.
+- It is an **instance**, not `QFileDialog.getOpenFileName`, so a test can inspect
+  and stand in for the one thing a native dialog cannot do: be answered. It is
+  left **native**, because the OS dialog is better than Qt's and is what remembers
+  the folder the user was last in — which is why nothing here persists a start
+  directory. Adding one would mean a new global state store for a courtesy the
+  platform already provides.
+- It is a **modal dialog owned by the menu**, not a shell-managed window. The
+  shell tracks the one visible *window*; the editor's own modal dialogs are on
+  the same footing, and `shared/session.py` says so.
+
+Its name filter is generated from `VIDEO_EXTENSIONS` rather than typed, so the
+filter and `is_video_file` cannot drift — a container added to one and missed in
+the other is invisible in the dialog and refused after the user picks it, which
+is the worse of the two failures.
+
+`shared/sources.py` owns what may be opened, and `validate_source_video` is the
+one supported way to turn a selection into a source path. It checks four things,
+each refused with a message written for a person: the value is not empty; it
+exists and is a file rather than a folder; it has a video extension; and **its
+folder is writable**.
+
+That last one is the rule that only became reachable once sources could come from
+anywhere. `shared/segments.py:sidecar_path` puts the `.cmct` beside the video,
+and the editor rewrites it on every Stage and again before export, so the folder
+has to take a write for the whole session — not just at scan time. Nothing checked
+it while every source sat in `import/`, which is writable by construction.
+
+The check is a **real probe**: create `.commcut-write-test-<pid>` in the folder,
+remove it in a `finally`. `os.access(folder, os.W_OK)` is not an acceptable
+substitute — it is advisory, on POSIX it succeeds for root whatever the mode bits
+say, and on Windows it is a coarse ACL guess that a full disk or a read-only
+share will pass.
+
+It is a pre-flight and not a guarantee, because a folder can stop taking writes
+mid-session and a network share can go away. `MediaPlayer._save_sidecar` is the
+backstop: every save goes through it and a failure becomes a `ValueError` naming
+the file and the folder, rather than a bare `PermissionError` arriving on Stage
+with the user's tags unsaved. The editor reports it and deliberately leaves
+`dirty` set, so the tags are not mistaken for staged.
 
 **The path is an argument, not shared state.** It travels
-`main menu → picker → scanner → editor` as a keyword the shell passes to a
-window's builder: `shell().open('scanner', source=path)` reaches
-`ScannerWindow(source_path)`, and `shell().open('editor', source=path)` reaches
-`MediaPlayer(media_path)`. Navigation is the one process-wide global and it
-lives in `shared/session.py`; the video is not in it.
-`tests/test_source_handoff.py` guards the shapes that regressed quietly: a
-window that resolves its own source instead of using the one it was given, and a
-builder that would swallow the `source` keyword. The dependency direction is
-one-way —
-`shared/sources.py` imports `sidecar_path` from `shared/segments.py`; segments
-never imports sources.
+`main menu → scanner → editor` as a keyword the shell passes to a window's
+builder: `shell().open('scanner', source=path)` reaches `ScannerWindow(source_path)`,
+and `shell().open('editor', source=path)` reaches `MediaPlayer(media_path)`.
+Both builders **require** `source` — the menu always asks, so there is no
+fallback path left to keep, and a missing argument has to fail loudly rather than
+landing in a default. Navigation is the one process-wide global and it lives in
+`shared/session.py`; the video is not in it.
+`tests/test_source_handoff.py` guards the shapes that regressed quietly: a window
+that resolves its own source instead of using the one it was given, and a builder
+that would swallow the `source` keyword.
+
+The dependency direction is one-way: `shared/sources.py` no longer imports
+anything from `shared/segments.py` — it asks the filesystem, not the sidecar
+helper — and segments never imports sources.
+
+### What the picker was carrying
+
+The bespoke picker listed everything in one folder and labelled the rips that had
+already been scanned *"(already scanned — opens in the editor)"*. The **behaviour**
+survived — `scanner._editor_to_launch` raises `OpenInstead` and the shell routes
+straight to the editor, so an existing `.cmct` is still never overwritten — but
+the *discoverability* did not. A native dialog cannot annotate a file, so resuming
+a scanned rip means remembering where it is and picking it again. A recent-sources
+list is the obvious answer and needs a persistence decision (`QSettings`, or a new
+JSON file beside `settings.json`) that has deliberately not been made.
 
 ## The shared library
 
@@ -280,7 +315,8 @@ The shared modules are:
   zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
  - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
    (`sidecar_path`, `probe_duration`). See [segment-model.md](segment-model.md).
- - `shared/sources.py` — the import/ policy, above.
+ - `shared/sources.py` — which videos may be opened, above, plus `import_folder()`
+  for the Library Importer.
   - `shared/ffmpeg.py` — ffmpeg helpers: `clip_to_temp` (the scanner's preview),
     the named-export executor (`export_named_model`, `execute_export_plan`,
     `ExportExecutionResult`, `ExportClipFailure`, `ExportCancelled`), and the

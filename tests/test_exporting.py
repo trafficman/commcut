@@ -61,7 +61,7 @@ def test_the_export_folder_follows_the_install_root(tmp_path, monkeypatch):
 def test_the_export_folder_is_not_the_import_folders_neighbour_by_accident():
     """The import folder is a source-video folder and this is a clip folder.
     They sit side by side under the install root, and a mixed-up constant would
-    put a library walk's records into the folder the picker offers as sources."""
+    put a library walk's records into the folder the importer reads from."""
     from shared.sources import IMPORT_FOLDER_NAME
 
     assert EXPORT_FOLDER_NAME != IMPORT_FOLDER_NAME

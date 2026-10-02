@@ -326,8 +326,9 @@ records, and the next stage will try again.
 The **library scan / catalog** — the walk that feeds the sync is built, but
 nothing yet *shows* a user what is in `export/`; see
 [naming-and-organization.md](naming-and-organization.md#the-clip-record). Also
-any **picker** use (it has no tags yet; when it does, the rule is filename when
-there is no `.cmct` and the sidecar when there is one), **counts**, and **seed
+a **file dialog** that could offer tags for a source video (it has none yet; when
+it does, the rule is filename when there is no `.cmct` and the sidecar when there
+is one), **counts**, and **seed
 provenance** — the last is what would let a future prune tell a typed value from
 a stale one, at the cost of a second rule to keep honest in a file three code
 paths write. Shipped defaults do not need it, being exempt from the prune

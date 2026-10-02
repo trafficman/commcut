@@ -1,6 +1,6 @@
 """The one visible window: shared/session.py.
 
-The shell shows exactly one of {menu, picker, scanner, editor, settings} at a
+The shell shows exactly one of {menu, scanner, editor, settings} at a
 time, so its whole job is deciding what replaces what. Three of its rules carry
 enough weight to have their own tests here, because each one fails quietly:
 
@@ -251,17 +251,18 @@ def test_closing_the_menu_quits_the_app(stack, qapp):
 
 
 def test_a_window_closed_out_of_order_does_not_disturb_the_new_one(stack, qapp):
-    """The picker's Open button opened the scanner and then closed itself, so
-    the window that died was not the one on screen. The shell removes the
-    window it is told about by identity for exactly this."""
-    picker = stack.open("alpha")
-    scanner = stack.open("beta")
-    assert stack.current is scanner
+    """The scanner's Finished button opens the editor and then closes itself, so
+    the window that died is not the one on screen. The shell removes the window it
+    is told about by identity for exactly this, and the test stands in a long
+    after the picker stopped being the window that did it."""
+    scanner = stack.open("alpha")
+    editor = stack.open("beta")
+    assert stack.current is editor
 
-    close(picker, qapp)
+    close(scanner, qapp)
 
-    assert stack.current is scanner, "the window just opened must stay current"
-    assert scanner.isVisible()
+    assert stack.current is editor, "the window just opened must stay current"
+    assert editor.isVisible()
 
 
 def test_the_shell_is_reachable_from_a_window(stack):

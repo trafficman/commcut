@@ -21,7 +21,7 @@ from shared.segments import (
     SegmentModel,
     END_BOUNDARY_BLOCKED, END_BOUNDARY_NO_CHANGE,
 )
-from shared.sources import require_source_video
+from shared.sources import validate_source_video
 from shared.exporting import (
     export_folder,
     load_export_schemes,
@@ -432,10 +432,10 @@ class MediaPlayer(QMainWindow):
         # standard mpv options used by both the editor and the scanner.
         # Keep the MPV instance in its own attribute; do NOT overwrite
         # self.ui.videoContainer or you lose the widget reference.
-        # The compilation video this run works on. It arrives from the picker
-        # (or the scanner's handoff) and is already validated, so the editor
-        # never guesses at a filename: the .cmct sidecar read below and every
-        # export path derive from this one value.
+        # The compilation video this run works on. It arrives from the main menu's
+        # file dialog (or the scanner's handoff) and is already validated, so the
+        # editor never guesses at a filename: the .cmct sidecar read below and
+        # every export path derive from this one value.
         self.media_path = media_path
         self.player = create_mpv_player(video_frame)
 
@@ -898,6 +898,30 @@ class MediaPlayer(QMainWindow):
             btn.setEnabled(self.dirty)
             btn.blockSignals(False)
 
+    def _save_sidecar(self):
+        """Write the model to its `.cmct` beside the source video.
+
+        Every save goes through here because the folder can stop taking writes
+        mid-session — a network share goes away, a drive is pulled, a folder is
+        locked by something else — and `validate_source_video` only ever checked
+        once, at selection. The bare `PermissionError` this used to raise named
+        neither the file nor the folder, and it arrived at the worst possible
+        moment: on Stage, with the tags the user just typed unsaved.
+        """
+        sidecar = sidecar_path(self.media_path)
+        try:
+            self.segment_model.save(sidecar)
+        except OSError as error:
+            folder = os.path.dirname(sidecar)
+            raise ValueError(
+                f"Your tags are still here, but they could not be saved.\n\n"
+                f"commcut writes the boundaries and tags for this video to:\n"
+                f"{sidecar}\n\n{error.strerror or error}\n\n"
+                f"The folder has to stay writable while you work:\n{folder}\n\n"
+                f"Close without saving to avoid losing these tags."
+            ) from error
+        return sidecar
+
     def on_undo(self):
         """Revert the in-memory model to the last-staged .cmct state."""
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
@@ -1004,7 +1028,15 @@ class MediaPlayer(QMainWindow):
             )
             return
         self._commit_form_tags_to_model()
-        self.segment_model.save(sidecar_path(self.media_path))
+        try:
+            self._save_sidecar()
+        except ValueError as error:
+            # Reported rather than raised: the window owns the unsaved tags and
+            # it is the only thing that can still tell the user where they went.
+            # `dirty` is left set on purpose, so the tags are not mistaken for
+            # staged and the close handler can warn about losing them.
+            QMessageBox.warning(self, "Tags could not be saved", str(error))
+            return
         self.dirty = False
         self._update_stage_button()
         if self.current_index + 1 >= self.segment_model.segment_count():
@@ -1075,7 +1107,7 @@ class MediaPlayer(QMainWindow):
             if 0 <= self.current_index < self.segment_model.segment_count():
                 self._commit_form_tags_to_model()
             validate_segment_model(self.segment_model)
-            self.segment_model.save(sidecar_path(self.media_path))
+            self._save_sidecar()
             self.dirty = False
             self._update_stage_button()
             return (
@@ -1405,8 +1437,13 @@ def create(app, source):
 
     `source` is the video to work on, and it arrives as an argument rather than
     being re-derived here: this window never guesses which video it is for.
+    `validate_source_video` re-checks it rather than trusting the caller, because
+    this window is reachable both from the scanner and straight from the shell's
+    already-scanned redirect, and because it is the one that rewrites the `.cmct`
+    on every Stage — so it is the last place a folder that cannot be written can
+    be refused before the user has typed anything.
     """
-    media_path = require_source_video(source)
+    media_path = validate_source_video(source)
     log(f"editor working on {media_path}")
 
     pixmap = QPixmap(480, 270)

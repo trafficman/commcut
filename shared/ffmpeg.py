@@ -5,6 +5,7 @@ the "bundled on Windows, the system's own on macOS and Linux" policy. This is
 where core.py's ffmpeg helpers migrate to as core.py is retired.
 """
 
+import hashlib
 import os
 import shutil
 import stat
@@ -548,12 +549,30 @@ def clip_to_temp(input_path, duration, output_dir="temp"):
 
     Uses a stream copy (-c copy) so it's fast and lossless. Returns the
     output path, or None on failure.
+
+    The name carries a short digest of the source's **absolute** path, not just
+    its basename. A basename was enough while every source sat in one flat
+    folder, and it stopped being enough the moment a source could be picked from
+    anywhere: `D:\\rips\\a\\Friday.mp4` and `D:\\rips\\b\\Friday.mp4` are two
+    different videos with two different sets of boundaries, and both would have
+    produced `temp/Friday_clip120s.mp4`.
+
+    That collision used to be masked by `scanner.create()` clearing `temp/`
+    before every preview and only one scanner existing at a time. A caller should
+    not have to know that, and `ScannerWindow.__init__` building a second preview
+    for the same source already relied on the name agreeing. Digesting the path
+    makes the function's own naming sufficient, which also keeps a long video
+    basename from overflowing `temp/`.
     """
     ffmpeg_path = get_binary_path("ffmpeg")
 
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(input_path))[0]
-    output_path = os.path.join(output_dir, f"{base}_clip{int(duration)}s.mp4")
+    digest = hashlib.sha1(
+        os.path.abspath(input_path).encode("utf-8", "surrogatepass")
+    ).hexdigest()[:8]
+    output_path = os.path.join(
+        output_dir, f"{base}_{digest}_clip{int(duration)}s.mp4")
 
     cmd = [
         ffmpeg_path,

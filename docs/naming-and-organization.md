@@ -345,8 +345,8 @@ here can be a second place for them to be wrong.
 
 Nothing **shows** a user what is in `export/`. The walk exists and
 [one button](tag-vocabulary.md#syncing-from-the-library) reads it; a library
-browser does not. The picker likewise has no tags yet — when it does, the rule is
-filename when there is no `.cmct` and the sidecar when there is one.
+browser does not. A source video is picked with a native file dialog, which has
+no tags to show either.
 
 Clips exported before this build have no records and cannot be backfilled from —
 the records *are* the source of truth, so there is nothing to derive them from.
@@ -537,8 +537,10 @@ editor for folder schemes:
   **deliberately locked**: for this alpha both folders are fixed beside
   `commcut.exe`, and `SettingsWindow._lock_folder_choices()` disables the four
   widgets and marks the two labels "(coming soon)" rather than removing them,
-  so a tester can see they are not wired yet. Choosing the import folder is
-  the picker's job (it lists `import/`), not a setting.
+  so a tester can see they are not wired yet. A **source video** is not one of
+  these choices — the main menu's file dialog takes any video from any folder, so
+  there is nothing to configure. `import/` is where the Library Importer will
+  read from.
 
 ## Coverage
 

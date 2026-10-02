@@ -39,7 +39,16 @@ Six test files bind the real `MediaPlayer` through `EditorStub`:
 `test_boundary_preview.py`, `test_editor_locks.py`, `test_editor_required_tags.py`,
 `test_end_boundary.py`, `test_timeline_zoom.py`, and `test_editor_export.py`.
 `test_boundary_preview.py` additionally uses `FakeBridge`; `ensure_qapp` is
-imported more widely (`test_main_window.py`, `test_picker.py`).
+imported more widely (`test_main_window.py`).
+
+**A modal dialog reached from a test has to be answered, not shown.** The menu's
+Editor button opens a `QFileDialog` and its close handler can raise a
+`QMessageBox` while a sync is running; a real one under
+`QT_QPA_PLATFORM=offscreen` blocks on nobody and hangs the run rather than
+failing. Both are stubbed in their fixtures — the dialog through a
+module-level `choose_source_video` seam and a `QFileDialog` subclass, the message
+box through a recorder — and the fixtures drain any run left in flight so teardown
+does not close a window that is mid-something.
 
 **The stub's widgets must match the classes the `.ui` file declares.** The nine
 suggestable tag fields are editable `QComboBox` and Title is a `QLineEdit`, both
@@ -71,10 +80,9 @@ state.
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
 | `test_end_boundary.py` | `place_end_boundary` — insert vs. move, and the refusal guards |
 | `test_timeline_zoom.py` | zoom state surviving a resize, and the editor toggle agreeing with the widget |
-| `test_sources.py` | the import folder: what can be opened, what the picker offers, the "nothing to open" messages, and the containment/traversal defense incl. case-insensitive volumes |
-| `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off |
-| `test_picker.py` | the picker window, offscreen |
-| `test_main_window.py` | the main menu, the launcher, and the failure paths |
+| `test_sources.py` | which videos may be opened: a real video from any folder is accepted, a missing file / a folder / a non-video is refused in words, and the writable-folder rule behind the `.cmct` written beside the source — including the probe itself |
+| `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off, and both builders requiring it |
+| `test_main_window.py` | the main menu, the native file dialog (filter, native-ness, cancel), the launcher, and the failure paths |
 | `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement, and the sweep that every spawn site carries `no_console_kwargs()` |
 | `test_mpv_player.py` | how the player is built: libmpv loaded before the import that needs it, the native handle, and the zero-handle refusal (no real player) |
 | `test_scheme.py` | strict scheme parsing |

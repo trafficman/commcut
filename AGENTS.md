@@ -21,10 +21,10 @@ vision, described in [README.md](README.md), has three pieces:
    the current focus.
 
 The tree holds the Editing Wizard (`editor/`), its Segment Scanner pre-process
-(`scanner/`), the source picker that fronts them, the Settings window, and the
-`shared/` library they build on. [docs/status.md](docs/status.md) says exactly
-what exists today and what is next — read it before building something that may
-already exist.
+(`scanner/`), the Settings window, and the `shared/` library they build on. The
+main menu asks for a source video with a native file dialog, so a compilation can
+live anywhere. [docs/status.md](docs/status.md) says exactly what exists today
+and what is next — read it before building something that may already exist.
 
 ## Commands
 
@@ -48,17 +48,16 @@ There is no pytest config: `tests/conftest.py` puts the project root on
 commcut/
 ├── main.py                  # the entry point: the QApplication, the menu, the shell
 ├── mainwindow.py/.ui        # main menu (Editor, Settings)├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
-├── import/                  # the only videos that can be opened; user drops them in
+├── import/                  # finished clips to import; NOT source videos
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
 ├── commcut.log              # beside the exe; override with COMMCUT_LOG
 ├── packaging/               # PyInstaller spec + build script (docs/packaging.md)
 ├── .github/workflows/       # a pushed tag builds the Windows release zip
-├── picker/                  # source video picker — the front door of the wizard
 ├── scanner/                 # Segment Scanner: detect boundaries, hand off
 ├── editor/                  # Editing Wizard: segments, tags, export
 ├── settings/                # file + folder scheme editors
-├── shared/                  # the library all four windows build on
+├── shared/                  # the library all three windows build on
 ├── tests/                   # pytest suite (docs/testing.md)
 ├── docs/                    # the documents indexed below
 ├── experiments/             # code answering a question the docs could not;
@@ -71,7 +70,7 @@ commcut/
 number `packaging/build.py` checks a tag against), `diagnostics`
 (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, and
 `MpvBridge.shutdown`), `timeline` (editor timeline), `segments` (`SegmentModel`,
-`.cmct`), `sources` (the `import/` policy), `ffmpeg` (preview clip + named
+`.cmct`), `sources` (which videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), 
 `ui_loader` (promoted widgets). Per-module detail:
@@ -156,11 +155,17 @@ diagnose. The linked document has the full reasoning.
    precaution. But the process boundary it justified is gone, and the windows
    share one event loop and one libmpv. →
    [experiments/README.md](experiments/README.md)
-8. **The source video path is an argument, not shared state.** It travels
-   `main menu → picker → scanner → editor` as a constructor argument; a window
-   never re-resolves a default of its own. Navigation is the one global, and it
-   lives in the shell — the path is not. →
-   [docs/architecture.md](docs/architecture.md)
+8. **The source video path is an argument, not shared state, and its folder must
+   be writable.** It travels `main menu → scanner → editor` as a constructor
+   argument; a window never re-resolves a default of its own — `scanner.create`
+   and `editor.create` both *require* `source`, so a missing one fails loudly
+   rather than opening something. Navigation is the one global, and it lives in
+   the shell — the path is not. The writable half is new since sources can come
+   from anywhere: the `.cmct` is written *beside* the video and rewritten on
+   every Stage, so `shared/sources.py:validate_source_video` refuses a folder
+   that cannot take a write, and `MediaPlayer._save_sidecar` is the backstop for
+   one that stops mid-session. Never write beside a source video from anywhere
+   else. → [docs/architecture.md](docs/architecture.md)
 9. **One owner per rule.** Required tags live in
    `shared/exporting.py:missing_required_tags`; the filename and folder
    grammars live in `shared/naming.py` and `shared/paths.py`. Never add a second

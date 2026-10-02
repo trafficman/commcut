@@ -860,8 +860,8 @@ def _fake_ffmpeg(monkeypatch, tmp_path):
 
 
 def test_preview_clip_is_named_after_the_source(tmp_path, monkeypatch):
-    """Two sources must not share one preview clip, so the name follows the
-    file the user picked rather than a fixed test.mp4."""
+    """Two sources must not share one preview clip, so the name follows the file
+    the user picked rather than a fixed test.mp4."""
     from shared.ffmpeg import clip_to_temp
 
     _fake_ffmpeg(monkeypatch, tmp_path)
@@ -870,7 +870,49 @@ def test_preview_clip_is_named_after_the_source(tmp_path, monkeypatch):
     result = clip_to_temp(str(tmp_path / "import" / "Saturday Morning.mkv"),
                           120, output_dir=output_dir)
 
-    assert os.path.basename(result) == "Saturday Morning_clip120s.mp4"
+    assert os.path.basename(result).startswith("Saturday Morning_")
+    assert os.path.basename(result).endswith("_clip120s.mp4")
+
+
+def test_two_sources_with_the_same_name_get_different_previews(tmp_path,
+                                                                monkeypatch):
+    """The collision a single flat folder made impossible.
+
+    Sources come from anywhere now, so `rips\\a\\Friday.mp4` and
+    `rips\\b\\Friday.mp4` are both pickable, they are different videos with
+    different boundaries, and keying the preview on the basename alone gave them
+    one file. Previously masked by `scanner.create()` clearing `temp/` before
+    every run and only one scanner existing at a time — which is a precondition
+    this function never stated and `ScannerWindow.__init__` did not honour, since
+    it builds a second preview for the same source and relies on the name
+    agreeing.
+    """
+    from shared.ffmpeg import clip_to_temp
+
+    _fake_ffmpeg(monkeypatch, tmp_path)
+    output_dir = str(tmp_path / "temp")
+    first = tmp_path / "a" / "Friday.mp4"
+    second = tmp_path / "b" / "Friday.mp4"
+
+    one = clip_to_temp(str(first), 120, output_dir=output_dir)
+    two = clip_to_temp(str(second), 120, output_dir=output_dir)
+
+    assert one != two
+    assert os.path.basename(one) != os.path.basename(two)
+
+
+def test_the_same_source_gets_the_same_preview_name(tmp_path, monkeypatch):
+    """The other half, and the one that would break if the digest were taken
+    from anything volatile: the scanner and its window both build a preview for
+    one source and they have to land on the same file."""
+    from shared.ffmpeg import clip_to_temp
+
+    _fake_ffmpeg(monkeypatch, tmp_path)
+    output_dir = str(tmp_path / "temp")
+    source = str(tmp_path / "a" / "Friday.mp4")
+
+    assert (clip_to_temp(source, 120, output_dir=output_dir)
+            == clip_to_temp(source, 120, output_dir=output_dir))
 
 
 def test_two_sources_get_different_preview_clips(tmp_path, monkeypatch):

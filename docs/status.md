@@ -85,8 +85,9 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
 
 ### Windows and settings
 
-- Main menu, picker, and source-video policy (`shared/sources.py`): what the
-  picker offers, what a window will accept, and the "nothing to open" messages.
+- Main menu and source-video policy (`shared/sources.py`): the native file dialog
+  the **Editor** button opens, what a window will accept, the writable-folder rule
+  the `.cmct` sidecar requires, and the messages for a refused path.
 - Settings (`settings/settings.py`): independent file/folder scheme defaults,
   validation, production-resolver previews, atomic `QSaveFile` persistence,
   cancel/window-close restoration, and the **Sync from Export Library** button
@@ -156,7 +157,13 @@ The full vision in `README.md` has three pieces; two are not started:
   instead. See "Next" below.
 - The import and export folders are fixed beside the executable (see "Next").
 - **Nothing displays the library.** The catalog and one button that reads it are
-  built; there is no browser, and the picker still has no tags.
+  built; there is no browser, and the file dialog has no tags.
+- **No recent sources.** A source video can be picked from anywhere, and a
+  previously scanned rip is routed straight to the editor by its `.cmct` — but a
+  native dialog cannot label a file the way the old picker did, so resuming one
+  means remembering where it is. A recent-sources list needs a persistence
+  decision (`QSettings`, or a new JSON file beside `settings.json`) that has not
+  been made. → [architecture.md](architecture.md#the-source-video-is-picked-from-anywhere)
 
 ## Next
 
@@ -170,12 +177,13 @@ The full vision in `README.md` has three pieces; two are not started:
   `on_progress`/`should_cancel` and `editor/editor.py:ExportWorker` already runs
   it off the GUI thread behind a progress dialog.
 - **Choosing folders**: import/ and export/ are fixed beside the executable for
-  this alpha, and the Settings rows say so. When they become configurable,
-  `shared/sources.py:import_folder()` and
-  `shared/exporting.py:export_folder()` are the two places that resolve them, and
-  the picker's folder label follows `import_folder()` automatically. Both are
-  single functions on purpose: the export root was spelled out in three places
-  before `export_folder()` existed — `editor/editor.py` joined it onto
+  this alpha, and the Settings rows say so. A **source video** is not one of these
+  choices — the main menu's file dialog takes any video from any folder, which is
+  what freed `import/` for importing finished clips. When the two folders become
+  configurable, `shared/sources.py:import_folder()` and
+  `shared/exporting.py:export_folder()` are the places that resolve them. Both
+  are single functions on purpose: the export root was spelled out in three
+  places before `export_folder()` existed — `editor/editor.py` joined it onto
   `PROJECT_ROOT`, and `shared/ffmpeg.py` kept a private `_export_dir()` — and a
   fourth was about to appear for the library walk. They happened to agree, since
   `setup_environment` returns `install_root()` as its `project_root`, but three
@@ -249,8 +257,8 @@ The full vision in `README.md` has three pieces; two are not started:
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
 - **Exactly one window is visible at a time, and the main menu no longer sits
-  open in the background.** `shared/session.py` shows one of {menu, picker,
-  scanner, editor, settings}; opening a window takes down the one it replaces
+  open in the background.** `shared/session.py` shows one of {menu, scanner,
+  editor, settings}; opening a window takes down the one it replaces
   and shows the new one, and a non-menu window closing brings the menu back. The
   menu is hidden and reused rather than rebuilt, so there is only ever one menu
   and one taskbar entry. This replaced a stack in which the menu stayed open

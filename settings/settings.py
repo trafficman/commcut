@@ -319,7 +319,8 @@ class SettingsWindow(QMainWindow):
         """Keep the import/export folder rows visibly unwired.
 
         The folders are fixed for this alpha — import/ and export/ beside the
-        executable, chosen by the source picker rather than by hand — so these
+        executable, and a source video comes from a file dialog rather than
+        from import/ at all — so these
         four widgets are shown but disabled, labelled "coming soon", rather
         than removed. Disabling them here as well as in the .ui means a
         re-enabled widget in the .ui cannot quietly imply they work.

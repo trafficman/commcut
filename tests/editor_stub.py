@@ -303,6 +303,7 @@ class EditorStub:
     _update_stage_button = MediaPlayer._update_stage_button
     _inherited_tags = MediaPlayer._inherited_tags
     _missing_required_labels = MediaPlayer._missing_required_labels
+    _save_sidecar = MediaPlayer._save_sidecar
     on_toggle_lock = MediaPlayer.on_toggle_lock
     on_tag_edited = MediaPlayer.on_tag_edited
     on_toggle_ignore = MediaPlayer.on_toggle_ignore

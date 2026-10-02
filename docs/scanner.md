@@ -66,11 +66,21 @@ If a `.cmct` sidecar already exists next to the source video, the scanner
 builds no window at all and raises `shared/session.py:OpenInstead` naming the
 editor, so an existing project is never overwritten. The rule is the scanner's;
 the routing is the shell's, because there is no scanner window to show. The
-source there is the one the picker handed this window, not a re-resolved
-default (`_editor_to_launch` is that decision). The picker labels an
-already-scanned
-video "(already scanned - opens in the editor)", so that shortcut is visible
-before it is taken.
+source there is the one the main menu's file dialog handed this window, not a
+re-resolved default (`_editor_to_launch` is that decision).
+
+That shortcut used to be **visible**: the picker listed everything in `import/`
+and labelled a rip that had been scanned *"(already scanned — opens in the
+editor)"*. A native file dialog cannot annotate a file, so the behaviour remains
+and the warning does not — resuming a scanned rip means remembering where it is
+and picking it again. A recent-sources list is the obvious fix and is not built;
+see [status.md](status.md).
+
+Because the source is now picked from anywhere rather than from the app's own
+folder, the sidecar is written to a folder the app does not control.
+`shared/sources.py:validate_source_video` refuses a source whose folder cannot
+take a write before the scanner is built, and `MediaPlayer._save_sidecar` turns a
+later failure into a message naming the file and the folder.
 
 Automated boundary detection is fully wired: Test Scan (preview, in-memory
 midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and the

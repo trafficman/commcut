@@ -7,7 +7,8 @@ not the exe alone -- see the layout in packaging/README.md:
 
     commcut.exe      this build: Python + PySide6 + the app + the .ui files
     bin/win/         ffmpeg, ffprobe, libmpv  (NOT inside the exe)
-    import/          source videos go here; the picker offers what's in it
+    import/          finished clips to import go here; a source video is picked
+                      from anywhere with a file dialog
     export/          named clips are written here
 
 The one decision that matters in here
@@ -78,7 +79,6 @@ UI_DATAS = [
     ('editor/editorwindow.ui', 'editor'),
     ('scanner/scannerwindow.ui', 'scanner'),
     ('settings/settingswindow.ui', 'settings'),
-    ('picker/pickerwindow.ui', 'picker'),
 ]
 
 # PyInstaller resolves a relative datas source against the *spec's* folder, not
@@ -120,7 +120,6 @@ datas = [
 hiddenimports = [
     'mpv',
     'editor.editor',
-    'picker.picker',
     'scanner.scanner',
     'settings.settings',
 ]

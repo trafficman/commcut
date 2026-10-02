@@ -318,3 +318,59 @@ def test_locks_alone_do_not_satisfy_the_requirement(qapp, tmp_path, warnings):
 
     editor.on_stage()
     assert warnings
+
+
+# ---------------------------------------------------------------------------
+# The sidecar write is the one that can fail late
+# ---------------------------------------------------------------------------
+
+def test_a_sidecar_that_cannot_be_written_names_the_file_and_the_folder(
+    qapp, tmp_path, warnings, monkeypatch
+):
+    """Sources come from anywhere now, so the folder holding the `.cmct` can be
+    one the app does not control — a read-only share, a locked drive, a folder
+    that filled up. `validate_source_video` checks once, at selection; a folder
+    that stops taking writes mid-session still has to be reported in words,
+    because the bare `PermissionError` this raised named neither the file nor
+    the folder, and it arrived on Stage with the user's tags unsaved.
+    """
+    editor = _editor(qapp, tmp_path)
+    editor.fill_required()
+
+    def refuse(_path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(editor.segment_model, "save", refuse)
+
+    with pytest.raises(ValueError) as error:
+        editor._save_sidecar()
+
+    message = str(error.value)
+    assert "compilation.cmct" in message
+    assert str(tmp_path) in message
+    assert "still here" in message
+
+
+def test_a_failed_sidecar_write_is_reported_and_leaves_the_editor_dirty(
+    qapp, tmp_path, warnings, monkeypatch
+):
+    """`dirty` stays set on purpose. Cleared, the tags would look staged and the
+    close handler would not warn about losing them — which is the one thing the
+    user needs to be told."""
+    editor = _editor(qapp, tmp_path)
+    editor.fill_required()
+    editor.dirty = True
+
+    def refuse(_path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(editor.segment_model, "save", refuse)
+
+    editor.on_stage()
+
+    assert editor.dirty is True
+    assert editor.current_index == 0, "must not advance past an unsaved segment"
+    assert warnings
+    title, text = warnings[-1]
+    assert title == "Tags could not be saved"
+    assert "compilation.cmct" in text

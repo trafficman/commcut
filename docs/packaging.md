@@ -21,7 +21,8 @@ same code unfrozen — one process, one visible window, diagnostics),
 ```
 commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the .ui files)
 bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
-import/             drop compilation videos in here; the picker lists them
+import/             drop finished clips in here to import them; a source
+                    video is picked from anywhere with a file dialog
 export/             named clips are written here
 ```
 
@@ -83,7 +84,7 @@ same expression whether or not the app is frozen — `resource_path("settings",
 "settingswindow.ui")`. Flattening the `.ui` files into the payload root
 would make that correct only in a packaged build and wrong from source, so the
 spec mirrors the source layout instead: `mainwindow.ui` at the payload root and
-`editor/`, `scanner/`, `settings/`, `picker/` beside it.
+`editor/`, `scanner/`, `settings/` beside it.
 `tests/test_frozen_mode.py::test_source_and_payload_layouts_agree` reads the
 spec's `datas` list and compares it against the code's view, so a `.ui` file
 that moves cannot be silently mis-bundled.
@@ -121,7 +122,7 @@ once per window — four extractions for one editing session. There is one now.
 The second consequence broke the build, and it is the reason this section
 exists.
 
-**The four windows are in `hiddenimports` because nothing in the source imports
+**The three windows are in `hiddenimports` because nothing in the source imports
 them in a way PyInstaller can see.** `shared/session.py:_BUILDERS` maps a name
 to a `(module, builder)` pair and `Shell._resolve` loads it with
 `importlib.import_module(module_name)` — where `module_name` is a variable.
@@ -152,7 +153,7 @@ load-bearing for packaging; they were load-bearing for both reasons at once.
 The failure is the quiet kind. `mainwindow` is a normal import and
 `mainwindow.ui` is in `datas`, so the exe starts and shows a menu with two
 buttons on it. Both call `Shell.open_safely`, which catches the
-`ModuleNotFoundError` and reports it as *"The picker window could not start"* —
+`ModuleNotFoundError` and reports it as *"The settings window could not start"* —
 so the app is a menu whose every button is dead, and it says so in a dialog
 rather than in a traceback. `build.py`'s post-build checks are about the `.ui`
 files and `bin/` and never look at the module set; `zip_portable` checks the

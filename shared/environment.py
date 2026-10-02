@@ -2,7 +2,7 @@
 
 Every module that needs the project root or the binaries imports this. They may
 live at the project root (main.py, mainwindow.py) or in a subdirectory (editor/,
-scanner/, picker/, settings/). Either way they need the same two things before
+scanner/, settings/). Either way they need the same two things before
 anything else:
 
   1. The project root on sys.path so `shared.*` imports resolve.

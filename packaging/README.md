@@ -171,7 +171,7 @@ Three things in the spec are load-bearing. Changing any of them breaks the app
 only in a packaged build, not from source:
 
 1. **The `.ui` files keep their source-tree subfolders** (`editor/`, `scanner/`,
-   `settings/`, `picker/`), rather than being flattened into the payload root.
+   `settings/`), rather than being flattened into the payload root.
    `shared/environment.resource_path()` is called with one expression whether
    or not the app is frozen, so the payload has to mirror the source layout.
    `tests/test_frozen_mode.py` asserts the spec's `datas` list agrees with the
@@ -185,10 +185,10 @@ only in a packaged build, not from source:
    modulegraph discards every `Call` node. They were bundled by construction
    before the app became one process, because they were `Analysis()` entry
    points; deleting those is what made this necessary.
-
    Without them the build still succeeds and the exe still starts — the menu is
    a normal import and its `.ui` is in `datas` — but both of its buttons fail
-   with `ModuleNotFoundError`, reported as *"The picker window could not start"*.
+   with `ModuleNotFoundError`, reported as *"The settings window could not
+   start"*.
    Neither `build.py` nor CI can see that, because CI does not run the exe.
    `tests/test_frozen_mode.py::test_every_window_the_shell_can_open_is_bundled`
    parses the spec and requires every module in `_BUILDERS` to be listed.

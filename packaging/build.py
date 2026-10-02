@@ -12,7 +12,8 @@ The output is dist/commcut-portable/:
                      temp folder and runs. No Python needed on the target.
     bin/win/         ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- 366 MB, kept
                      beside the exe rather than inside it
-    import/          drop compilation videos in here; the picker lists them
+    import/          finished clips to import go here; a source video is picked
+                     from anywhere with a file dialog
     export/          named clips are written here
     commcut.log      written on first run
     settings.json    written when you save in Settings
@@ -86,7 +87,6 @@ UI_FILES = (
     'editor/editorwindow.ui',
     'scanner/scannerwindow.ui',
     'settings/settingswindow.ui',
-    'picker/pickerwindow.ui',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
@@ -95,17 +95,16 @@ UI_FILES = (
 PLACEHOLDER_FOLDERS = ('import', 'export')
 
 IMPORT_PLACEHOLDER = """\
-Put compilation videos in this folder.
+This folder is for importing finished clips into your library.
 
-Then run commcut.exe and press "Editor". A list of the videos in here opens;
-pick one and commcut scans it for clip boundaries, then lets you tag and
-export the clips.
+Copy tagged clips here -- a folder exported from another commcut, or a .cnfo
+record beside each video -- and commcut reads the tags out of the records rather
+than guessing them from folder and file names.
 
-Most container types work (mp4, mkv, avi, mov and the rest). The video is
-edited in place: a .cmct file with the detected boundaries is written next to
-it, and named clips go to the export folder.
-
-Videos are picked from this folder only, so it is the only place to put them.
+To cut a new compilation into clips you do not need this folder at all. Run
+commcut.exe, press "Editor", and pick the source video from anywhere on your
+computer. Its .cmct file (the detected boundaries) is written beside the video,
+and the finished clips go to the export folder.
 """
 
 EXPORT_PLACEHOLDER = """\

@@ -19,7 +19,7 @@ from shared.segments import (
 )
 from scanner.marker_timeline import MarkerTimelineWidget
 from shared.session import OpenInstead, shell
-from shared.sources import require_source_video
+from shared.sources import validate_source_video
 from shared.ui_loader import UiLoader
 
 from PySide6.QtWidgets import QMainWindow, QStyle, QSplashScreen
@@ -49,7 +49,7 @@ def _editor_to_launch(source_path):
     """True if a .cmct sidecar already exists for the source, else False.
 
     The scanner must never overwrite an existing .cmct, so when one is present
-    the picker goes straight to the editor instead of running the scanner. The
+    the caller goes straight to the editor instead of running the scanner. The
     sidecar is still the hand-off medium: the scanner writes it and the editor
     reads it, so both windows agree on the model even though nothing is passed
     in memory between them.
@@ -89,9 +89,9 @@ class ScannerWindow(QMainWindow):
     def __init__(self, source_path):
         super().__init__()
 
-        # The compilation video this run works on, chosen in the picker. Held
-        # as an attribute because Finished scans this file and hands the same
-        # path to the editor; nothing re-derives it.
+        # The compilation video this run works on, chosen in the main menu's file
+        # dialog. Held as an attribute because Finished scans this file and hands
+        # the same path to the editor; nothing re-derives it.
         self.source_path = source_path
 
         # Load the .ui file
@@ -341,22 +341,26 @@ class ScannerWindow(QMainWindow):
             btn.setIcon(style.standardIcon(QStyle.SP_MediaPause))
 
 
-def create(app, source=None):
+def create(app, source):
     """Build the scanner window for `source`. Returns the window, unscaled.
 
     `app` is the process's QApplication, owned by main.py — this window does not
     make one and does not run an event loop, because it shares the loop with the
-    menu, the picker and the editor. The shell shows the window.
+    menu and the editor. The shell shows the window.
 
-    `source` is the video the picker chose. When that video already has a .cmct
-    sidecar there is nothing to scan, so no scanner window is built: this raises
-    :class:`~shared.session.OpenInstead` and the shell opens the editor on that
-    same source instead. The rule is this module's, because only it knows that
-    re-scanning would overwrite the existing model; the routing is the shell's,
-    because this window has nothing to show. Either way the caller — the picker
-    — closes itself, and the shell removes it by identity.
+    `source` is the video the main menu's file dialog returned, and it is
+    **required**: the menu always asks, so there is no fallback path left to
+    keep. `validate_source_video` is what turns it into something this window may
+    open — it refuses a path that is not a video, and one whose folder cannot be
+    written, because the `.cmct` sidecar goes beside the video.
+
+    When that video already has a `.cmct` sidecar there is nothing to scan, so no
+    scanner window is built: this raises :class:`~shared.session.OpenInstead` and
+    the shell opens the editor on that same source instead. The rule is this
+    module's, because only it knows that re-scanning would overwrite the existing
+    model; the routing is the shell's, because this window has nothing to show.
     """
-    source_path = require_source_video(source)
+    source_path = validate_source_video(source)
     log(f"scanner working on {source_path}")
 
     # Never overwrite an existing .cmct: if one already exists for the source,

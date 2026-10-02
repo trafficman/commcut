@@ -7,10 +7,10 @@ constructs a :class:`Shell` once, and the windows ask it to open each other.
 One visible window, not a stack
 ------------------------------------------------------------------------------
 
-The shell shows exactly one of {menu, picker, scanner, editor, settings} at a
-time. A window opens another by asking the shell, the shell hides or closes
-what is there, and the new window takes the screen. When a non-menu window goes
-away, the menu comes back.
+The shell shows exactly one of {menu, scanner, editor, settings} at a time. A
+window opens another by asking the shell, the shell hides or closes what is
+there, and the new window takes the screen. When a non-menu window goes away,
+the menu comes back.
 
 This replaced a stack, where the main menu stayed open behind whatever else was
 up. The stack was carrying two costs that were not obvious at the time. The menu
@@ -29,11 +29,16 @@ Why navigation is global but the source path is not
 
 The video a window works on is always a constructor argument, never something
 it reads back out of shared state. Navigation is the opposite case and has to be
-reachable from anywhere: the picker's Open button, the scanner's Finished
-button, and the editor's export summary all need to open a *different* window
-from wherever they happen to be, and threading a reference to the shell through
-every constructor would put the same coupling in a worse place. So there is one
-shell per process and :func:`shell` hands it to whoever asks.
+reachable from anywhere: the scanner's Finished button, the editor's export
+summary, and the main menu's **Editor** button all need to open a *different*
+window from wherever they happen to be, and threading a reference to the shell
+through every constructor would put the same coupling in a worse place. So there
+is one shell per process and :func:`shell` hands it to whoever asks.
+
+The source path starts at the main menu, which asks for it with a native file
+dialog. That dialog is a modal dialog owned by the menu, and it is deliberately
+not here: the shell tracks the one visible *window*, and the editor's own modal
+dialogs are on the same footing.
 
 The builders are imported lazily, inside :meth:`Shell.open`, and this module
 imports nothing from the windows at the top. That is deliberate: the main menu
@@ -57,9 +62,9 @@ is instant and ``mainwindow.ui`` is not re-parsed.
 Closing is by identity, not by position
 ------------------------------------------------------------------------------
 
-A window can close after its successor is already on screen: the picker's Open
-button opens the scanner and then closes itself. The window that died is not
-the one that is current, so the shell removes the window it is told about by
+A window can close after its successor is already on screen: the scanner's
+Finished button opens the editor and then closes itself. The window that died is
+not the one that is current, so the shell removes the window it is told about by
 identity and shows whatever is current afterwards.
 """
 
@@ -71,11 +76,11 @@ from shared.diagnostics import log_exception, log_path
 #: name -> (module, builder) resolved on first use. Every builder takes the
 #: process's QApplication as its first argument, so the shell can call them
 #: without knowing which ones need it: the scanner and the editor show a splash
-#: while they work and must pump the loop, the other two never construct a
-#: player and ignore it. Uniformity beats introspection in a registry this
-#: small — a builder that changed shape would fail loudly here, not silently.
+#: while they work and must pump the loop, and the settings window never
+#: constructs a player and ignores it. Uniformity beats introspection in a
+#: registry this small — a builder that changed shape would fail loudly here,
+#: not silently.
 _BUILDERS = {
-    "picker": ("picker.picker", "create"),
     "scanner": ("scanner.scanner", "create"),
     "editor": ("editor.editor", "create"),
     "settings": ("settings.settings", "create"),
@@ -202,7 +207,7 @@ class Shell(QObject):
 
         Every window opens the next one from inside a button handler, and an
         exception escaping one of those reaches the event loop and takes down
-        whichever window raised — the menu, if the picker raised. The old
+        whichever window raised — the menu, if the scanner raised. The old
         process arrangement gave each window its own process precisely so that
         did not matter; now that they share one, the rule that a failed launch
         is reported rather than raised has one owner, and this is it.
