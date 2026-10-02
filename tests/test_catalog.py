@@ -8,12 +8,20 @@ import os
 import pytest
 
 from shared.catalog import (
+    REASON_UNREADABLE,
+    REASON_WALK_ERROR,
     Catalog,
     CatalogClip,
     build_catalog,
     sync_vocabulary,
 )
 from shared.records import (
+    REASON_INVALID,
+    REASON_NOT_A_RECORD,
+    REASON_NOT_WELL_FORMED,
+    REASON_UNKNOWN_ELEMENT,
+    REASON_UNKNOWN_TAG_KEY,
+    REASON_UNSUPPORTED_VERSION,
     ClipRecord,
     RECORD_SCHEMA_VERSION,
     render_record_xml,
@@ -379,6 +387,193 @@ def test_the_clip_carries_its_record_for_a_consumer_that_needs_provenance(tmp_pa
     assert isinstance(clip, CatalogClip)
     assert clip.record.segment_index == 11
     assert clip.record.source == "compilation.mp4"
+
+
+def test_the_clip_names_its_record_separately_from_its_video(tmp_path):
+    """Two files sharing a stem, and a consumer that wants to re-read, re-render
+    or report on one needs to name it."""
+    record_path = write_clip(tmp_path, "Worlds Finest")
+
+    clip = build_catalog(str(tmp_path)).clips[0]
+
+    assert clip.path.endswith("Worlds Finest.mp4")
+    assert clip.record_path == os.path.abspath(record_path)
+    assert clip.record_path != clip.path
+
+
+def test_a_clip_reaches_the_record_even_through_a_differently_named_video(tmp_path):
+    """The record is found by stem, so the sibling does not have to match the
+    record's own name for the walk to connect them."""
+    directory = tmp_path / "Cartoon Network" / "Promo"
+    directory.mkdir(parents=True)
+    (directory / "Toonami.mp4").write_bytes(b"video")
+    write_record(str(directory / "Toonami.cnfo"), make_record())
+
+    clip = build_catalog(str(tmp_path)).clips[0]
+
+    assert clip.relative_path == "Cartoon Network/Promo/Toonami.mp4"
+    assert clip.record_path.endswith("Toonami.cnfo")
+
+
+# ---------------------------------------------------------------------------
+# Why a record could not be read
+# ---------------------------------------------------------------------------
+
+def reasons_in(catalog):
+    return {problem.path: problem.reason for problem in catalog.problems}
+
+
+def test_a_corrupt_record_is_reported_as_malformed_rather_than_unknown(tmp_path):
+    """The two are the same symptom to a walk and completely different things to
+    a person, which is why the reason is a code and not prose."""
+    broken = write_clip(tmp_path, "Broken")
+    with open(broken, "w", encoding="utf-8") as handle:
+        handle.write("<commcut-clip><not-closed>")
+    write_clip(tmp_path, "Fine")
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Broken.cnfo": REASON_NOT_WELL_FORMED,
+    }
+
+
+def test_an_unknown_tag_key_gets_its_own_reason(tmp_path):
+    """The Library Importer's headline case: a friend's export used a tag this
+    build does not know. The user needs to be told *which* tag, not that the file
+    is bad."""
+    bad = write_clip(tmp_path, "Bad")
+    with open(bad, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<commcut-clip version="1">\n'
+            "  <source>compilation.mp4</source>\n"
+            '  <segment index="1" start="0.0" duration="1.0" />\n'
+            '  <tag key="colour">Red</tag>\n'
+            "</commcut-clip>\n"
+        )
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Bad.cnfo": REASON_UNKNOWN_TAG_KEY,
+    }
+    assert "colour" in catalog.problems[0].message
+
+
+def test_a_newer_schema_is_its_own_reason(tmp_path):
+    newer = write_clip(tmp_path, "Future")
+    with open(newer, "w", encoding="utf-8") as handle:
+        handle.write(render_record_xml(make_record()).replace(
+            f'version="{RECORD_SCHEMA_VERSION}"', 'version="99"'))
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Future.cnfo": REASON_UNSUPPORTED_VERSION,
+    }
+
+
+def test_an_unrecognized_element_is_its_own_reason(tmp_path):
+    odd = write_clip(tmp_path, "Odd")
+    with open(odd, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<commcut-clip version="1">\n'
+            "  <source>compilation.mp4</source>\n"
+            '  <segment index="1" start="0.0" duration="1.0" />\n'
+            "  <mood>grumpy</mood>\n"
+            "</commcut-clip>\n"
+        )
+
+    assert reasons_in(build_catalog(str(tmp_path))) == {
+        "Cartoon Network/Promo/Odd.cnfo": REASON_UNKNOWN_ELEMENT,
+    }
+
+
+def test_a_record_that_is_not_a_record_gets_its_own_reason(tmp_path):
+    """A `.cnfo` holding some other XML entirely. Easy to produce by accident
+    when hand-copying files between libraries."""
+    odd = write_clip(tmp_path, "Wrong")
+    with open(odd, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n<playlist><entry/></playlist>\n')
+
+    assert reasons_in(build_catalog(str(tmp_path))) == {
+        "Cartoon Network/Promo/Wrong.cnfo": REASON_NOT_A_RECORD,
+    }
+
+
+def test_a_record_missing_its_required_shape_is_invalid_rather_than_malformed(
+    tmp_path,
+):
+    """Well-formed XML, right root, right version, no `<source>`. The remaining
+    bucket, and named so it is not confused with any of the specific causes."""
+    odd = write_clip(tmp_path, "Headless")
+    with open(odd, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<commcut-clip version="1">\n'
+            '  <segment index="1" start="0.0" duration="1.0" />\n'
+            "</commcut-clip>\n"
+        )
+
+    assert reasons_in(build_catalog(str(tmp_path))) == {
+        "Cartoon Network/Promo/Headless.cnfo": REASON_INVALID,
+    }
+
+
+def test_a_record_that_cannot_be_read_at_all_says_so(tmp_path):
+    """Not a record problem at all: the bytes never became text. Distinct from a
+    record commcut read and refused, which is what `is_record_problem` is for."""
+    unreadable = write_clip(tmp_path, "Locked")
+    os.chmod(unreadable, 0o000)
+
+    try:
+        catalog = build_catalog(str(tmp_path))
+    finally:
+        os.chmod(unreadable, 0o666)
+
+    if not catalog.problems:
+        pytest.skip("this platform will not refuse a read for the current user")
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Locked.cnfo": REASON_UNREADABLE,
+    }
+    assert catalog.problems[0].is_record_problem is False
+
+
+def test_a_walk_error_is_its_own_reason(tmp_path, monkeypatch):
+    write_clip(tmp_path, "First")
+    locked = tmp_path / "Locked"
+    locked.mkdir()
+    real_scandir = os.scandir
+
+    def failing_scandir(target):
+        if os.path.abspath(str(target)) == os.path.abspath(str(locked)):
+            raise PermissionError(13, "Permission denied", str(locked))
+        return real_scandir(target)
+
+    monkeypatch.setattr(os, "scandir", failing_scandir)
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert [problem.reason for problem in catalog.problems] == [
+        REASON_WALK_ERROR]
+    assert catalog.problems[0].is_record_problem is False
+
+
+def test_a_refused_record_is_distinguishable_from_an_unreadable_one(tmp_path):
+    """The property the codes exist for: a screen can separate "this build does
+    not know that tag" from "this file will not open" without reading either
+    message."""
+    broken = write_clip(tmp_path, "Broken")
+    with open(broken, "w", encoding="utf-8") as handle:
+        handle.write("not xml at all")
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert len(catalog.problems) == 1
+    assert catalog.problems[0].is_record_problem is True
 
 
 # ---------------------------------------------------------------------------

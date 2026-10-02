@@ -192,6 +192,19 @@ def _normalized_relative_key(relative_components: Sequence[str]) -> tuple[str, .
     )
 
 
+def normalized_destination_key(relative_path: str) -> tuple[str, ...]:
+    """A destination path in the key space collisions are decided in.
+
+    Public because a second planner has to make the same decision about the same
+    string: `shared/importing.py` compares an incoming clip against what the
+    destination library already holds, and comparing those two with `==` would let
+    `cartoon network/A Clip.mp4` and `Cartoon Network/A Clip.mp4` overwrite each
+    other on a case-insensitive volume. Takes the posix text both planners render,
+    so neither has to re-split it.
+    """
+    return _normalized_relative_key(relative_path.split("/"))
+
+
 def _normalized_skip_keys(
     skip_destinations: Collection[str],
 ) -> set[tuple[str, ...]]:
@@ -210,17 +223,17 @@ def _normalized_skip_keys(
     return keys
 
 
-def _canonical_tags(tags: Mapping[str, str], segment_index: int) -> dict[str, str]:
+def _canonical_tags(tags: Mapping[str, str], label: str) -> dict[str, str]:
     canonical_tags: dict[str, str] = {}
     for name, value in tags.items():
         canonical = canonical_tag_name(name)
         if canonical is None:
             raise ExportPlanError(
-                f"Segment {segment_index + 1} contains unknown tag {name!r}"
+                f"{label} contains unknown tag {name!r}"
             )
         if not isinstance(value, str):
             raise ExportPlanError(
-                f"Segment {segment_index + 1} tag {canonical!r} must be a string"
+                f"{label} tag {canonical!r} must be a string"
             )
         canonical_tags[canonical] = value
     return canonical_tags
@@ -240,13 +253,146 @@ def missing_required_tags(tags: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(missing)
 
 
-def _validate_required_tags(tags: Mapping[str, str], segment_index: int) -> None:
+def _validate_required_tags(tags: Mapping[str, str], label: str) -> None:
     missing = missing_required_tags(tags)
     if missing:
         raise ExportPlanError(
-            f"Segment {segment_index + 1} is missing required tags: "
-            + ", ".join(missing)
+            f"{label} is missing required tags: " + ", ".join(missing)
         )
+
+
+#: What a destination claim came back with. Both planners need the same three
+#: outcomes per clip and must not be able to confuse them.
+CLAIM_CLAIMED = "claimed"
+CLAIM_SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class DestinationClaim:
+    """The result of asking a `DestinationIndex` for one clip's destination."""
+
+    #: False when the destination is `conflict_with` an earlier clip.
+    ok: bool
+    #: True when the destination was deliberately skipped by the caller.
+    skipped: bool = False
+    #: Whatever `owner` the earlier clip passed, when this one collided with it.
+    conflict_with: object = None
+
+
+class DestinationIndex:
+    """Cross-clip destination bookkeeping: the skip set, and the owner map.
+
+    The normalized-key collision check is the one rule that has to be consistent
+    across every clip in a batch *however those clips were produced* — cut from a
+    compilation, or read out of somebody else's library. Two planners each keeping
+    their own copy of it is how one of them ends up permitting a pair of clips
+    that would overwrite each other, so it lives here once.
+
+    The owner map stores whatever token the caller passes rather than a formatted
+    name, because the two callers word the conflict differently ("Segments 1 and 3"
+    against a filename) and a shared owner that had to be pre-formatted would
+    force one of them to parse it back.
+    """
+
+    def __init__(self, skip_destinations: Collection[str] = ()) -> None:
+        self._skip_keys = _normalized_skip_keys(skip_destinations)
+        self._owners: dict[tuple[str, ...], object] = {}
+
+    def claim(
+        self,
+        relative_components: Sequence[str],
+        *,
+        owner: object,
+    ) -> DestinationClaim:
+        """Claim this destination for `owner`, or report why it could not be.
+
+        A skipped destination is *not* claimed, so a later clip with the same tags
+        is free to take it — which is the resume behaviour: the clip already
+        written by an earlier run is left alone and a duplicate of it is not.
+        """
+        key = _normalized_relative_key(relative_components)
+        if key in self._skip_keys:
+            return DestinationClaim(ok=True, skipped=True)
+        existing = self._owners.get(key)
+        if existing is not None:
+            return DestinationClaim(ok=False, conflict_with=existing)
+        self._owners[key] = owner
+        return DestinationClaim(ok=True)
+
+    def owns(self, relative_components: Sequence[str]) -> bool:
+        """Whether some earlier clip has already claimed this destination."""
+        return _normalized_relative_key(relative_components) in self._owners
+
+
+@dataclass(frozen=True)
+class ClipDestination:
+    """Where one clip's tags put it, and the normalized tags that decided it.
+
+    The tags come back out because both planners need them for the clip's
+    `tags` field, and re-canonicalizing a second time to get them would mean two
+    dicts that could disagree about what the destination was rendered from — which
+    is precisely the split `docs/naming-and-organization.md` refuses to allow.
+    """
+
+    relative_components: tuple[str, ...]
+    record_relative_components: tuple[str, ...]
+    tags: tuple[tuple[str, str], ...]
+
+    @property
+    def relative_path(self) -> str:
+        """The posix text of where the video goes, as a caller displays it."""
+        return "/".join(self.relative_components)
+
+    @property
+    def record_relative_path(self) -> str:
+        """The posix text of where its record goes."""
+        return "/".join(self.record_relative_components)
+
+
+def plan_clip_destination(
+    *,
+    tags: Mapping[str, str],
+    folder_scheme,
+    filename_scheme,
+    label: str,
+) -> ClipDestination:
+    """Resolve one clip's tags to a destination, or raise naming this clip.
+
+    Everything between "a clip has these tags" and "this is where it goes": tag
+    canonicalization, the required-tag rule, both schemes, sanitation, and the
+    UTF-8 byte ceiling on the relative path. Shared with `plan_import`, so the two
+    planners cannot come to disagree about where a clip lands — which is the one
+    thing an importer most has to get right, since it is putting somebody else's
+    library next to this user's.
+
+    `label` is how this clip is named in an error ("Segment 3", or an imported
+    filename).
+    """
+    canonical = _canonical_tags(tags, label)
+    _validate_required_tags(canonical, label)
+
+    folder_components = render_folder_components(folder_scheme, canonical)
+    stem = render_compiled_filename(filename_scheme, canonical)
+    filename = sanitize_filename_stem(stem, OUTPUT_EXTENSION)
+    record = record_filename(filename, RECORD_EXTENSION)
+
+    relative_components = (*folder_components, filename)
+    record_components = (*folder_components, record)
+    if (
+        len("/".join(relative_components).encode("utf-8"))
+        > MAX_FOLDER_RELATIVE_PATH_BYTES
+        or len("/".join(record_components).encode("utf-8"))
+        > MAX_FOLDER_RELATIVE_PATH_BYTES
+    ):
+        raise ExportPlanError(
+            f"{label} relative destination exceeds "
+            f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
+        )
+    return ClipDestination(
+        relative_components=relative_components,
+        record_relative_components=record_components,
+        tags=tuple(sorted(canonical.items())),
+    )
 
 
 def _is_link_or_reparse_point(path: str) -> bool:
@@ -625,7 +771,7 @@ def plan_export(
         raise TypeError("model must be a SegmentModel")
     if not isinstance(schemes, ExportSchemes):
         raise TypeError("schemes must be an ExportSchemes snapshot")
-    skip_keys = _normalized_skip_keys(skip_destinations)
+    index = DestinationIndex(skip_destinations)
 
     validate_segment_model(model)
     root = _validate_export_root(export_root)
@@ -635,63 +781,48 @@ def plan_export(
     planned: list[PlannedExportClip] = []
     skipped: list[PlannedExportClip] = []
     errors: list[str] = []
-    owners: dict[tuple[str, ...], int] = {}
 
     for segment_index, segment in enumerate(model.segments):
         if segment.get("ignored"):
             continue
 
+        label = f"Segment {segment_index + 1}"
         start = model.start(segment_index)
         duration = model.end(segment_index) - start
         if not math.isfinite(start) or not math.isfinite(duration) or duration <= 0:
-            errors.append(
-                f"Segment {segment_index + 1} has an invalid duration"
-            )
+            errors.append(f"{label} has an invalid duration")
             continue
 
         try:
-            tags = _canonical_tags(segment.get("tags", {}), segment_index)
-            _validate_required_tags(tags, segment_index)
-            folder_components = render_folder_components(folder_scheme, tags)
-            stem = render_compiled_filename(filename_scheme, tags)
-            filename = sanitize_filename_stem(stem, OUTPUT_EXTENSION)
-            record = record_filename(filename, RECORD_EXTENSION)
+            destination = plan_clip_destination(
+                tags=segment.get("tags", {}),
+                folder_scheme=folder_scheme,
+                filename_scheme=filename_scheme,
+                label=label,
+            )
         except (ExportPlanError, FilenameSchemeError, FolderSchemeError, ValueError) as error:
             errors.append(str(error))
             continue
 
-        relative_components = (*folder_components, filename)
-        record_components = (*folder_components, record)
-        relative_text = "/".join(relative_components)
-        record_text = "/".join(record_components)
-        if (
-            len(relative_text.encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES
-            or len(record_text.encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES
-        ):
-            errors.append(
-                f"Segment {segment_index + 1} relative destination exceeds "
-                f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
-            )
-            continue
-        key = _normalized_relative_key(relative_components)
         clip = PlannedExportClip(
             segment_index=segment_index,
             start=float(start),
             duration=float(duration),
-            relative_components=relative_components,
-            tags=tuple(sorted(tags.items())),
-            record_relative_components=record_components,
+            relative_components=destination.relative_components,
+            tags=destination.tags,
+            record_relative_components=destination.record_relative_components,
         )
-        if key in skip_keys:
+        claim = index.claim(destination.relative_components, owner=segment_index)
+        if claim.skipped:
             skipped.append(clip)
             continue
-        if key in owners:
+        if not claim.ok:
             errors.append(
-                f"Segments {owners[key] + 1} and {segment_index + 1} resolve to the "
-                f"same destination: {relative_text}"
+                f"Segments {claim.conflict_with + 1} and {segment_index + 1} "
+                f"resolve to the same destination: "
+                f"{'/'.join(destination.relative_components)}"
             )
             continue
-        owners[key] = segment_index
         planned.append(clip)
 
     if not model.segments:

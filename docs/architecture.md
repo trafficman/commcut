@@ -62,6 +62,7 @@ commcut/
 │   ├── paths.py             # Folder scheme validation, sanitization, safe components
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
+│   ├── importing.py         # plan_import / execute_import, find_videos, proposals
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── tests/                   # pytest suite (see testing.md)
 └── prototypes/              # Earlier exploration / alternatives
@@ -349,14 +350,22 @@ The shared modules are:
    default for a caller that does not.
  - `shared/catalog.py` — the walk that reads the export library back:
    `build_catalog()` returns the clips it holds (a record with a sibling video),
-   the records it could not read, and whether it was cancelled. A read-only
-   scan, so a walk error is reported rather than raised — deliberately unlike
-   the preflight's walk, which is about to write into the same tree.
-   `sync_vocabulary()` uses it to reconcile `vocabulary.json` against the
-   library. It holds no Qt types; the Settings window's `SyncWorker` is the
-   thin wrapper that runs it off the GUI thread. See
+   the records it could not read (each with a `reason` code, so a screen can group
+   them), and whether it was cancelled. A read-only scan, so a walk error is
+   reported rather than raised — deliberately unlike the preflight's walk, which is
+   about to write into the same tree. `sync_vocabulary()` uses it to reconcile
+   `vocabulary.json` against the library. It holds no Qt types; the Settings
+   window's `SyncWorker` is the thin wrapper that runs it off the GUI thread. See
    [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
    and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
+ - `shared/importing.py` — the Library Importer's backend, with no window over it
+   yet. `plan_import()` resolves finished clips to destinations through the *same*
+   `plan_clip_destination` and `DestinationIndex` the export planner uses, so a
+   foreign clip cannot land somewhere an exported one would not; `execute_import()`
+   copies, links or moves each one and publishes its record. Also
+   `find_videos()` for untagged discovery and `propose_tags_from_path()` /
+   `match_value()`, which propose and rank but never decide. See
+   [importing.md](importing.md).
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.

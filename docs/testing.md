@@ -74,7 +74,8 @@ state.
 | `test_boundary_preview.py` | the boundary peek: the seek sequence, and every rule that cancels a pending one |
 | `test_records.py` | the clip record: the XML format, its reader, and the atomic publish |
 | `test_vocabulary.py` | `vocabulary.json`: the shipped defaults, the unusable-file fallbacks, the dedup rule, the atomic write, and `prune_to` |
-| `test_catalog.py` | the library walk: what counts as a clip, what is ignored, what is reported, progress, cancel, and the record-over-filename guard. Also the vocabulary sync: union, prune, the empty-library and cancelled-write rules, and idempotence |
+| `test_catalog.py` | the library walk: what counts as a clip, what is ignored, what is reported (by code as well as by sentence), progress, cancel, and the record-over-filename guard. Also the vocabulary sync: union, prune, the empty-library and cancelled-write rules, and idempotence |
+| `test_importing.py` | the importer's backend: records becoming candidates, an imported clip landing where export would put it, per-clip skipping, skip-if-identical against a library built by really importing, the three transfer modes, the space preflight, cancel and resume, untagged discovery, and the evidence behind each proposal |
 | `test_editor_vocabulary.py` | the tag dropdowns: what they offer, the most-recently-used ordering, what counts as "used", and that a refresh cannot eat a value being typed |
 | `test_editor_locks.py` | tag-lock display, pinned-value semantics, locked-only segment carry-over |
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
@@ -88,7 +89,7 @@ state.
 | `test_scheme.py` | strict scheme parsing |
 | `test_naming.py` | filename rendering, including the README pattern |
 | `test_paths.py` | strict folder scheme compilation, rendering, and sanitation |
-| `test_exporting.py` | export settings, destination planning, preflight, resume skips |
+| `test_exporting.py` | export settings, destination planning, preflight, resume skips, the export folder, and the two destination helpers the importer shares |
 | `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting, the encoder probe, and the no-console flag reaching `Popen` (`Popen` mocked) |
 | `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run, and the summary screen (window wiring with a substituted dialog, plus the shipped dialog itself) |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels, and the vocabulary sync button (thread, worker, progress dialog, and result dialog substituted) |

@@ -85,6 +85,7 @@ planner and `export_folder()`), `catalog` (reading the library back),
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
+| [docs/importing.md](docs/importing.md) | the Library Importer's backend: reading somebody else's library, the occupied-destination rule, per-clip skipping, the transfer modes, and why a path can only ever propose a tag |
 | [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, what counts as "used" |
 | [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the tag-driven release pipeline |
 | [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |

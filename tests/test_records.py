@@ -7,10 +7,17 @@ import pytest
 from shared.records import (
     RECORD_EXTENSION,
     RECORD_SCHEMA_VERSION,
+    REASON_INVALID,
+    REASON_NOT_A_RECORD,
+    REASON_NOT_WELL_FORMED,
+    REASON_UNKNOWN_ELEMENT,
+    REASON_UNKNOWN_TAG_KEY,
+    REASON_UNSUPPORTED_VERSION,
     ClipRecord,
     RecordError,
     load_record,
     parse_record_xml,
+    record_error_reason,
     render_record_xml,
     write_record,
 )
@@ -348,3 +355,87 @@ def test_the_tag_dict_view_is_a_copy():
     view["title"] = "changed"
 
     assert record.tag_dict["title"] == "Worlds Finest"
+
+
+# ---------------------------------------------------------------------------
+# Why a record was refused, as a code
+# ---------------------------------------------------------------------------
+
+def reason_for(document):
+    with pytest.raises(RecordError) as error:
+        parse_record_xml(document)
+    return record_error_reason(error.value)
+
+
+def test_a_reason_is_produced_for_every_kind_of_refusal():
+    """One code per cause, so a screen can group a library's problems instead of
+    showing the user eighty sentences that all say something is wrong.
+
+    The messages are asserted alongside the codes because the classification reads
+    them: a reworded message must fail a test here rather than silently change
+    what a caller is told.
+    """
+    assert reason_for("<commcut-clip><unclosed>") == REASON_NOT_WELL_FORMED
+    assert reason_for(
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+        '<tag key="colour">Red</tag></commcut-clip>'
+    ) == REASON_UNKNOWN_TAG_KEY
+    assert reason_for(
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+        "<mood>grumpy</mood></commcut-clip>"
+    ) == REASON_UNKNOWN_ELEMENT
+    assert reason_for(
+        '<commcut-clip version="99"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" /></commcut-clip>'
+    ) == REASON_UNSUPPORTED_VERSION
+    assert reason_for(
+        '<commcut-clip version="zero"><source>a.mp4</source></commcut-clip>'
+    ) == REASON_UNSUPPORTED_VERSION
+    assert reason_for(
+        '<commcut-clip version="0"><source>a.mp4</source></commcut-clip>'
+    ) == REASON_UNSUPPORTED_VERSION
+    assert reason_for("<playlist><entry/></playlist>") == REASON_NOT_A_RECORD
+    assert reason_for(
+        '<commcut-clip version="1">'
+        '<segment index="0" start="0" duration="1" /></commcut-clip>'
+    ) == REASON_INVALID
+    assert reason_for(
+        '<commcut-clip version="1"><source>a.mp4</source></commcut-clip>'
+    ) == REASON_INVALID
+    assert reason_for(
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="zero" duration="1" /></commcut-clip>'
+    ) == REASON_INVALID
+
+
+def test_the_reason_codes_do_not_collide():
+    """They are only useful for grouping if no two causes share a bucket, so this
+    fails the moment one starts."""
+    codes = {
+        REASON_NOT_WELL_FORMED, REASON_NOT_A_RECORD, REASON_UNSUPPORTED_VERSION,
+        REASON_UNKNOWN_TAG_KEY, REASON_UNKNOWN_ELEMENT, REASON_INVALID,
+    }
+
+    assert len(codes) == 6
+
+
+def test_a_record_that_parsed_but_cannot_be_held_still_gets_a_reason():
+    """`parse_record_xml` sorts tags, so a duplicate key arrives as a canonical
+    key twice and is caught by `ClipRecord.__post_init__` rather than by the XML
+    walk. The classification has to survive that step, not just the parse."""
+    document = (
+        '<commcut-clip version="1">'
+        "<source>a.mp4</source>"
+        '<segment index="0" start="0" duration="1" />'
+        '<tag key="network">CN</tag>'
+        '<tag key="network">Nick</tag>'
+        "</commcut-clip>"
+    )
+
+    with pytest.raises(RecordError) as error:
+        parse_record_xml(document)
+
+    assert record_error_reason(error.value) == REASON_INVALID
+    assert "network" in str(error.value)

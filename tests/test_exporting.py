@@ -10,15 +10,19 @@ from shared.exporting import (
     EXPORT_FOLDER_NAME,
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
+    DestinationIndex,
     ExportPlanError,
     ExportSchemes,
     export_folder,
     load_export_schemes,
     model_with_tag_locks,
+    plan_clip_destination,
     plan_export,
     preflight_export_plan,
 )
+from shared.naming import compile_filename_scheme
 from shared.paths import DEFAULT_FOLDER_SCHEME
+from shared.paths import compile_folder_scheme
 from shared.records import RECORD_EXTENSION
 from shared.segments import SegmentModel
 
@@ -749,3 +753,188 @@ def test_skip_destinations_must_be_relative_paths(
 
     with pytest.raises(TypeError, match="non-empty strings"):
         plan_export(model, schemes, root, skip_destinations=[""])
+
+
+# ---------------------------------------------------------------------------
+# The pieces the export planner and the importer share
+# ---------------------------------------------------------------------------
+#
+# `plan_export` no longer computes a destination itself: it delegates the
+# per-clip half to `plan_clip_destination` and the cross-clip half to
+# `DestinationIndex`, so `shared/importing.py` can put somebody else's library
+# through the identical rules. These pin both halves, because the property that
+# matters is not "export still works" — the rest of this file covers that — but
+# that the shared halves behave the same way whoever calls them.
+
+REQUIRED_TAGS = {
+    "title": "A Clip", "network": "CN", "filler_type": "Promo",
+    "time_period": "2000s",
+}
+
+
+def resolve(tags, label="Segment 1", file_scheme=DEFAULT_FILE_NAMING_SCHEME):
+    return plan_clip_destination(
+        tags=tags,
+        folder_scheme=compile_folder_scheme(DEFAULT_FOLDER_SCHEME),
+        filename_scheme=compile_filename_scheme(file_scheme),
+        label=label,
+    )
+
+
+def test_one_clip_destination_resolves_under_the_shipped_schemes():
+    destination = resolve(REQUIRED_TAGS)
+
+    assert destination.relative_components[-1] == "CN - Promo - 2000s - A Clip.mp4"
+    assert destination.record_relative_components[-1] == (
+        f"CN - Promo - 2000s - A Clip{RECORD_EXTENSION}")
+    assert dict(destination.tags) == REQUIRED_TAGS
+
+
+def test_the_record_sits_beside_its_video_and_shares_its_folders():
+    """One clip, two files. The record's components are the video's with the last
+    one swapped, which is the whole of `video present => record present`."""
+    destination = resolve(REQUIRED_TAGS)
+
+    assert (destination.record_relative_components[:-1]
+            == destination.relative_components[:-1])
+    assert (destination.record_relative_components[-1]
+            != destination.relative_components[-1])
+
+
+def test_the_destination_hands_back_the_tags_it_rendered_from():
+    """So a planner cannot build the clip's record from a second, separately
+    canonicalized dict and have the two disagree about where it went."""
+    destination = resolve({**REQUIRED_TAGS, "type": "Bumper"})
+
+    assert dict(destination.tags)["filler_type"] == "Bumper"
+    assert "Bumper" in destination.relative_components[-1]
+
+
+def test_an_error_names_the_label_it_was_given():
+    """The only difference between a segment's complaint and an imported clip's
+    is which clip it is about, so the label is a parameter."""
+    with pytest.raises(ExportPlanError) as error:
+        resolve({**REQUIRED_TAGS, "title": ""}, label="Friday Night Bump.mkv")
+
+    assert "Friday Night Bump.mkv" in str(error.value)
+
+
+def test_a_missing_required_tag_is_refused_with_the_same_rule_the_editor_uses():
+    partial = {k: v for k, v in REQUIRED_TAGS.items() if k != "time_period"}
+
+    with pytest.raises(ExportPlanError) as error:
+        resolve(partial)
+
+    assert "time_period" in str(error.value)
+
+
+def test_an_unknown_tag_is_refused_rather_than_dropped():
+    with pytest.raises(ExportPlanError) as error:
+        resolve({**REQUIRED_TAGS, "colour": "Red"})
+
+    assert "colour" in str(error.value)
+
+
+def test_two_resolutions_of_the_same_tags_land_in_the_same_place():
+    """The importer's core safety property: the same tags under the same schemes
+    cannot resolve differently depending on which planner asked."""
+    other = plan_clip_destination(
+        tags=dict(reversed(list(REQUIRED_TAGS.items()))),
+        folder_scheme=compile_folder_scheme(DEFAULT_FOLDER_SCHEME),
+        filename_scheme=compile_filename_scheme(DEFAULT_FILE_NAMING_SCHEME),
+        label="An Imported Clip.mp4",
+    )
+
+    assert other.relative_components == resolve(REQUIRED_TAGS).relative_components
+
+
+class TestDestinationIndex:
+    """The cross-clip rule, which has to hold however the clips were produced."""
+
+    def test_the_first_claim_wins_and_the_second_collides(self):
+        index = DestinationIndex()
+        components = ("Network", "A Clip.mp4")
+
+        first = index.claim(components, owner=7)
+        second = index.claim(components, owner=9)
+
+        assert first.ok and not first.skipped
+        assert not second.ok
+        assert second.conflict_with == 7
+
+    def test_a_collision_is_in_the_normalized_key_space(self):
+        """Case is not a difference to the filesystem on Windows or macOS, and
+        NFC and stray control characters are not differences anywhere, so two
+        clips differing only in those must not both be planned."""
+        index = DestinationIndex()
+
+        index.claim(("Cartoon Network", "A Clip.mp4"), owner=0)
+        clash = index.claim(("cartoon network", "a clip.mp4"), owner=1)
+
+        assert not clash.ok
+        assert clash.conflict_with == 0
+
+    def test_a_different_spelling_is_a_different_destination(self):
+        """The other half of the rule: the key normalizes case and Unicode, not
+        punctuation. Over-colliding would refuse two clips that are genuinely
+        different files."""
+        index = DestinationIndex()
+
+        assert index.claim(("Network", "A Clip.mp4"), owner=0).ok
+        assert index.claim(("Network", "a-clip.mp4"), owner=1).ok
+
+    def test_distinct_destinations_do_not_collide(self):
+        index = DestinationIndex()
+
+        assert index.claim(("A", "x.mp4"), owner=0).ok
+        assert index.claim(("B", "x.mp4"), owner=1).ok
+        assert index.claim(("A", "y.mp4"), owner=2).ok
+
+    def test_a_skipped_destination_is_left_alone_and_free_to_be_claimed(self):
+        """Resume behaviour: the clip an earlier run wrote is skipped, and a
+        duplicate of it is not what the skip is protecting — nothing is
+        overwritten either way."""
+        index = DestinationIndex(skip_destinations=["Network/A Clip.mp4"])
+
+        claim = index.claim(("Network", "A Clip.mp4"), owner=0)
+
+        assert claim.skipped
+        assert claim.ok
+        assert index.claim(("Network", "A Clip.mp4"), owner=1).ok, (
+            "a skipped destination must not block a later claim")
+
+    def test_owns_reports_a_claimed_destination(self):
+        index = DestinationIndex()
+
+        assert not index.owns(("A", "x.mp4"))
+        index.claim(("A", "x.mp4"), owner=0)
+        assert index.owns(("A", "x.mp4"))
+        assert not index.owns(("A", "y.mp4"))
+
+    def test_an_owner_is_whatever_the_caller_wants_back(self):
+        """The two planners word a collision differently, so the index stores the
+        token rather than a name one of them would have to parse."""
+        index = DestinationIndex()
+
+        index.claim(("A", "x.mp4"), owner="Friday Night Bump.mkv")
+
+        assert index.claim(("A", "x.mp4"), owner=1).conflict_with == (
+            "Friday Night Bump.mkv")
+
+
+def test_plan_export_agrees_with_the_shared_destination_half(schemes,
+                                                             required_tags,
+                                                             tmp_path):
+    """The cross-check that makes the extraction safe: a segment planned through
+    `plan_export` and the same tags resolved through `plan_clip_destination`
+    under the *same* schemes must produce the same path. If they ever diverge, an
+    imported clip would land somewhere an exported one would not."""
+    model = make_model(tags_list=[dict(required_tags)])
+    plan = plan_export(model, schemes, str(tmp_path / "library"))
+
+    expected = resolve(required_tags, file_scheme=schemes.file_scheme)
+
+    assert plan.clips[0].relative_components == expected.relative_components
+    assert plan.clips[0].record_relative_components == (
+        expected.record_relative_components)
+    assert plan.clips[0].tags == expected.tags

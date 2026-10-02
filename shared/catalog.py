@@ -33,13 +33,25 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from shared.records import RECORD_EXTENSION, ClipRecord, RecordError, load_record
+from shared.records import (
+    RECORD_EXTENSION,
+    ClipRecord,
+    RecordError,
+    load_record,
+    record_error_reason,
+)
 from shared.sources import is_video_file
 from shared.vocabulary import PruneResult
 
 #: Re-exported so a caller scanning for records does not have to know where the
 #: extension is defined. Not a second definition of it.
 RECORD_SCAN_EXTENSION = RECORD_EXTENSION
+
+#: `CatalogProblem.reason` when the record file itself could not be opened or
+#: read. The record-error reasons come from `shared/records.py`, which is where
+#: they are raised.
+REASON_UNREADABLE = "unreadable"
+REASON_WALK_ERROR = "walk-error"
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,10 @@ class CatalogClip:
     #: for the Rename Wizard to name a clip without carrying an absolute path
     #: around. `shared/exporting.py` renders relative paths the same way.
     relative_path: str
+    #: Absolute path of the `.cnfo` this was read from. Carried separately from
+    #: `path` because the two are different files sharing a stem, and a consumer
+    #: that wants to re-read, re-render or report on one needs to name it.
+    record_path: str
     #: Raw, canonical-key tag pairs, straight from the record. Never from the
     #: filename -- see the module docstring.
     tags: tuple[tuple[str, str], ...]
@@ -70,11 +86,27 @@ class CatalogProblem:
     Named rather than counted because a silently skipped record is a clip the
     user cannot find afterwards, which is the same failure the export summary
     screen exists to stop.
+
+    `reason` is the code and `message` is the sentence, because they answer
+    different questions. A screen groups by the code — every unknown tag key in
+    one place, every corrupt file in another — while the message is what the
+    person reads. Matching on the prose instead is what makes this class
+    necessary: "this build does not know the tag `colour`" and "this file is
+    corrupt" are the same symptom to a walk and completely different things to
+    the user. The codes come from `shared/records.py` where they are raised.
     """
 
     #: Relative to the root that was walked.
     path: str
     message: str
+    #: One of the `REASON_*` codes: a record reason from `shared/records.py`, or
+    #: `REASON_UNREADABLE` / `REASON_WALK_ERROR` from this module.
+    reason: str = REASON_UNREADABLE
+
+    @property
+    def is_record_problem(self) -> bool:
+        """True when a record was found and refused, rather than unreadable."""
+        return self.reason != REASON_UNREADABLE and self.reason != REASON_WALK_ERROR
 
 
 @dataclass(frozen=True)
@@ -169,8 +201,8 @@ def build_catalog(
     """Walk `root` and return every clip it holds.
 
     A missing root is an empty catalog rather than an error, for the same reason
-    `shared/sources.py:list_source_videos` gives one: an empty export folder is
-    the expected state of a fresh install, not a fault.
+    a fresh install with an empty `export/` is the expected state rather than a
+    fault: nothing about the tree is wrong, there is simply nothing in it.
 
     `on_progress(clips_found, relative_path)` carries **no total**.
     `os.walk` cannot know how many records are ahead of it, and a progress bar
@@ -198,6 +230,7 @@ def build_catalog(
         problems.append(CatalogProblem(
             _relative(root, error.filename) if error.filename else "",
             str(error),
+            reason=REASON_WALK_ERROR,
         ))
 
     for current_root, _directory_names, file_names in os.walk(
@@ -227,7 +260,11 @@ def build_catalog(
             try:
                 record = load_record(record_path)
             except (RecordError, OSError) as error:
-                problems.append(CatalogProblem(relative, str(error)))
+                problems.append(CatalogProblem(
+                    relative, str(error),
+                    reason=record_error_reason(error)
+                    if isinstance(error, RecordError) else REASON_UNREADABLE,
+                ))
                 continue
             video_path = _sibling_video(record_path, videos)
             if video_path is None:
@@ -235,6 +272,7 @@ def build_catalog(
             clips.append(CatalogClip(
                 path=video_path,
                 relative_path=_relative(root, video_path),
+                record_path=record_path,
                 tags=record.tags,
                 record=record,
             ))

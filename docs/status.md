@@ -96,6 +96,10 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   back — a record with a sibling video is a clip — plus the sync that uses it.
   No window displays it yet. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
+- Library Importer **backend** (`shared/importing.py`): planning, execution, the
+  occupied-destination rule, the transfer modes, untagged discovery, and the
+  evidence-ranked matching the mesh wizard will read. No screens yet — nothing
+  lets a user start an import.   → [importing.md](importing.md)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
@@ -216,6 +220,14 @@ The full vision in `README.md` has three pieces; two are not started:
   and deliberately are not cached. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
   [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
+- **The Library Importer's screens.** The backend is built and has no window over
+  it: there is no way to start an import. What remains is the scan summary, the
+  Auto Library Mesh Wizard, the manual tag queue with its mpv preview, and the
+  review page — one window, so `_BUILDERS`, a `.ui`, `UI_DATAS`, `REQUIRED_UI` and
+  the `WINDOW_UI` table in `tests/test_frozen_mode.py`, which are already held to
+  each other. The tag-form helpers have to move out of `editor/editor.py` into
+  `shared/` first, or the queue's form will drift from the editor's.
+  → [importing.md](importing.md)
 
 ## Known gaps and traps
 

@@ -53,6 +53,45 @@ class RecordError(ValueError):
     """A clip record is missing, malformed, or cannot be represented."""
 
 
+#: Why a record could not be read, as a code a caller can group by rather than a
+#: sentence it has to match on. The Library Importer is the caller that needs it:
+#: "this build does not know the tag key `colour`" and "this file is corrupt" are
+#: the same symptom to a walk and completely different things to a person, and a
+#: screen cannot tell them apart from prose without this.
+REASON_NOT_WELL_FORMED = "not-well-formed"
+REASON_NOT_A_RECORD = "not-a-record"
+REASON_UNSUPPORTED_VERSION = "unsupported-version"
+REASON_UNKNOWN_TAG_KEY = "unknown-tag-key"
+REASON_UNKNOWN_ELEMENT = "unknown-element"
+REASON_INVALID = "invalid-record"
+
+
+def record_error_reason(error: RecordError) -> str:
+    """The code for why `error` was raised.
+
+    Classified from the message, which is a coupling worth being honest about: the
+    alternatives are a subclass per cause, or a code passed alongside every raise
+    in this module. Both are worse for now — `parse_record_xml` has one public
+    failure type on purpose, so a caller never has to know which of several to
+    catch. The mapping lives here rather than in a caller so there is one owner,
+    and `tests/test_records.py` pins every branch against the exact string it
+    reads, so a reworded message fails a test rather than silently changing a code.
+    """
+    message = str(error)
+    if "not well-formed" in message:
+        return REASON_NOT_WELL_FORMED
+    if "unknown tag key" in message:
+        return REASON_UNKNOWN_TAG_KEY
+    if "unrecognized element" in message:
+        return REASON_UNKNOWN_ELEMENT
+    if "record schema version" in message or "is not a schema version" in message \
+            or "is not an integer" in message:
+        return REASON_UNSUPPORTED_VERSION
+    if "Record root is" in message:
+        return REASON_NOT_A_RECORD
+    return REASON_INVALID
+
+
 @dataclass(frozen=True)
 class ClipRecord:
     """One exported clip's tags and provenance, as the record stores them.

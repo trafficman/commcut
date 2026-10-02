@@ -7,7 +7,8 @@ schemes.
 
 Applies to: `shared/scheme.py`, `shared/naming.py`, `shared/paths.py`,
 `shared/exporting.py`, `shared/ffmpeg.py`, `shared/records.py`,
-`shared/catalog.py`, `settings/settings.py`, `settings/settingswindow.ui`.
+`shared/catalog.py`, `shared/importing.py`, `settings/settings.py`,
+`settings/settingswindow.ui`.
 
 Related: [segment-model.md](segment-model.md) (the tags and the required-field
 rule), [packaging.md](packaging.md) (the export root beside the exe).
@@ -547,11 +548,12 @@ editor for folder schemes:
 `tests/test_scheme.py` (strict parsing), `tests/test_paths.py` (folder grammar
 and sanitation), `tests/test_naming.py` (filename rendering, including the
 README pattern), `tests/test_records.py` (the record format, its reader, and how
-it is published), `tests/test_catalog.py` (the library walk: what a clip is, what
-is ignored, what is reported, and the record-over-filename guard),
-`tests/test_settings.py` (the window, previews, atomic save, the help panels, and
-the vocabulary sync button), `tests/test_exporting.py` (settings, planning,
-preflight, resume skips, the record's destination, and the export folder),
-`tests/test_ffmpeg.py` (plan execution, progress, cancel, partial failures, and
-the record beside each clip), and `tests/test_editor_export.py` (the worker, the
-progress dialog, cancel, resume, and closing mid-run).
+it is published), `tests/test_catalog.py` (the library walk: what a clip is, what is ignored, what is
+reported, and the record-over-filename guard), `tests/test_importing.py` (the
+Library Importer's backend, including that an imported clip lands where an
+exported one would), `tests/test_settings.py` (the window, previews, atomic save,
+the help panels, and the vocabulary sync button), `tests/test_exporting.py`
+(settings, planning, preflight, resume skips, the record's destination, and the
+export folder), `tests/test_ffmpeg.py` (plan execution, progress, cancel, partial
+failures, and the record beside each clip), and `tests/test_editor_export.py` (the
+worker, the progress dialog, cancel, resume, and closing mid-run).
