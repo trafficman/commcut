@@ -18,10 +18,15 @@ Two modes, and the difference is where the tags came from:
   the results land. No ffmpeg runs: `ClipRecord` carries `duration`, so the new
   record is rendered from the old one.
 - **Untagged.** There is no record, so somebody has to supply the tags. That
-  somebody is a person, and this module's job is to make it easy for them —
-  `find_videos` finds the clips and `propose_tags_from_path` suggests candidates.
-  A proposal is never a value: nothing here writes one anywhere, and `plan_import`
-  only ever receives tags a caller has already settled.
+  somebody is a person, and `shared/mesh.py` is how it happens: the Library Mesh
+  Wizard asks, once per folder name, what that folder means. This module has no
+  say in it -- it only accepts `ImportCandidate`s whose tags are already settled,
+  and nothing here can settle one.
+
+  Filename parsing was built here and then removed rather than left unused: it was
+  the one place that would have *inferred* a tag from a name, which
+  `docs/naming-and-organization.md` refuses outright. A folder name reaches the
+  Wizard already extracted, and the Wizard asks about it.
 
 Three rules that are decisions rather than mechanics:
 
@@ -49,7 +54,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -798,17 +802,6 @@ def _relative_dir(root: str, path: str) -> str:
     return "" if relative == os.curdir else relative.replace(os.sep, "/")
 
 
-# ---------------------------------------------------------------------------
-# Proposing tags from a path
-# ---------------------------------------------------------------------------
-
-#: How much to trust a proposal. Derived, never asserted, and `weak` means "do not
-#: offer this as an answer" rather than "offer it with a shrug".
-CONFIDENCE_EXACT = "exact"
-CONFIDENCE_CANDIDATE = "candidate"
-CONFIDENCE_WEAK = "weak"
-
-
 def _clip_count(library: Catalog, namespace: str, value: str) -> int:
     """How many of the library's clips actually use this value.
 
@@ -826,80 +819,6 @@ def _clip_count(library: Catalog, namespace: str, value: str) -> int:
     )
 
 
-@dataclass(frozen=True)
-class TagProposal:
-    """A suggestion for one tag, with the reason it was suggested.
-
-    The type exists to keep a guess from becoming a value. Nothing in the app
-    writes a `TagProposal` anywhere, and `plan_import` only accepts tags a caller
-    has already settled — so the boundary between "a person said this" and "a
-    folder name looked like this" is a type boundary rather than a convention
-    somebody has to remember.
-
-    `evidence` is the whole point of the class. `docs/naming-and-organization.md`
-    refuses the reverse parser outright, and that refusal is about trust: a scheme
-    renders lossily, so a name cannot be read back. A proposal does not claim the
-    name says what it means; it claims a person might agree, and shows why.
-    """
-
-    namespace: str
-    value: str
-    confidence: str
-    evidence: str
-
-
-def propose_tags_from_path(
-    relative_path: str,
-    *,
-    library: Catalog | None = None,
-    vocabulary=None,
-) -> tuple[TagProposal, ...]:
-    """Suggest tags for a video from where it sits, and from nothing else.
-
-    A heuristic, and its docstring should not pretend otherwise. Folder names and
-    `-`/`(...)` tokens in a filename are what a person's naming scheme tends to
-    produce, so they are worth offering — as questions.
-
-    Confidence is earned, not guessed:
-
-    - `exact` -- the token matches a value the existing library uses in exactly one
-      namespace, by the same normalization the collision rules use.
-    - `candidate` -- it matches in several namespaces (all listed), or only in the
-      advisory `vocabulary.json`, which is a cache downstream of the library and
-      drifts, so a hit there is weaker evidence than a hit in the library itself.
-    - `weak` -- only a substring. Offered so a person can recognize it, never as an
-      answer.
-
-    Nothing is proposed for `title`: it is unique per clip, and a folder or a `-`
-    token in a filename is a *shared* label, which is what every other tag means.
-    Guessing the one field nothing can be wrong about twice is not a kindness.
-    """
-    tokens = _path_tokens(relative_path)
-    if not tokens:
-        return ()
-
-    index = library.tag_index if library is not None else {}
-    proposals: list[TagProposal] = []
-    seen: set[tuple[str, str]] = set()
-
-    for token in tokens:
-        for namespace in sorted(_suggestible_namespaces()):
-            matches = _namespaces_holding(index, vocabulary, token)
-            confidence, evidence = _rank(matches, namespace, token, library,
-                                         vocabulary)
-            if confidence is None:
-                continue
-            key = (namespace, token)
-            if key in seen:
-                continue
-            seen.add(key)
-            proposals.append(TagProposal(
-                namespace=namespace, value=token, confidence=confidence,
-                evidence=evidence,
-            ))
-    return tuple(proposals)
-
-
 def _suggestible_namespaces() -> tuple[str, ...]:
     """Namespaces a proposal may name: the canonical ones that are not `title`.
 
@@ -912,100 +831,6 @@ def _suggestible_namespaces() -> tuple[str, ...]:
 
 #: ` - ` in a filename, and anything in round brackets. The two shapes a rendered
 #: commcut name actually produces, so the two worth splitting on.
-_PARENTHETICAL = re.compile(r"\(([^)]*)\)")
-_DASH_SEPARATOR = re.compile(r"\s+-\s+")
-
-
-def _path_tokens(relative_path: str) -> tuple[str, ...]:
-    """The candidate strings in a relative path: folder names, `-`-separated parts
-    of the filename, and anything the filename put in round brackets.
-
-    Deliberately crude, and that is the point: this is the one place in the app
-    that looks at a path for meaning, and it may only ever produce something a
-    person confirms. A parenthetical is extracted *before* the brackets are
-    stripped, because `(Toonami)` inside `Worlds Finest (Toonami)` is one tag and
-    the words around it are another -- flattening first would yield the single
-    string `Worlds Finest Toonami` and find nothing.
-    """
-    parts = [part for part in relative_path.split("/") if part]
-    if not parts:
-        return ()
-
-    stem = os.path.splitext(parts[-1])[0]
-    tokens: list[str] = [part.replace("_", " ").strip() for part in parts[:-1]]
-    tokens.extend(match.strip() for match in _PARENTHETICAL.findall(stem))
-
-    flattened = _PARENTHETICAL.sub(" ", stem).replace("[", " ").replace("]", " ")
-    for chunk in _DASH_SEPARATOR.split(flattened):
-        cleaned = " ".join(chunk.split())
-        if cleaned:
-            tokens.append(cleaned)
-
-    unique: list[str] = []
-    for token in tokens:
-        if len(token) >= 2 and token not in unique:
-            unique.append(token)
-    return tuple(unique)
-
-
-def _namespaces_holding(index, vocabulary, token: str) -> dict[str, str]:
-    """Where this token is already in use, as `{namespace: "library"|"vocabulary"}`.
-
-    The library is asked first and the vocabulary only where the library is silent,
-    because the two are not equally good evidence: the library is what this user
-    actually has, and `vocabulary.json` is a hint that survives a clip being
-    deleted.
-    """
-    needle = normalized_validation_key(token)
-    found: dict[str, str] = {}
-    for namespace, values in index.items():
-        if any(normalized_validation_key(value) == needle for value in values):
-            found[namespace] = "library"
-    if vocabulary is None:
-        return found
-    for namespace in _suggestible_namespaces():
-        if namespace in found:
-            continue
-        for value in vocabulary.values(namespace):
-            if normalized_validation_key(value) == needle:
-                found[namespace] = "vocabulary"
-                break
-    return found
-
-
-def _rank(matches, namespace: str, token: str, library, vocabulary):
-    """The confidence and the sentence a proposal carries with it.
-
-    `None` confidence means "do not propose this in this namespace at all", which
-    is the answer for every token that is not already a value somewhere. A proposal
-    for a namespace the token has never been seen in is a suggestion to *create*
-    one, and that is a decision the mesh wizard exists to make, not this function.
-    """
-    kind = matches.get(namespace)
-    if kind is None:
-        return None, ""
-
-    if len(matches) == 1:
-        if kind == "library":
-            count = _clip_count(library, namespace, token)
-            return (CONFIDENCE_EXACT,
-                    f"your library uses {token!r} for {namespace}, in "
-                    f"{count} folder name(s)")
-        return (CONFIDENCE_CANDIDATE,
-                f"{token!r} appears in your tag history under {namespace}, but "
-                f"no clip uses it now")
-
-    others = sorted(name for name in matches if name != namespace)
-    where = "your library" if kind == "library" else "your tag history"
-    return (CONFIDENCE_CANDIDATE,
-            f"{token!r} appears in {where} under "
-            f"{', '.join([namespace] + others)} -- pick the right one")
-
-
-# ---------------------------------------------------------------------------
-# Evidence for the value question
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class ValueMatch:
     """One value the imported library uses, and what is known about it here.

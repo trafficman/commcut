@@ -17,8 +17,6 @@ import pytest
 from shared.catalog import Catalog, CatalogClip, build_catalog
 from shared.exporting import ExportSchemes
 from shared.importing import (
-    CONFIDENCE_CANDIDATE,
-    CONFIDENCE_EXACT,
     REASON_ALREADY_PRESENT,
     REASON_DESTINATION_TAKEN,
     REASON_DUPLICATE,
@@ -34,14 +32,12 @@ from shared.importing import (
     FoundVideo,
     ImportCandidate,
     ImportSpaceError,
-    TagProposal,
     candidates_from_catalog,
     check_free_space,
     execute_import,
     find_videos,
     match_value,
     plan_import,
-    propose_tags_from_path,
 )
 from shared.paths import DEFAULT_FOLDER_SCHEME
 from shared.records import ClipRecord, RECORD_EXTENSION, load_record, write_record
@@ -87,6 +83,32 @@ def candidate(source_path, tags=None, **overrides):
     }
     values.update(overrides)
     return ImportCandidate(**values)
+
+
+def catalog_with(*pairs):
+    """A `Catalog` holding one clip per `(namespace, value)` pair.
+
+    Real `CatalogClip`s rather than stand-ins: `Catalog.tag_index` reads `tags`
+    and `CatalogClip` is what actually supplies them, so a fake here would be
+    testing the fake.
+    """
+    clips = tuple(
+        CatalogClip(
+            path=f"/library/{namespace}/{index}.mp4",
+            relative_path=f"{namespace}/{index}.mp4",
+            record_path=f"/library/{namespace}/{index}.cnfo",
+            tags=((namespace, value),),
+            record=ClipRecord(
+                source="theirs.mp4", segment_index=0, start=0.0, duration=1.0,
+                tags=((namespace, value),)),
+        )
+        for index, (namespace, value) in enumerate(pairs)
+    )
+    return Catalog(clips=clips)
+
+
+def library_with(namespace, *values):
+    return catalog_with(*((namespace, value) for value in values))
 
 
 # ---------------------------------------------------------------------------
@@ -787,141 +809,6 @@ def test_find_videos_stops_when_cancelled(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Proposing tags from a path
-# ---------------------------------------------------------------------------
-
-def catalog_with(*pairs):
-    """A `Catalog` holding one clip per `(namespace, value)` pair.
-
-    Real `CatalogClip`s rather than stand-ins: `Catalog.tag_index` reads `tags`
-    and `CatalogClip` is what actually supplies them, so a fake here would be
-    testing the fake.
-    """
-    clips = tuple(
-        CatalogClip(
-            path=f"/library/{namespace}/{index}.mp4",
-            relative_path=f"{namespace}/{index}.mp4",
-            record_path=f"/library/{namespace}/{index}.cnfo",
-            tags=((namespace, value),),
-            record=ClipRecord(
-                source="theirs.mp4", segment_index=0, start=0.0, duration=1.0,
-                tags=((namespace, value),)),
-        )
-        for index, (namespace, value) in enumerate(pairs)
-    )
-    return Catalog(clips=clips)
-
-
-def library_with(namespace, *values):
-    return catalog_with(*((namespace, value) for value in values))
-
-
-def test_a_folder_name_the_library_already_uses_is_an_exact_proposal():
-    """`exact` because it is the strongest evidence available: this user's own
-    library, in exactly one namespace."""
-    found = propose_tags_from_path(
-        "Toonami/Friday Night.mkv", library=library_with("block", "Toonami"))
-
-    proposal = next(p for p in found
-                    if p.namespace == "block" and p.value == "Toonami")
-    assert proposal.confidence == CONFIDENCE_EXACT
-    assert "your library uses 'Toonami' for block" in proposal.evidence
-
-
-def test_a_filename_part_split_on_dashes_is_offered():
-    """What a person naming scheme produces, which is what makes it worth
-    offering at all -- one library that knows all four values."""
-    found = propose_tags_from_path(
-        "Cartoon Network - Toonami - 2000s - Promo.mkv",
-        library=catalog_with(
-            ("network", "Cartoon Network"), ("block", "Toonami"),
-            ("time_period", "2000s"), ("filler_type", "Promo")))
-
-    assert {(proposal.namespace, proposal.value) for proposal in found} == {
-        ("network", "Cartoon Network"), ("block", "Toonami"),
-        ("time_period", "2000s"), ("filler_type", "Promo"),
-    }
-
-
-def test_a_parenthetical_part_is_offered():
-    found = propose_tags_from_path(
-        "Rips/Worlds Finest (Toonami).mp4", library=library_with("block", "Toonami"))
-
-    assert any(proposal.value == "Toonami" for proposal in found)
-
-
-def test_a_token_the_library_uses_in_two_namespaces_is_only_a_candidate():
-    """The case where guessing is how a library ends up with fourteen clips under
-    `block` and one under `special` -- so both are named and neither is chosen."""
-    proposals = propose_tags_from_path(
-        "Rips/Saturday.mkv",
-        library=catalog_with(("block", "Saturday"), ("special", "Saturday")))
-
-    assert {proposal.namespace for proposal in proposals} == {"block", "special"}
-    assert all(proposal.confidence == CONFIDENCE_CANDIDATE
-               for proposal in proposals)
-    assert any("pick the right one" in proposal.evidence for proposal in proposals)
-
-
-def test_a_token_the_library_uses_in_one_namespace_is_the_strong_case():
-    found = propose_tags_from_path(
-        "Rips/Saturday.mkv", library=library_with("block", "Saturday"))
-
-    assert [proposal.confidence for proposal in found] == [CONFIDENCE_EXACT]
-
-
-def test_a_value_only_in_the_vocabulary_file_is_weaker_than_one_in_the_library():
-    """`vocabulary.json` is a cache downstream of the library and drifts: a value
-    can be there because a segment was typed and then skipped. So a hit there is
-    evidence, but not the same evidence."""
-    vocabulary = Vocabulary()
-    vocabulary.record({"block": "Ghost"})
-
-    from_library = propose_tags_from_path(
-        "Rips/Ghost.mkv", library=library_with("block", "Ghost"))
-    from_vocabulary = propose_tags_from_path(
-        "Rips/Ghost.mkv", vocabulary=vocabulary)
-
-    assert from_library[0].confidence == CONFIDENCE_EXACT
-    assert from_vocabulary[0].confidence == CONFIDENCE_CANDIDATE
-    assert "tag history" in from_vocabulary[0].evidence
-
-
-def test_a_token_nobody_uses_is_not_proposed_at_all():
-    """A proposal for a namespace the token has never been seen in is a suggestion
-    to *create* one, and that is the mesh wizard's decision to make."""
-    assert propose_tags_from_path(
-        "Rips/Nobody Uses This.mkv", library=library_with("block", "Toonami")) == ()
-
-
-def test_nothing_is_ever_proposed_for_title():
-    """It is unique per clip, and a folder name is a *shared* label. Guessing the
-    one field nothing can be wrong about twice is not a kindness."""
-    found = propose_tags_from_path(
-        "Cartoon Network/Promo/Toonami.mkv", library=library_with("block", "Toonami"))
-
-    assert [proposal for proposal in found if proposal.namespace == "title"] == []
-    assert all(proposal.namespace != "title" for proposal in found)
-
-
-def test_a_proposal_carries_the_reason_it_was_made():
-    """The whole point of the type. `docs/naming-and-organization.md` refuses the
-    reverse parser outright, and that refusal is about trust: a proposal does not
-    claim the path says what it means, it claims a person might agree, and says
-    why."""
-    found = propose_tags_from_path(
-        "Toonami/Friday.mkv", library=library_with("block", "Toonami"))
-
-    assert all(isinstance(proposal, TagProposal) for proposal in found)
-    assert all(proposal.evidence for proposal in found)
-
-
-def test_a_path_with_nothing_in_it_offers_nothing():
-    assert propose_tags_from_path("") == ()
-    assert propose_tags_from_path("/") == ()
-
-
-# ---------------------------------------------------------------------------
 # Evidence for the value question
 # ---------------------------------------------------------------------------
 
@@ -985,3 +872,14 @@ def test_matching_normalizes_case_the_way_collisions_do():
     assert len(match_value("CARTOON NETWORK", library=library)) == 1
     assert len(match_value("Cartoon Network", library=library)) == 1
     assert match_value("Cartoon/Network", library=library) == ()
+
+
+def test_the_namespace_list_never_offers_title():
+    """A folder is a shared label; title is unique per clip. Offering it would let
+    a whole folder be given one title."""
+    from shared.importing import _suggestible_namespaces
+
+    namespaces = _suggestible_namespaces()
+
+    assert "title" not in namespaces
+    assert len(namespaces) == 9

@@ -62,7 +62,8 @@ commcut/
 │   ├── paths.py             # Folder scheme validation, sanitization, safe components
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
-│   ├── importing.py         # plan_import / execute_import, find_videos, proposals
+│   ├── importing.py         # plan_import / execute_import, find_videos, match_value
+│   ├── mesh.py               # MeshSession: the wizard, as a value
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── tests/                   # pytest suite (see testing.md)
 └── prototypes/              # Earlier exploration / alternatives
@@ -78,10 +79,10 @@ point: it builds the one `QApplication`, constructs `MainWindow`, installs a
 per-window script, and each window module exposes a `create(...)` builder rather
 than a `run()` entry point.
 
-`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings} at
-a time. Opening a window builds it, takes down whatever was on screen, and shows
-the new one. When a non-menu window goes away the menu comes back; when the menu
-goes away the app quits. Modal dialogs are not part of this — the main menu's
+`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings,
+mesh} at a time. Opening a window builds it, takes down whatever was on screen, and
+shows the new one. When a non-menu window goes away the menu comes back; when the
+menu goes away the app quits. Modal dialogs are not part of this — the main menu's
 file dialog and the editor's export progress and summary dialogs are `QDialog`s
 owned by the window that opened them, so they travel with it.
 
@@ -168,7 +169,7 @@ player that has already gone.
 `MainWindow` loads `mainwindow.ui` through the shared `UiLoader` and
 `setCentralWidget`, matching the Settings window's structure.
 
-Two buttons: **Editor** and **Settings**.
+Three buttons: **Editor**, **Import** and **Settings**.
 
 **"Editor" opens a file dialog, not the editor.** The dialog chooses which video
 to work on, from anywhere on disk; the scanner is then the pre-process phase of
@@ -176,11 +177,15 @@ the Editing Wizard — it detects clip boundaries and hands off to the editor it
 — so the dialog, scanner, and editor are one journey, not three menu items. The
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
-The dialog is modal, which puts it outside the shell: only the **Settings**
-button calls `shell().open_safely(name)` directly, and **Editor** calls it with
-`source=...` once the user has answered. `shell().open_safely(name)` is still the
-only way a window is opened anywhere in the app. The menu is the one window the
-shell reuses: it is
+**"Import" opens the Library Mesh Wizard** over `import/`, which asks what each
+folder name in there means. It is standalone: it ends at a report and imports
+nothing.
+
+The file dialog is modal, which puts it outside the shell: only the **Settings**
+and **Import** buttons call `shell().open_safely(name)` directly, and **Editor**
+calls it with `source=...` once the user has answered. `shell().open_safely(name)`
+is still the only way a window is opened anywhere in the app. The menu is the one
+window the shell reuses: it is
 hidden while anything else is up and shown again when that window closes, so
 there is only ever one menu and one taskbar entry. Closing the menu itself ends
 the app, which the shell watches for through an event filter rather than
@@ -358,14 +363,19 @@ The shared modules are:
    window's `SyncWorker` is the thin wrapper that runs it off the GUI thread. See
    [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
    and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
- - `shared/importing.py` — the Library Importer's backend, with no window over it
-   yet. `plan_import()` resolves finished clips to destinations through the *same*
-   `plan_clip_destination` and `DestinationIndex` the export planner uses, so a
-   foreign clip cannot land somewhere an exported one would not; `execute_import()`
-   copies, links or moves each one and publishes its record. Also
-   `find_videos()` for untagged discovery and `propose_tags_from_path()` /
-   `match_value()`, which propose and rank but never decide. See
+ - `shared/importing.py` — the Library Importer's backend. `plan_import()` resolves
+   finished clips to destinations through the *same* `plan_clip_destination` and
+   `DestinationIndex` the export planner uses, so a foreign clip cannot land
+   somewhere an exported one would not; `execute_import()` copies, links or moves
+   each one and publishes its record. Also `find_videos()` for untagged discovery
+   and `match_value()`, which ranks evidence without choosing. See
    [importing.md](importing.md).
+ - `shared/mesh.py` — the Mesh Wizard's model, with no Qt: which folder name is
+   being asked about, what the two questions are, which path to show, and the
+   alias table that comes out. A folder name becomes a tag only through an explicit
+   `assign()`, and `preview_conflict()` lets a screen ask about a collision without
+   having committed it. `importer/mesh.py` renders it and decides nothing. See
+   [importing.md](importing.md#the-library-mesh-wizard).
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.

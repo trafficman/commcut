@@ -5,8 +5,8 @@ dialog and opens the Segment Scanner on it — the pre-process phase of the Edit
 Wizard, which detects clip boundaries and then hands off to the editor itself, so
 scanner and editor are one journey rather than two menu items. A source video can
 be anywhere on disk: there is no folder it has to be in, which is what freed
-``import/`` to be the Library Importer's staging folder instead. "Settings" opens
-the standalone scheme editor.
+``import/`` to be the Library Importer's staging folder instead. "Import" opens the
+Library Mesh Wizard over that folder. "Settings" opens the standalone scheme editor.
 
 Every window in the app is in this process, and exactly one of them is on screen
 at a time. This one is the shell's (:mod:`shared.session`) starting point: it is
@@ -88,7 +88,7 @@ def choose_source_video(parent=None):
 
 
 class MainWindow(QMainWindow):
-    """Landing window that asks for a source video, or opens the settings window."""
+    """Landing window: the source video for the wizard, or the settings window."""
 
     def __init__(self):
         super().__init__()
@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.ui.windowTitle())
 
         self.ui.editorButton.clicked.connect(self.open_editor)
+        self.ui.importButton.clicked.connect(self.open_import)
         self.ui.settingsButton.clicked.connect(self.open_settings)
 
     def open_editor(self):
@@ -137,6 +138,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "That video cannot be opened", str(error))
             return
         shell().open_safely('scanner', source=source)
+
+    def open_import(self):
+        """Open the Library Mesh Wizard.
+
+        The Wizard is the first half of importing somebody else's finished clips:
+        it turns the folder names in `import/` into tags. It is standalone for now —
+        nothing it produces is imported yet, because the Manual Edit queue and the
+        export are not built.
+        """
+        shell().open_safely('mesh')
 
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""

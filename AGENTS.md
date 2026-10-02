@@ -72,9 +72,9 @@ number `packaging/build.py` checks a tag against), `diagnostics`
 `MpvBridge.shutdown`), `timeline` (editor timeline), `segments` (`SegmentModel`,
 `.cmct`), `sources` (which videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
-planner and `export_folder()`), `catalog` (reading the library back), 
-`ui_loader` (promoted widgets). Per-module detail:
-[docs/architecture.md](docs/architecture.md).
+planner and `export_folder()`), `catalog` (reading the library back),
+`mesh` (the Mesh Wizard's model), `ui_loader` (promoted widgets).
+Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 

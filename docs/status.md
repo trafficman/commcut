@@ -98,8 +98,15 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
 - Library Importer **backend** (`shared/importing.py`): planning, execution, the
   occupied-destination rule, the transfer modes, untagged discovery, and the
-  evidence-ranked matching the mesh wizard will read. No screens yet — nothing
-  lets a user start an import.   → [importing.md](importing.md)
+  evidence-ranked matching the Wizard reads. →
+  [importing.md](importing.md)
+- **Library Mesh Wizard** (`shared/mesh.py`, `importer/mesh.py`): reachable from
+  the main menu's **Import** button, it walks `import/` and asks, once per folder
+  name, what that folder means — a namespace and a tag, or "not a tag". It syncs
+  the vocabulary first and shows what that did, because the sync prunes. A folder
+  name becomes a tag **only** through an explicit `assign`; there is no path that
+  infers one, which is the one thing it exists to guarantee. It ends at a report
+  and imports nothing. → [importing.md](importing.md#the-library-mesh-wizard)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
@@ -220,14 +227,18 @@ The full vision in `README.md` has three pieces; two are not started:
   and deliberately are not cached. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
   [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
-- **The Library Importer's screens.** The backend is built and has no window over
-  it: there is no way to start an import. What remains is the scan summary, the
-  Auto Library Mesh Wizard, the manual tag queue with its mpv preview, and the
-  review page — one window, so `_BUILDERS`, a `.ui`, `UI_DATAS`, `REQUIRED_UI` and
-  the `WINDOW_UI` table in `tests/test_frozen_mode.py`, which are already held to
-  each other. The tag-form helpers have to move out of `editor/editor.py` into
-  `shared/` first, or the queue's form will drift from the editor's.
-  → [importing.md](importing.md)
+- **The Library Importer's screens.** The backend and the Mesh Wizard are built;
+  nothing imports yet. What remains is the Manual Edit queue with its mpv preview,
+  the three-option end screen, and the import window itself — one more window, so
+  `_BUILDERS`, a `.ui`, `UI_DATAS`, `REQUIRED_UI` and the `WINDOW_UI` table in
+  `tests/test_frozen_mode.py`, which are already held to each other. The tag-form
+  helpers have to move out of `editor/editor.py` into `shared/` first, or the
+  queue's form will drift from the editor's. Reject currently *excludes* a folder
+  name's tag; it is a distinct state from unmeshed, so routing it to the queue is
+  an added state rather than a redesign. → [importing.md](importing.md)
+- **Tagging an untagged library without the Wizard.** It reads folder names only.
+  Filenames are not parsed, by decision — see
+  [importing.md](importing.md#proposals-and-why-they-are-gone).
 
 ## Known gaps and traps
 

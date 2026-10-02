@@ -87,6 +87,7 @@ UI_FILES = (
     'editor/editorwindow.ui',
     'scanner/scannerwindow.ui',
     'settings/settingswindow.ui',
+    'importer/meshwindow.ui',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
@@ -97,14 +98,17 @@ PLACEHOLDER_FOLDERS = ('import', 'export')
 IMPORT_PLACEHOLDER = """\
 This folder is for importing finished clips into your library.
 
-Copy tagged clips here -- a folder exported from another commcut, or a .cnfo
-record beside each video -- and commcut reads the tags out of the records rather
-than guessing them from folder and file names.
+Copy clips here, then run commcut.exe and press "Import".
 
-To cut a new compilation into clips you do not need this folder at all. Run
-commcut.exe, press "Editor", and pick the source video from anywhere on your
-computer. Its .cmct file (the detected boundaries) is written beside the video,
-and the finished clips go to the export folder.
+If each video has a .cnfo record beside it -- a folder exported from another
+commcut, say -- commcut reads the tags straight out of the records. If they do
+not, the Library Mesh Wizard asks you what each folder name in here means, and
+uses your answers. It never guesses a tag from a name on its own.
+
+To cut a new compilation into clips you do not need this folder at all. Press
+"Editor" and pick the source video from anywhere on your computer. Its .cmct file
+(the detected boundaries) is written beside the video, and the finished clips go
+to the export folder.
 """
 
 EXPORT_PLACEHOLDER = """\

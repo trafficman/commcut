@@ -57,6 +57,7 @@ UI_FILES = (
     ("editor", "editorwindow.ui"),
     ("scanner", "scannerwindow.ui"),
     ("settings", "settingswindow.ui"),
+    ("importer", "meshwindow.ui"),
 )
 
 

@@ -76,14 +76,15 @@ from shared.diagnostics import log_exception, log_path
 #: name -> (module, builder) resolved on first use. Every builder takes the
 #: process's QApplication as its first argument, so the shell can call them
 #: without knowing which ones need it: the scanner and the editor show a splash
-#: while they work and must pump the loop, and the settings window never
-#: constructs a player and ignores it. Uniformity beats introspection in a
-#: registry this small — a builder that changed shape would fail loudly here,
+#: while they work and must pump the loop, and the settings window and the mesh
+#: wizard never construct a player and ignore it. Uniformity beats introspection
+#: in a registry this small — a builder that changed shape would fail loudly here,
 #: not silently.
 _BUILDERS = {
     "scanner": ("scanner.scanner", "create"),
     "editor": ("editor.editor", "create"),
     "settings": ("settings.settings", "create"),
+    "mesh": ("importer.mesh", "create"),
 }
 
 #: The names a caller may open. Settings is listed so a bad name says what the

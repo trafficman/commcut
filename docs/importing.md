@@ -1,7 +1,8 @@
 """Bringing somebody else's finished clips into this library.
 
 Applies to: `shared/importing.py`, `shared/exporting.py`, `shared/catalog.py`,
-`shared/records.py`, `shared/sources.py`, `shared/paths.py`.
+`shared/records.py`, `shared/sources.py`, `shared/paths.py`, `shared/mesh.py`,
+`importer/mesh.py`, `importer/meshwindow.ui`.
 
 This document covers the importer's **backend**. There is no window yet: nothing
 displays a catalog, a proposal, or an import result. What is here is every
@@ -23,12 +24,9 @@ Two modes, and the difference is only where the tags came from.
 them. No ffmpeg runs at any point: `ClipRecord` carries `duration`, so the new
 record is rendered from the old one and there is nothing to probe.
 
-**Untagged.** There is no record, so somebody has to supply the tags. `find_videos`
-lists the clips and `propose_tags_from_path` suggests candidates. **A proposal is
-never a value.** Nothing in the app writes a `TagProposal` anywhere, and
-`plan_import` only ever receives tags a caller has already settled — so the line
-between "a person said this" and "a folder name looked like this" is a type
-boundary rather than a convention somebody has to remember.
+**Untagged.** There is no record, so somebody has to supply the tags. That
+somebody is a person, and [the Mesh Wizard](#the-library-mesh-wizard) is how it
+happens.
 
 `import/` is the folder to read from, and `export/` is where the results land.
 
@@ -191,38 +189,27 @@ Videos that *do* have a sibling record are still listed, with `has_record=True`,
 a caller can hand them to the tagged path rather than making the user decide which
 half they are in.
 
-## Proposals, and why they are only proposals
+## Proposals, and why they are gone
 
-`docs/naming-and-organization.md` refuses the reverse parser outright: a scheme
-renders lossily, so a filename cannot be read back into tags. `propose_tags_from_path`
-does not read anything back. It looks at folder names, at ` - ` separators, and at
-parenthetical groups, and offers what a person's naming scheme tends to produce —
-as questions.
+This document used to describe `shared/importing.py:propose_tags_from_path`, which
+read folder names, ` - ` separators and parenthetical groups out of a path and
+offered them as `TagProposal`s with a confidence level.
 
-The defence is structural rather than editorial: nothing writes a `TagProposal`, and
-`plan_import` accepts only settled tags. Any future code that turns a proposal into
-a stored tag without a person passing over it breaks the rule, and the type boundary
-is what stops that happening by accident.
+**It has been removed.** The Wizard does not need it — its inputs are folder names,
+which are already extracted, and a folder is called what it is called — so the
+function had no caller. Filename parsing was the part that would have *inferred*
+rather than asked, and `docs/naming-and-organization.md` refuses that outright: a
+scheme renders lossily, so a name cannot be read back into tags.
 
-Confidence is derived, never asserted:
+Leaving unused code "for later" would have been the wrong call. If filename parsing
+is ever wanted it belongs in a separate pass, written with real examples in hand,
+and it would have to ask rather than suggest. The rule that survives is narrower
+and stronger: **a folder name becomes a tag only through
+`MeshSession.assign`**, and the type boundary is what stops that happening by
+accident.
 
-| Level | Means |
-|---|---|
-| `exact` | the token matches a value the existing library uses in exactly one namespace, normalized the way collisions are |
-| `candidate` | it matches in several namespaces (all named), or only in the advisory `vocabulary.json` |
-| — | anything else is **not proposed at all** |
-
-Two deliberate omissions:
-
-- **Nothing is proposed for a namespace the token has never been seen in.** That
-  would be a suggestion to *create* a namespace, which is the mesh wizard's decision
-  to make, not this function's.
-- **Nothing is ever proposed for `title`.** It is unique per clip and a folder name
-  is a *shared* label, which is what every other tag means. Guessing the one field
-  nothing can be wrong about twice is not a kindness.
-
-`TagProposal.evidence` is the point of the class. A proposal does not claim the path
-says what it means; it claims a person might agree, and says why.
+`match_value` did survive, because the Wizard's value question needs its ranked,
+counted evidence — see below.
 
 ## Evidence for the value question
 
@@ -230,6 +217,11 @@ says what it means; it claims a person might agree, and says why.
 rather than choosing one. Showing "block (14 clips), special (2)" makes a namespace
 choice a click; choosing silently is how a library ends up with fourteen clips under
 `block` and one under `special`.
+
+The Wizard sets its suggested namespace from this **only when there is exactly one
+match** — "if Toonami is only present in the block namespace, assume it is a block"
+— and with two candidates it suggests neither, because picking either is the guess
+the Wizard exists to prevent.
 
 `in_library` and `in_vocabulary` are separate columns because they are different
 kinds of knowing: the library is what the user has, and `vocabulary.json` is a hint
@@ -239,17 +231,133 @@ and drifts. A hit only in the file is weaker evidence and is marked as such.
 An empty result is **not** permission to guess. It means the value is new here, and
 the caller has to ask.
 
-## Not built
+## The Library Mesh Wizard
 
-- **Every screen.** The scan summary, the mesh wizard, the manual tag queue with
-  its mpv preview, the review page. One window, so `_BUILDERS`, a `.ui`,
-  `UI_DATAS`, `REQUIRED_UI`, and the `WINDOW_UI` table in `tests/test_frozen_mode.py`
-  — already held to each other.
-- **The transfer choice as a control.** The parameter exists; the radio buttons do
-  not.
-- **A library browser.**
-- **A recent-sources list** for the source file dialog, which is a separate gap —
-  see [architecture.md](architecture.md#what-the-picker-was-carrying).
-- **Tag-form reuse.** The editor's tag helpers are Qt code and stay in
-  `editor/editor.py` until the queue needs them; lifting them to `shared/` is a UI
-  phase prerequisite.
+An untagged library tells you almost nothing about its clips, and the one thing it
+does tell you is the folder names. `Cartoon Network/2000s/Promo/` says a network, a
+period and a kind; that is three tags' worth of information and it is *exactly*
+three tags' worth. The Wizard (`shared/mesh.py` over `importer/meshwindow.ui`) is
+how a person turns them into tags, one question at a time. Reached from the main
+menu's **Import** button, and standalone: it produces a table of decisions and
+imports nothing.
+
+```mermaid
+flowchart TD
+    Root["import/ (or a test root)"] --> Find["find_videos(root)"]
+    Lib["export/"] --> Sync["sync_vocabulary()"]
+    Lib --> Cat["build_catalog(export/): the evidence"]
+    Find --> Sess["MeshSession(root, videos, library, vocabulary)"]
+    Cat --> Sess
+    Sync --> Sess
+    Sess --> Prompt["next_prompt(): one question"]
+    Prompt --> Assign["assign() / reject()"]
+    Assign -->|"unmeshed remain"| Prompt
+    Assign -->|"none left"| Report["report()"]
+```
+
+### The safety property, and how it is enforced
+
+> A folder name becomes a tag **only** because a person chose a namespace and a
+> value for it. Nothing infers anything.
+
+That is structural rather than editorial. `MeshSession` starts with every entry
+`unmeshed`, and only `assign` or `reject` changes that — there is no code path that
+fills the table without an explicit call. A folder name that matches the library
+exactly is a *suggestion* the screen pre-selects, and the user still presses
+Assign. `tests/test_mesh.py::test_a_fresh_session_is_empty_even_when_every_name_matches_exactly`
+is the test that fails if anyone adds a defaulting shortcut.
+
+The nearest neighbour of the forbidden reverse parser
+([above](#the-two-modes)) is this module, and the distinction is worth stating
+plainly: the result is a **user-authored mapping**, consulted only to apply a
+decision its author made. Nothing here reads a name and concludes a tag.
+
+**Folder names only.** A filename contributes nothing — `Toonami Blocks/Worlds
+Finest.mp4` asks about `Toonami Blocks` and never mentions the file. Parsing
+filenames was built and then removed rather than left unused: it was the one place
+that would have inferred rather than asked, and it belongs in a later "advanced"
+pass written with real examples in hand.
+
+### One name, one decision
+
+The table is keyed by folder **name**. `CN` in forty folders is one answer applying
+to all of them, and that is what makes the alias idea work: a user whose own
+convention is `CN` can say so once. A *path* is needed for display only — context,
+not identity.
+
+Once a name is meshed or rejected it never comes back. `pending()` is derived from
+state, so there is nothing to forget and nothing to reconcile.
+
+### Sequencing
+
+`next_prompt()` picks the path with the **most un-meshed names**, and within it the
+**leftmost** one. Most-first rather than depth-first because a path whose names are
+all decided teaches nothing and a path with five open questions is the one worth
+showing; leftmost-first because `network/Cartoon Network` should be decided before
+`network/Cartoon Network/2000s`, since a user who has just called the outer folder
+a network has the context to answer for the inner one. Ties break on the sorted
+path, so a session is reproducible.
+
+`MeshPrompt` is a plain value carrying the path's segments with a colour and a
+state each, a suggested namespace, and the ranked values. The window renders it and
+makes no decisions of its own, which is why `tests/test_mesh.py` *is* the design.
+
+**Colour** is assigned by first appearance in sorted order, **not** by hashing:
+Python salts `hash()` per process, so a hash-derived colour would change between
+runs for no reason the user could see.
+
+### Conflicts
+
+Two folder names can claim one namespace with different values — a library laid out
+as `CN/2000s/Promo` and `Cartoon Network/2000s/Promo` meshed to two different
+`network` values. Each answer was correct when given; only the combination is
+ambiguous.
+
+So `preview_conflict()` answers the question **without mutating** — "Assign
+anyway?" is only meaningful if declining leaves the table as it was — the window
+asks, and `assign()` then commits and records it. `tags_for()` reports the same
+thing per path, and the final report names it once per distinct collision rather
+than once per affected clip. Two names claiming one namespace with the **same**
+value is not a conflict: two spellings of one thing, which must not nag.
+
+### Reject
+
+`REJECTED` means "this folder name is not a tag". Its videos still import; they
+simply contribute nothing from that segment. It is a distinct state from
+`unmeshed` because it is a *decision*, and distinct from the Manual Edit queue
+because that is not built — the state exists so adding it is not a redesign.
+
+### The vocabulary sync runs on open, and says so
+
+`sync_vocabulary` **prunes** values no clip uses, so it cannot happen invisibly in
+a constructor — the user opens a wizard to look around and must not lose a tag they
+typed without being told. It runs when the window opens, and its summary is shown
+while the user answers, together with any library records that could not be read,
+**grouped by reason**: a friend exporting with a tag this build does not know is a
+different problem from a corrupt file.
+
+All of it — the sync, the import-folder walk and the library walk — is one worker,
+because the library is a network share as often as it is a local folder.
+
+### The table, and why it is in memory
+
+`AliasTable` is the session's output: every decision, meshed or rejected, with a
+`to_dict`/`from_dict` and a schema version. Nothing writes it yet, so re-running
+asks the same questions again — which is the honest state while the design is still
+settling, and the shape is settled so persistence is a later additive change.
+
+`AliasEntry.paths` — how many videos a decision affected — is deliberately **not**
+serialized. It is recomputed from the tree every run, so persisting it would freeze
+a number that goes stale the moment a folder moves.
+
+### Not built
+
+- **The Manual Edit queue**, and Reject's target.
+- **The three-option end screen** (*Manually Edit All* / *Auto Import*), and the
+  clip-to-queue decision behind it.
+- **Choosing a folder to import.** `create(app, root)` takes one and defaults to
+  `import/`; the control is a decision the import window will make.
+- **`candidates_from_videos`** — assembling `ImportCandidate`s from `FoundVideo`s
+  once a person has settled the tags, probing durations *after* tagging so the
+  clips the user declines are never probed.
+- **The import window**, and threading `MeshSession.aliases()` into `plan_import`.

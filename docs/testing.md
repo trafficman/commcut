@@ -42,13 +42,13 @@ Six test files bind the real `MediaPlayer` through `EditorStub`:
 imported more widely (`test_main_window.py`).
 
 **A modal dialog reached from a test has to be answered, not shown.** The menu's
-Editor button opens a `QFileDialog` and its close handler can raise a
-`QMessageBox` while a sync is running; a real one under
-`QT_QPA_PLATFORM=offscreen` blocks on nobody and hangs the run rather than
-failing. Both are stubbed in their fixtures — the dialog through a
-module-level `choose_source_video` seam and a `QFileDialog` subclass, the message
-box through a recorder — and the fixtures drain any run left in flight so teardown
-does not close a window that is mid-something.
+Editor button opens a `QFileDialog`; the mesh wizard asks a `QMessageBox` before
+committing a conflicting tag; the Settings close handler can raise one while a sync
+is running. A real one under `QT_QPA_PLATFORM=offscreen` blocks on nobody and hangs
+the run rather than failing. Each is stubbed in its own fixture — the dialog through
+a module-level `choose_source_video` seam and a `QFileDialog` subclass, the boxes
+through recorders — and `tests/test_settings.py`'s fixture drains any run left in
+flight so teardown does not close a window that is mid-something.
 
 **The stub's widgets must match the classes the `.ui` file declares.** The nine
 suggestable tag fields are editable `QComboBox` and Title is a `QLineEdit`, both
@@ -75,7 +75,9 @@ state.
 | `test_records.py` | the clip record: the XML format, its reader, and the atomic publish |
 | `test_vocabulary.py` | `vocabulary.json`: the shipped defaults, the unusable-file fallbacks, the dedup rule, the atomic write, and `prune_to` |
 | `test_catalog.py` | the library walk: what counts as a clip, what is ignored, what is reported (by code as well as by sentence), progress, cancel, and the record-over-filename guard. Also the vocabulary sync: union, prune, the empty-library and cancelled-write rules, and idempotence |
-| `test_importing.py` | the importer's backend: records becoming candidates, an imported clip landing where export would put it, per-clip skipping, skip-if-identical against a library built by really importing, the three transfer modes, the space preflight, cancel and resume, untagged discovery, and the evidence behind each proposal |
+| `test_mesh.py` | the Mesh Wizard's model: that a fresh session is empty even when every folder name matches exactly, one answer per folder name, the most-open-path-first sequencing, conflicts, derived tags, the alias table, and the report |
+| `test_mesh_window.py` | the wizard window: the coloured path bar, both questions, Assign disabled until both are filled, the conflict asked before it is committed, the vocabulary sync summarised on screen, and the close guard |
+| `test_importing.py` | the importer backend: records becoming candidates, an imported clip landing where export would put it, per-clip skipping, skip-if-identical against a library built by really importing, the three transfer modes, the space preflight, cancel and resume, untagged discovery, and `match_value` |
 | `test_editor_vocabulary.py` | the tag dropdowns: what they offer, the most-recently-used ordering, what counts as "used", and that a refresh cannot eat a value being typed |
 | `test_editor_locks.py` | tag-lock display, pinned-value semantics, locked-only segment carry-over |
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
