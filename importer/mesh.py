@@ -372,9 +372,17 @@ class MeshWindow(QMainWindow):
         self._show_next_prompt()
 
     def _confirm_conflict(self, conflict) -> bool:
+        """Ask before committing a mapping that will need a person later.
+
+        Titled by consequence rather than by category: "two folder names, one
+        namespace" reads as though a namespace is something a folder takes, and a
+        library legitimately has a dozen folders meaning `filler_type`. What is
+        actually worth interrupting someone for is that one clip cannot hold two
+        values for one tag.
+        """
         answer = QMessageBox.question(
             self,
-            "Two folder names, one namespace",
+            "One clip would get two values for one tag",
             conflict.describe() + "\n\nMesh it anyway?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

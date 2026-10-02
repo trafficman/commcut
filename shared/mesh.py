@@ -99,17 +99,19 @@ class PathSegment:
 
 @dataclass(frozen=True)
 class MeshConflict:
-    """Two folder names claiming one namespace with different values.
+    """Two folder names that would give **one clip** two values for one namespace.
 
-    A library laid out as `CN/2000s/Promo` and `Cartoon Network/2000s/Promo`, meshed
-    to two different `network` values, is not a contradiction the wizard can
-    resolve: each answer was correct when given. Letting one win silently is the
-    "silently wrong forever" failure the wizard exists to prevent, so it is
-    surfaced at the moment of the second answer and again in the report.
+    Only two folder names that appear in the *same* folder path can do that. A
+    library laid out as `Promo/…` and `Bumper/…` is a dozen folders all meaning
+    `filler_type`, which is the ordinary shape of any real library and **not** a
+    conflict: no clip ever sees both. A path like `Up Next/Promo/A.mp4` where both
+    folders mean `filler_type` is the case, because that one clip would be handed
+    two values.
 
-    Two folder names claiming one namespace with the **same** value is not a
-    conflict. That is two spellings of one thing, which is the ordinary case and
-    must not nag.
+    So the test is co-occurrence, not namespace reuse. An earlier version compared
+    two folder names globally and warned on every second `filler_type` folder in a
+    library, which is a warning that fires on the normal case and is therefore
+    dismissed reflexively — the worst possible fate for the one case that matters.
     """
 
     namespace: str
@@ -117,13 +119,31 @@ class MeshConflict:
     existing_value: str
     incoming_name: str
     incoming_value: str
+    #: A path both folder names appear on, so the user can see which clips are
+    #: affected rather than being asked to take it on trust.
+    example_path: str = ""
 
     def describe(self) -> str:
+        """What goes wrong, in words, with somewhere to look.
+
+        Deliberately not phrased as one folder *claiming* a namespace. A
+        namespace is a kind of tag, not a slot to be owned: a library
+        legitimately has a dozen folder names mapped to `filler_type`, and
+        wording it as exclusivity would make the ordinary case read as a fault.
+
+        What actually goes wrong is narrower and worse: **one clip ends up with
+        two values for one tag**, and a record holds one. So the message says that,
+        shows a path where it happens, and says those clips need a person.
+        """
+        where = (f"\n\nIt happens in:\n  {self.example_path}"
+                 if self.example_path else "")
         return (
-            f"'{self.existing_name}' already claims {self.namespace} for "
-            f"'{self.existing_value}'. Meshing '{self.incoming_name}' as "
-            f"'{self.incoming_value}' gives two values for one namespace, and only "
-            f"one of them would reach a clip."
+            f"'{self.incoming_name}' and '{self.existing_name}' both appear in "
+            f"the same folder path.{where}\n\n"
+            f"A clip in that folder would get {self.namespace} twice: "
+            f"'{self.existing_value}' from one and '{self.incoming_value}' from "
+            f"the other. A clip record holds one value per tag, so commcut cannot "
+            f"choose for you and those clips will need editing by hand."
         )
 
 
@@ -231,6 +251,35 @@ def folder_chain(relative_path: str) -> tuple[str, ...]:
     return tuple(parts[:-1]) if parts else ()
 
 
+@dataclass(frozen=True)
+class ResolvedTags:
+    """What one clip's path resolves to, and whether that is the whole of it.
+
+    `resolved` is the field to read before using `tags`. When it is False a
+    namespace was claimed twice on this path and **the tags are incomplete**: the
+    contested namespace is deliberately absent rather than filled in with whichever
+    folder happened to come first, because a guess written to a `.cnfo` is the
+    "silently wrong forever" failure the wizard exists to prevent. Those clips go to
+    a person.
+
+    The determinate tags are still here on purpose: an edit screen can prefill
+    everything that *is* decided and ask about only the one that is not.
+    """
+
+    tags: dict[str, str]
+    conflicts: tuple[MeshConflict, ...] = ()
+
+    @property
+    def resolved(self) -> bool:
+        """False when this clip needs a person before it can be imported."""
+        return not self.conflicts
+
+    @property
+    def needs_manual_edit(self) -> bool:
+        """The same fact, named the way the queue will name it."""
+        return not self.resolved
+
+
 class MeshSession:
     """One run of the wizard over one folder tree.
 
@@ -328,13 +377,33 @@ class MeshSession:
             )
         return entry
 
+    def _shares_a_path(self, first: str, second: str) -> str | None:
+        """A path both folder names appear on, or None.
+
+        The whole of the conflict rule. Two folder names can only put two values in
+        front of one clip if some path literally contains both, and asking whether
+        they *can* rather than whether they *do* is what keeps a dozen
+        `filler_type` folders from looking like a dozen problems.
+
+        Structural, so it is true before either is meshed and stays true whatever
+        order they were answered in.
+        """
+        for chain in self._chains:
+            if first in chain and second in chain:
+                return "/".join(chain)
+        return None
+
     def preview_conflict(self, name: str, namespace: str,
                          value: str) -> MeshConflict | None:
-        """Whether meshing `name` here would collide with an answer already given.
+        """Whether meshing `name` here would put two values in front of one clip.
 
         Non-mutating, and separate from `assign` for one reason: a screen has to be
         able to ask the user *before* committing, because "Assign anyway?" is only
         a meaningful question if declining leaves the table as it was.
+
+        Fires only when the two folder names share a folder path — see
+        `MeshConflict`. Two folders meaning the same namespace on *different* paths
+        is a library shaped like every other library, and saying so is noise.
 
         Returns None for an unmeshed or unknown name rather than raising — a
         preview is a question, not an operation, and the authoritative check stays
@@ -345,16 +414,21 @@ class MeshSession:
             return None
         needle = normalized_validation_key(value)
         for other in sorted(self._entries.values(), key=lambda e: e.name.casefold()):
-            if (other.name != name and other.state == MESHED
-                    and other.namespace == namespace
-                    and normalized_validation_key(other.value) != needle):
-                return MeshConflict(
-                    namespace=namespace,
-                    existing_name=other.name,
-                    existing_value=other.value,
-                    incoming_name=name,
-                    incoming_value=value,
-                )
+            if (other.name == name or other.state != MESHED
+                    or other.namespace != namespace
+                    or normalized_validation_key(other.value) == needle):
+                continue
+            shared = self._shares_a_path(name, other.name)
+            if shared is None:
+                continue
+            return MeshConflict(
+                namespace=namespace,
+                existing_name=other.name,
+                existing_value=other.value,
+                incoming_name=name,
+                incoming_value=value,
+                example_path=shared,
+            )
         return None
 
     def assign(self, name: str, namespace: str, value: str) -> MeshConflict | None:
@@ -466,25 +540,41 @@ class MeshSession:
 
     # -- the outcome ------------------------------------------------------
 
-    def tags_for(
-        self, relative_path: str
-    ) -> tuple[dict[str, str], tuple[MeshConflict, ...]]:
-        """The tags a clip at `relative_path` would get, and any conflicts in them.
+    def tags_for(self, relative_path: str) -> ResolvedTags:
+        """The tags a clip at `relative_path` would get."""
+        return self._tags_for_chain(folder_chain(relative_path), relative_path)
 
-        Every folder name on the path that is meshed contributes one tag.
+    def _tags_for_chain(self, chain, example_path: str = "") -> ResolvedTags:
+        """The tags for one already-split folder chain.
 
-        The conflicts are returned rather than resolved because two meshed names
-        can claim one namespace: which one wins would be an accident of dictionary
-        order, and a clip whose `network` is whichever folder happened to be
-        iterated last is a library full of clips nobody can find.
+        Every meshed name in the chain contributes one tag, which is the whole
+        model: the path is matched against the decisions, and what matches is what
+        the clip gets.
+
+        Where a namespace is claimed twice in one chain, **neither value is
+        taken**. The alternatives were shallowest-wins and deepest-wins, and both
+        write a guess: an arbitrary one, decided by folder order, into the same
+        record a deliberate tag would go in, where nothing later can tell them
+        apart. So the namespace is left out, `resolved` goes False, and a person
+        decides — which is what `needs_manual_edit` is for.
+
+        Takes a chain rather than a path so callers that already hold one do not
+        have to re-split a string, and so nothing has to invent a fake path to
+        stand in for a file name.
         """
         tags: dict[str, str] = {}
         conflicts: list[MeshConflict] = []
-        for name in folder_chain(relative_path):
+        #: Namespaces already contested in this chain. A third folder must not
+        #: quietly re-populate one after the second removed it.
+        contested: set[str] = set()
+
+        for name in chain:
             entry = self._entries.get(name)
             if entry is None or entry.state != MESHED:
                 continue
             existing = tags.get(entry.namespace)
+            if existing is None and entry.namespace in contested:
+                continue
             if existing is not None and existing != entry.value:
                 conflicts.append(MeshConflict(
                     namespace=entry.namespace,
@@ -492,10 +582,14 @@ class MeshSession:
                     existing_value=existing,
                     incoming_name=name,
                     incoming_value=entry.value,
+                    example_path=example_path,
                 ))
+                contested.add(entry.namespace)
+                del tags[entry.namespace]
                 continue
             tags[entry.namespace] = entry.value
-        return tags, tuple(conflicts)
+
+        return ResolvedTags(tags=tags, conflicts=tuple(conflicts))
 
     def aliases(self) -> AliasTable:
         """Every decision, meshed or rejected. The session's output."""
@@ -503,9 +597,32 @@ class MeshSession:
             entry for entry in self.entries() if entry.state != UNMESHED
         ))
 
+    def affected_paths(self) -> tuple[tuple[MeshConflict, int], ...]:
+        """Every distinct namespace collision in the tree, and how many clips hit it.
+
+        Deduped by the *pair of values* rather than per clip, so a mistake in one
+        folder name is reported once with a count instead of once per affected file,
+        which on a real library is the difference between a sentence and a
+        scrollback. Derived from the paths rather than from the answers given while
+        meshing, because this is what the folders actually produce.
+        """
+        tally: dict[tuple[str, str, str], MeshConflict] = {}
+        counts: dict[tuple[str, str, str], int] = {}
+        for chain, clips in sorted(self._chains.items()):
+            result = self._tags_for_chain(chain, "/".join(chain))
+            for conflict in result.conflicts:
+                key = (conflict.namespace, conflict.existing_value,
+                       conflict.incoming_value)
+                tally.setdefault(key, conflict)
+                counts[key] = counts.get(key, 0) + clips
+        return tuple((tally[key], counts[key]) for key in sorted(tally))
+
     def conflicts(self) -> tuple[MeshConflict, ...]:
-        """Conflicts raised while meshing. Distinct from `tags_for`'s, which is per
-        path: these are what the wizard learned as it went."""
+        """Conflicts raised while meshing, in the order they were found.
+
+        These are the ones the user was asked about. `affected_paths` is the
+        authoritative count of what the folders actually produce.
+        """
         return tuple(self._conflicts)
 
     def report(self) -> str:
@@ -539,35 +656,25 @@ class MeshSession:
                 for entry in table.rejected
             )
 
-        path_conflicts = self._path_conflicts()
-        if self._conflicts or path_conflicts:
+        path_conflicts = self.affected_paths()
+        if path_conflicts:
             lines.append("")
-            lines.append("Conflicts, where one namespace ended up with two values:")
-            lines.extend(f"  - {c.describe()}" for c in self._conflicts)
-            lines.extend(
-                f"  - {c.namespace}: '{c.existing_value}' and "
-                f"'{c.incoming_value}' on one path"
-                for c in path_conflicts
+            lines.append(
+                f"{len(path_conflicts)} tag(s) could not be resolved, because one "
+                f"folder path claims the same tag twice:"
             )
+            lines.extend(
+                f"  - {conflict.namespace}: '{conflict.existing_value}' and "
+                f"'{conflict.incoming_value}' — {clips} video(s) need editing by "
+                f"hand (e.g. {conflict.example_path})"
+                for conflict, clips in path_conflicts
+            )
+        elif self._conflicts:
+            lines.append("")
+            lines.append("A conflict was raised while meshing but no clip is "
+                         "affected by it now.")
 
         return "\n".join(lines)
-
-    def _path_conflicts(self) -> tuple[MeshConflict, ...]:
-        """Every distinct namespace claimed twice across the whole tree.
-
-        Deduped by (namespace, values) so a library with four hundred affected
-        clips reports the *problem* once rather than four hundred times.
-        """
-        seen: dict[tuple[str, str, str], MeshConflict] = {}
-        for chain in sorted(self._chains):
-            # The trailing empty component stands in for the file name, which
-            # `tags_for` drops; what matters is the folder chain.
-            _tags, conflicts = self.tags_for("/".join(chain) + "/x.mp4")
-            for conflict in conflicts:
-                key = (conflict.namespace, conflict.existing_value,
-                       conflict.incoming_value)
-                seen.setdefault(key, conflict)
-        return tuple(seen.values())
 
 
 def namespace_choices() -> tuple[str, ...]:

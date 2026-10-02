@@ -289,59 +289,97 @@ def test_the_namespace_choices_never_include_title():
 # Conflicts
 # ---------------------------------------------------------------------------
 
-def test_two_names_claiming_one_namespace_with_different_values_conflict():
-    """Both answers were correct when given; only the combination is ambiguous,
-    and silently letting one win is how a clip ends up with whichever folder
-    happened to be iterated last."""
-    loose = session(["CN/2000s/A.mp4", "Cartoon Network/2000s/B.mp4"])
-    loose.assign("CN", "network", "Cartoon Network")
+def test_two_names_in_one_path_claiming_one_namespace_conflict():
+    """The case that is real: one clip would be handed two values for one tag.
 
-    conflict = loose.assign("Cartoon Network", "network", "Nickelodeon")
+    `Up Next` and `Promo` sit in the *same* folder path, so the clip under them
+    has nowhere to put two `filler_type` values and a record holds one.
+    """
+    loose = session(["CN/Up Next/Promo/A.mp4"])
+    loose.assign("CN", "network", "Cartoon Network")
+    loose.assign("Up Next", "filler_type", "Up Next")
+
+    conflict = loose.assign("Promo", "filler_type", "Promo")
 
     assert isinstance(conflict, MeshConflict)
-    assert conflict.namespace == "network"
-    assert conflict.existing_name == "CN"
-    assert conflict.incoming_name == "Cartoon Network"
-    assert "two values for one namespace" in conflict.describe()
+    assert conflict.namespace == "filler_type"
+    assert {conflict.existing_name, conflict.incoming_name} == {"Up Next", "Promo"}
+    assert "CN/Up Next/Promo" in conflict.example_path
+    assert "need editing by hand" in conflict.describe()
+
+
+def test_two_folders_meaning_the_same_namespace_on_separate_paths_do_not_conflict():
+    """The rule, stated in the negative, and the test whose absence let the
+    original bug through.
+
+    A library with a dozen folders all meaning `filler_type` is the ordinary shape
+    of any real library. No clip ever sees two of them at once, so there is
+    nothing to warn about -- and a warning that fires on the normal case is
+    dismissed reflexively, which is the worst possible fate for the one case that
+    matters.
+    """
+    loose = session([
+        "CN/2000s/Promo/A.mp4",
+        "CN/2000s/Bumper/B.mp4",
+        "CN/2000s/Cartoon/C.mp4",
+        "CN/2000s/PSA/D.mp4",
+        "CN/2000s/Billboard/E.mp4",
+    ])
+    loose.assign("CN", "network", "Cartoon Network")
+
+    assert loose.assign("Promo", "filler_type", "Promo") is None
+    assert loose.assign("Bumper", "filler_type", "Bumper") is None
+    assert loose.assign("Cartoon", "filler_type", "Cartoon") is None
+    assert loose.assign("PSA", "filler_type", "PSA") is None
+    assert loose.assign("Billboard", "filler_type", "Billboard") is None
+    assert loose.conflicts() == ()
+    assert loose.affected_paths() == ()
+
+
+def test_two_networks_in_separate_folders_do_not_conflict_either():
+    """The same thing for the namespace where it is least likely: a library can
+    hold a `CN` folder and a `Nickelodeon` folder with nothing to reconcile."""
+    loose = session(["CN/A.mp4", "Nickelodeon/B.mp4"])
+
+    loose.assign("CN", "network", "Cartoon Network")
+
+    assert loose.assign("Nickelodeon", "network", "Nickelodeon") is None
+
+
+def test_a_conflict_is_found_however_the_two_names_were_answered():
+    """Which answer is "incoming" depends on the order they were asked in, so what
+    has to hold is that a conflict is found, on the right namespace, between the
+    same two names -- not that it reads identically either way round."""
+    paths = ["CN/Up Next/Promo/A.mp4"]
+    one = session(paths)
+    one.assign("Up Next", "filler_type", "Up Next")
+    one.assign("Promo", "filler_type", "Promo")
+
+    other = session(paths)
+    other.assign("Promo", "filler_type", "Promo")
+    other.assign("Up Next", "filler_type", "Up Next")
+
+    for loose in (one, other):
+        conflicts = loose.conflicts()
+        assert len(conflicts) == 1
+        assert conflicts[0].namespace == "filler_type"
+        assert {conflicts[0].existing_name,
+                conflicts[0].incoming_name} == {"Up Next", "Promo"}
 
 
 def test_two_names_claiming_one_namespace_with_the_same_value_do_not_conflict():
-    """Two spellings of one network is the ordinary case and must not nag."""
-    loose = session(["CN/2000s/A.mp4", "Cartoon Network/2000s/B.mp4"])
+    """Two spellings of one thing is the ordinary case and must not nag."""
+    loose = session(["CN/Cartoon Network/A.mp4"])
     loose.assign("CN", "network", "Cartoon Network")
 
     assert loose.assign("Cartoon Network", "network", "Cartoon Network") is None
 
 
 def test_the_same_value_differing_only_in_case_does_not_conflict():
-    loose = session(["CN/2000s/A.mp4", "C.N/2000s/B.mp4"])
+    loose = session(["CN/C.N/A.mp4"])
     loose.assign("CN", "network", "Cartoon Network")
 
     assert loose.assign("C.N", "network", "cartoon network") is None
-
-
-def test_a_conflict_is_found_however_the_two_names_were_answered():
-    """Which answer is "incoming" depends on the order they were asked in, so what
-    has to hold is that a conflict is found, on the right namespace, between the
-    same two names — not that it reads identically either way round."""
-    paths = ["CN/2000s/A.mp4", "Cartoon Network/2000s/B.mp4"]
-    one = session(paths)
-    one.assign("CN", "network", "Cartoon Network")
-    one.assign("Cartoon Network", "network", "Nickelodeon")
-
-    other = session(paths)
-    other.assign("Cartoon Network", "network", "Nickelodeon")
-    other.assign("CN", "network", "Cartoon Network")
-
-    for loose in (one, other):
-        conflicts = loose.conflicts()
-        assert len(conflicts) == 1
-        assert conflicts[0].namespace == "network"
-        assert {conflicts[0].existing_name,
-                conflicts[0].incoming_name} == {"CN", "Cartoon Network"}
-        assert {conflicts[0].existing_value,
-                conflicts[0].incoming_value} == {"Cartoon Network",
-                                                 "Nickelodeon"}
 
 
 # ---------------------------------------------------------------------------
@@ -354,11 +392,12 @@ def test_tags_come_from_every_meshed_folder_name_on_the_path():
     loose.assign("2000s", "time_period", "2000s")
     loose.assign("Promo", "filler_type", "Promo")
 
-    tags, conflicts = loose.tags_for("Cartoon Network/2000s/Promo/A.mp4")
+    result = loose.tags_for("Cartoon Network/2000s/Promo/A.mp4")
 
-    assert tags == {"network": "Cartoon Network", "time_period": "2000s",
-                    "filler_type": "Promo"}
-    assert conflicts == ()
+    assert result.tags == {"network": "Cartoon Network",
+                           "time_period": "2000s", "filler_type": "Promo"}
+    assert result.resolved is True
+    assert result.needs_manual_edit is False
 
 
 def test_a_rejected_or_unmeshed_folder_name_contributes_nothing():
@@ -368,21 +407,71 @@ def test_a_rejected_or_unmeshed_folder_name_contributes_nothing():
     loose.assign("2000s", "time_period", "2000s")
     loose.reject("CN")
 
-    tags, _ = loose.tags_for("CN/2000s/A.mp4")
+    result = loose.tags_for("CN/2000s/A.mp4")
 
-    assert tags == {"time_period": "2000s"}
+    assert result.tags == {"time_period": "2000s"}
+    assert result.resolved is True
 
 
-def test_a_path_where_two_names_claim_one_namespace_reports_it():
-    loose = session(["CN/Cartoon Network/2000s/A.mp4"])
+def test_a_path_where_two_names_claim_one_namespace_gets_neither_value():
+    """Option 3: nobody guesses.
+
+    Shallowest-wins and deepest-wins both write an arbitrary choice into the same
+    record a deliberate tag would go in, where nothing later can tell them apart.
+    So the contested namespace is left out entirely and the clip is marked as
+    needing a person.
+    """
+    loose = session(["Up Next/Promo/A.mp4"])
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
+
+    result = loose.tags_for("Up Next/Promo/A.mp4")
+
+    assert "filler_type" not in result.tags, (
+        "neither value may be chosen for the clip")
+    assert result.resolved is False
+    assert result.needs_manual_edit is True
+
+
+def test_an_unresolved_clip_keeps_the_tags_that_were_decided():
+    """The edit screen can prefill everything that is settled and ask about only
+    the one that is not, which is the point of withholding just the namespace."""
+    loose = session(["CN/2000s/Up Next/Promo/A.mp4"])
     loose.assign("CN", "network", "Cartoon Network")
-    loose.assign("Cartoon Network", "network", "Nickelodeon")
+    loose.assign("2000s", "time_period", "2000s")
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
 
-    tags, conflicts = loose.tags_for("CN/Cartoon Network/2000s/A.mp4")
+    result = loose.tags_for("CN/2000s/Up Next/Promo/A.mp4")
 
-    assert conflicts and conflicts[0].namespace == "network"
-    assert tags["network"] in {"Cartoon Network", "Nickelodeon"}, (
-        "whichever wins, it is one of the two and not something else")
+    assert result.tags == {"network": "Cartoon Network",
+                           "time_period": "2000s"}
+    assert result.needs_manual_edit is True
+
+
+def test_a_third_folder_cannot_reclaim_a_contested_namespace():
+    """Otherwise the middle folder removes the tag and the last one quietly puts
+    a value back, which is the guess option 3 exists to refuse."""
+    loose = session(["Up Next/Animated/Promo/A.mp4"])
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
+    loose.assign("Animated", "filler_type", "Animated")
+
+    result = loose.tags_for("Up Next/Animated/Promo/A.mp4")
+
+    assert "filler_type" not in result.tags
+
+
+def test_one_bad_path_does_not_affect_its_neighbours():
+    """The point of checking per path: a collision is local."""
+    loose = session(["Up Next/Promo/A.mp4", "Promo/B.mp4", "Bumper/C.mp4"])
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
+    loose.assign("Bumper", "filler_type", "Bumper")
+
+    assert loose.tags_for("Up Next/Promo/A.mp4").needs_manual_edit is True
+    assert loose.tags_for("Promo/B.mp4").tags == {"filler_type": "Promo"}
+    assert loose.tags_for("Bumper/C.mp4").tags == {"filler_type": "Bumper"}
 
 
 # ---------------------------------------------------------------------------
@@ -605,34 +694,54 @@ def test_the_report_says_when_nothing_was_left_over():
     assert "0 left unmeshed" in loose.report()
 
 
-def test_the_report_names_a_conflict_rather_than_leaving_it_to_the_clip():
-    loose = session(["CN/Cartoon Network/A.mp4"])
-    loose.assign("CN", "network", "Cartoon Network")
-    loose.assign("Cartoon Network", "network", "Nickelodeon")
+def test_the_report_names_an_unresolved_tag_rather_than_leaving_it_to_the_clip():
+    loose = session(["Up Next/Promo/A.mp4"])
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
 
     text = loose.report()
 
-    assert "Conflicts" in text
-    assert "'Cartoon Network' and 'Nickelodeon' on one path" in text
+    assert "could not be resolved" in text
+    assert "filler_type: 'Up Next' and 'Promo'" in text
+    assert "need editing by hand" in text
 
 
 def test_the_report_says_nothing_about_conflicts_when_there_are_none():
-    loose = session(["CN/A.mp4"])
-    loose.assign("CN", "network", "CN")
+    loose = session(["CN/Promo/A.mp4", "CN/Bumper/B.mp4"])
+    loose.assign("CN", "network", "Cartoon Network")
+    loose.assign("Promo", "filler_type", "Promo")
+    loose.assign("Bumper", "filler_type", "Bumper")
 
-    assert "Conflicts" not in loose.report()
+    text = loose.report()
+
+    assert "could not be resolved" not in text
+    assert "no clip is affected" not in text
 
 
-def test_a_conflict_reached_by_many_paths_is_reported_once():
-    """A library with four hundred affected clips should show the problem once,
-    not four hundred times."""
-    loose = session([f"CN/Cartoon Network/{index}.mp4" for index in range(3)])
+def test_a_collision_reached_by_many_paths_is_reported_once_with_a_count():
+    """A library with four hundred affected clips should show the problem once
+    with a number, not four hundred times."""
+    loose = session([f"Up Next/Promo/{index}.mp4" for index in range(3)])
+    loose.assign("Up Next", "filler_type", "Up Next")
+    loose.assign("Promo", "filler_type", "Promo")
+
+    text = loose.report()
+
+    assert text.count("need editing by hand") == 1
+    assert "3 video(s) need editing" in text
+
+
+def test_the_report_does_not_claim_a_conflict_the_paths_do_not_have():
+    """Raised while meshing, but nothing collides in the tree -- which is what a
+    mapping does when the folders using it turn out not to share a path."""
+    loose = session(["CN/A.mp4", "Cartoon Network/B.mp4"])
     loose.assign("CN", "network", "Cartoon Network")
     loose.assign("Cartoon Network", "network", "Nickelodeon")
 
     text = loose.report()
 
-    assert text.count("on one path") == 1
+    assert "could not be resolved" not in text
+    assert "need editing" not in text
 
 
 def test_the_report_is_the_same_text_the_tests_and_the_screen_read():

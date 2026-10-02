@@ -308,17 +308,41 @@ runs for no reason the user could see.
 
 ### Conflicts
 
-Two folder names can claim one namespace with different values — a library laid out
-as `CN/2000s/Promo` and `Cartoon Network/2000s/Promo` meshed to two different
-`network` values. Each answer was correct when given; only the combination is
-ambiguous.
+Two folder names can put **two values for one namespace in front of one clip** —
+and only when they appear in the *same* folder path. `Up Next/Promo/A.mp4` where
+both folders mean `filler_type` is the case, because that clip has nowhere to put
+two values and a record holds one.
 
-So `preview_conflict()` answers the question **without mutating** — "Assign
-anyway?" is only meaningful if declining leaves the table as it was — the window
-asks, and `assign()` then commits and records it. `tags_for()` reports the same
-thing per path, and the final report names it once per distinct collision rather
-than once per affected clip. Two names claiming one namespace with the **same**
-value is not a conflict: two spellings of one thing, which must not nag.
+It is emphatically **not** about a namespace being used twice. A library with
+`Promo/`, `Bumper/`, `Cartoon/`, `PSA/` and `Billboard/` folders all meaning
+`filler_type` is the shape of every real library, no clip ever sees two of them at
+once, and nothing is reported. The test is co-occurrence, and the check asks
+whether the two names *can* share a path rather than whether they *do*.
+
+That distinction is not cosmetic. An earlier version compared two folder names
+globally and warned on every second `filler_type` folder in a library — a warning
+that fires on the normal case is dismissed reflexively, which is the worst
+possible fate for the one case that matters.
+
+**Nobody guesses.** Where a namespace is claimed twice on one path,
+`tags_for` takes **neither** value. Shallowest-wins and deepest-wins both write an
+arbitrary choice — decided by folder order — into the same record a deliberate tag
+would go in, where nothing later can tell them apart. So instead:
+
+- the contested namespace is **absent** from `ResolvedTags.tags`
+- `resolved` is `False`, and `needs_manual_edit` says so the way the queue will
+- the tags that *were* decided are still there, so an edit screen can prefill
+  everything settled and ask about only the one that is not
+
+`preview_conflict()` answers without mutating, so the window can ask before
+committing — "Mesh it anyway?" is only a meaningful question if declining leaves
+the table as it was. The dialog is titled by consequence (*"One clip would get two
+values for one tag"*) and names a path where it happens, because a message about a
+folder *claiming* a namespace reads as though a namespace were something a folder
+takes, which is the opposite of what the rest of the model says.
+
+`affected_paths()` reports each distinct collision once with a count of the clips
+it reaches, so one mistyped folder name is a sentence rather than a scrollback.
 
 ### Reject
 
@@ -352,7 +376,8 @@ a number that goes stale the moment a folder moves.
 
 ### Not built
 
-- **The Manual Edit queue**, and Reject's target.
+- **The Manual Edit queue**, which is where the unresolved clips above go, and
+  Reject's target.
 - **The three-option end screen** (*Manually Edit All* / *Auto Import*), and the
   clip-to-queue decision behind it.
 - **Choosing a folder to import.** `create(app, root)` takes one and defaults to

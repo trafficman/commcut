@@ -105,8 +105,11 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   name, what that folder means — a namespace and a tag, or "not a tag". It syncs
   the vocabulary first and shows what that did, because the sync prunes. A folder
   name becomes a tag **only** through an explicit `assign`; there is no path that
-  infers one, which is the one thing it exists to guarantee. It ends at a report
-  and imports nothing. → [importing.md](importing.md#the-library-mesh-wizard)
+  infers one, which is the one thing it exists to guarantee. A folder path that
+  would hand one clip two values for one tag is refused rather than guessed: the
+  namespace goes unassigned and the clip is flagged for the edit queue. It ends at
+  a report and imports nothing. →
+  [importing.md](importing.md#the-library-mesh-wizard)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).

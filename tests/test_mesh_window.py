@@ -300,7 +300,12 @@ def test_a_conflict_is_asked_about_before_it_is_committed(wizard):
         window.ui.comboValue.setCurrentText("Nickelodeon")
         window.on_assign()
 
-        assert Recorder.seen and "two values" in Recorder.seen[0][1]
+        assert Recorder.seen, "the collision must be raised before it is committed"
+        title, message = Recorder.seen[0]
+        assert "would get two values" in title, (
+            "titled by consequence, not as though a namespace could be owned")
+        assert "CN/Cartoon Network" in message, "and it says where it happens"
+        assert "need editing by hand" in message
         assert window.session.entry("Cartoon Network").state != MESHED, (
             "declining must leave the table as it was")
     finally:
