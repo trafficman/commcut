@@ -73,8 +73,9 @@ number `packaging/build.py` checks a tag against), `diagnostics`
 `.cmct`), `sources` (which videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back),
-`mesh` (the Mesh Wizard's model), `ui_loader` (promoted widgets).
-Per-module detail: [docs/architecture.md](docs/architecture.md).
+`mesh` (the Mesh Wizard's model), `tag_form` (the tag fields both windows
+show), `ui_loader` (promoted widgets). Per-module detail:
+[docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
@@ -203,6 +204,12 @@ diagnose. The linked document has the full reasoning.
     that would make a tag untypeable. Only the nine suggestable tags go in the
     file at all — Title is unique per clip, so it has no dropdown and no lock. →
     [docs/tag-vocabulary.md](docs/tag-vocabulary.md)
+14. **A worker thread must actually terminate, and its teardown hangs off
+    `QThread.finished`.** `thread.started.connect(worker.run)` runs the slot inside
+    the thread's `exec()` loop and a slot returning does not leave it, so only
+    `worker.finished → thread.quit` ends a thread; teardown on the *worker's*
+    signal destroys a live one — a `qFatal`, uncatchable and invisible in the log.
+    → [docs/architecture.md](docs/architecture.md)
 
 ## Working agreements
 

@@ -80,6 +80,8 @@ UI_DATAS = [
     ('scanner/scannerwindow.ui', 'scanner'),
     ('settings/settingswindow.ui', 'settings'),
     ('importer/meshwindow.ui', 'importer'),
+    ('shared/tagform.ui', 'shared'),
+    ('importer/queuewindow.ui', 'importer'),
 ]
 
 # PyInstaller resolves a relative datas source against the *spec's* folder, not
@@ -124,6 +126,7 @@ hiddenimports = [
     'scanner.scanner',
     'settings.settings',
     'importer.mesh',
+    'importer.queue',
 ]
 
 # Qt ships a tkinter binding and a large set of unused Qt modules. Excluding

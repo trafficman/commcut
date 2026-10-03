@@ -75,9 +75,12 @@ state.
 | `test_records.py` | the clip record: the XML format, its reader, and the atomic publish |
 | `test_vocabulary.py` | `vocabulary.json`: the shipped defaults, the unusable-file fallbacks, the dedup rule, the atomic write, and `prune_to` |
 | `test_catalog.py` | the library walk: what counts as a clip, what is ignored, what is reported (by code as well as by sentence), progress, cancel, and the record-over-filename guard. Also the vocabulary sync: union, prune, the empty-library and cancelled-write rules, and idempotence |
-| `test_mesh.py` | the Mesh Wizard's model: that a fresh session is empty even when every folder name matches exactly, one answer per folder name, the most-open-path-first sequencing, conflicts, derived tags, the alias table, and the report |
-| `test_mesh_window.py` | the wizard window: the coloured path bar, both questions, Assign disabled until both are filled, the conflict asked before it is committed, the vocabulary sync summarised on screen, and the close guard |
+| `test_mesh.py` | the Mesh Wizard's model: that a fresh session is empty even when every folder name matches exactly, one answer per folder name, the most-open-path-first sequencing, conflicts, derived tags, the alias table, the report, and the learned rules — including that a literal already in the table is refused and that a rule may not target `title` |
+| `test_mesh_window.py` | the wizard window: the coloured path bar, both questions, Assign disabled until both are filled, the conflict asked before it is committed, the vocabulary sync summarised on screen, the hand-off to the queue, and the close guard |
+| `test_queue.py` | the Library Mesh Tag Editor: resume (including that a partial record is not "done"), the folder answers and the learned rules reaching the form, Add Title, Next writing a record `build_catalog` reads back, Skip - Delete, the report's three cases, and the player |
 | `test_importing.py` | the importer backend: records becoming candidates, an imported clip landing where export would put it, per-clip skipping, skip-if-identical against a library built by really importing, the three transfer modes, the space preflight, cancel and resume, untagged discovery, and `match_value` |
+| `test_tag_form.py` | the shared tag form: what the fields read back, the dropdown ordering, the empty-list placeholder, the required-field outline, and that the editor's `.ui` does not draw its own grid |
+| `test_queue.py` | the Library Mesh Tag Editor: resume (including that a partial record is not "done"), the folder answers and the learned rules reaching the form, Add Title, Next writing a record `build_catalog` reads back, Skip - Delete, the report's three cases, and the player |
 | `test_editor_vocabulary.py` | the tag dropdowns: what they offer, the most-recently-used ordering, what counts as "used", and that a refresh cannot eat a value being typed |
 | `test_editor_locks.py` | tag-lock display, pinned-value semantics, locked-only segment carry-over |
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
@@ -155,6 +158,32 @@ state.
   and the worker on `self` and nulls both from `thread.finished`; a test that
   drops the reference destroys a running thread, which aborts the interpreter
   rather than failing an assertion.
+- **A stubbed thread cannot prove a thread stops.** The mesh and queue suites run
+  their workers through `FakeThread` — `start()` emits `started` and `finished`
+  by hand on the GUI thread — plus a worker whose `moveToThread` is a no-op, and
+  `deleteLater()` that sets a flag. That is what makes them fast and
+  deterministic, and it is exactly why a worker thread which *never terminates*
+  passed every one of them: a faked thread has no `exec()` loop left spinning, so
+  there is nothing to keep alive, and no C++ object left to destroy, so there is
+  nothing to delete. Both windows really had that bug and shipped.
+
+  So each of those files also has a `real_thread_*` fixture that keeps the real
+  `QThread`, the real worker and the real event loop, and stubs only what needs
+  hardware or a subprocess (mpv, ffprobe). Those tests pump the loop until the
+  thread stops and assert `isRunning()` went false, and that the window's
+  `closeEvent` guard came off. Two details make a regression legible instead of
+  fatal:
+
+  - the fixture stubs `deleteLater` on the thread, because with the bug present
+    the teardown deletes a *running* `QThread` and aborts the process — so
+    without that stub the regression is a dead test run with no report instead of
+    a failed assertion;
+  - teardown calls `quit()`/`wait()` on anything still running, so a failing test
+    cannot leave a spinning thread for Qt to destroy at interpreter shutdown.
+
+  Assert the *effect* (`isRunning()` false), never the wiring — `thread.quit`
+  being connected is an implementation detail, and the previous bug was invisible
+  precisely because nothing checked the effect.
 - **`FakePopen` replaces `subprocess.run`.** `shared/ffmpeg.py:_run_ffmpeg`
   drives ffmpeg through `Popen` so a cancel can terminate it, which means the
   mock seam in `test_ffmpeg.py` is a fake process class, not a fake

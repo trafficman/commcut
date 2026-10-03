@@ -15,6 +15,7 @@ queued to a loop that never runs.
 """
 
 import os
+import time
 
 import pytest
 from PySide6.QtCore import QThread
@@ -368,6 +369,8 @@ def test_answering_everything_shows_the_report(wizard):
         assert window.ui.textReport.isHidden() is False
         assert "CN  ->  network: Cartoon Network" in (
             window.ui.textReport.toPlainText())
+        assert window.ui.buttonQueue.isHidden() is False, (
+            "the report offers the next step, which is tagging the titles")
         assert window.ui.buttonClose.isHidden() is False
     finally:
         window.close()
@@ -392,6 +395,40 @@ def test_the_report_is_the_same_text_the_model_produces(wizard):
 
         assert window.ui.textReport.toPlainText() == window.session.report()
     finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_report_hands_the_session_to_the_queue(wizard):
+    """The alias table crosses with the window rather than being written to disk.
+
+    It is a statement about *this* folder tree, so a saved copy would be stale
+    the moment the user reorganises — and re-running the Wizard rebuilds it from
+    the tree, which is where its truth lives.
+    """
+    import mainwindow
+
+    opened = []
+    original = mesh_module.shell
+    mesh_module.shell = lambda: type("Shell", (), {
+        "open_safely": lambda _self, name, **kwargs:
+            opened.append((name, kwargs))})()
+    window = build_wizard(wizard, "CN/2000s/A.mp4")
+    try:
+        for namespace, value in (("network", "Cartoon Network"),
+                                 ("time_period", "2000s")):
+            window.ui.comboNamespace.setCurrentText(namespace)
+            window.ui.comboValue.setCurrentText(value)
+            window.on_assign()
+
+        window.on_queue()
+
+        assert [name for name, _ in opened] == ["queue"]
+        assert opened[0][1]["session"] is window.session, (
+            "the answers travel with the window, not through a file")
+        assert opened[0][1]["root"] == wizard.import_root
+    finally:
+        mesh_module.shell = original
         window.close()
         window.deleteLater()
 
@@ -495,8 +532,104 @@ def test_a_window_with_no_worker_left_closes_normally(wizard):
 
 
 # ---------------------------------------------------------------------------
-# The builder
+# The loading thread, on a real QThread
 # ---------------------------------------------------------------------------
+#
+# The `wizard` fixture above runs the worker through `FakeThread` and
+# `StubWorker`: `start()` emits `started` and `finished` by hand on the GUI
+# thread and `moveToThread` is a no-op. A faked thread has no `exec()` loop left
+# spinning, so it cannot show a worker whose thread never ends -- which is the
+# one failure this window cannot survive, because `closeEvent` refuses to close
+# for as long as `self._thread` is set.
+
+def _running(thread):
+    """Whether a QThread is still alive, tolerating a deleted C++ object."""
+    if thread is None:
+        return False
+    try:
+        return thread.isRunning()
+    except RuntimeError:
+        return False
+
+
+def _pump_until(qapp, predicate, timeout_ms=10000):
+    """Spin the real event loop until `predicate` holds. False if it never does."""
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        qapp.processEvents()
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+
+
+@pytest.fixture
+def real_thread_wizard(qapp, monkeypatch, tmp_path):
+    """A mesh window over a real loading thread, with only the roots stubbed."""
+    import_folder_root = tmp_path / "import"
+    library_root = tmp_path / "library"
+    os.makedirs(str(import_folder_root), exist_ok=True)
+    os.makedirs(str(library_root), exist_ok=True)
+    videos_in(import_folder_root, "CN/A.mp4")
+
+    monkeypatch.setattr(mesh_module, "export_folder", lambda: str(library_root))
+    monkeypatch.setattr(mesh_module, "vocabulary_path",
+                        lambda: str(tmp_path / "vocabulary.json"))
+    monkeypatch.setattr(mesh_module, "import_folder",
+                        lambda: str(import_folder_root))
+    monkeypatch.setattr(mesh_module, "QMessageBox", Recorder)
+    Recorder.seen = []
+    Recorder.answer = Recorder.No
+
+    window = mesh_module.MeshWindow(str(import_folder_root))
+    window._thread.deleteLater = lambda: None
+    yield window, qapp
+
+    thread = window._thread
+    if _running(thread):
+        # Stopped rather than left to Qt: a spinning thread destroyed at
+        # interpreter shutdown is a `qFatal`, and would abort the whole run.
+        thread.quit()
+        thread.wait(10000)
+    qapp.processEvents()
+    window._thread = None
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
+
+
+def test_the_loading_thread_terminates_by_itself(real_thread_wizard):
+    """`thread.started.connect(worker.run)` runs the worker's slot inside the
+    thread's `exec()` loop, and a slot returning does not leave that loop, so
+    nothing but `thread.quit()` ends the thread."""
+    window, qapp = real_thread_wizard
+    thread = window._thread
+    assert thread is not None, "a worker was started, so there is a thread"
+
+    assert _pump_until(qapp, lambda: not _running(thread)), (
+        "the loading thread never terminated: the worker's slot returned but "
+        "nothing quit the QThread's event loop, so `thread.finished` "
+        "never fired")
+
+
+def test_the_wizard_becomes_closable_once_it_finished_reading(
+        real_thread_wizard):
+    """The consequence that made this the worst place for the bug.
+
+    `closeEvent` refuses while `self._thread` is set, and only `_on_stopped`
+    clears it -- on `thread.finished`, which a thread that never ends never
+    emits. So the wizard could not be closed at all, and the shell ignored the
+    refusal and put the tag editor on top of it: two live windows, each holding
+    a thread that was never going to stop.
+    """
+    window, qapp = real_thread_wizard
+
+    assert _pump_until(qapp, lambda: window._thread is None), (
+        "the wizard still holds its loading thread, so its closeEvent refuses "
+        "to close and the shell can never replace it")
+
+    assert window.close(), "and with no thread left, closing it must work"
 
 def test_the_builder_takes_the_application_first_and_an_optional_root():
     import inspect

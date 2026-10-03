@@ -18,6 +18,8 @@ from shared.catalog import Catalog, CatalogClip
 from shared.mesh import (
     ALIAS_TABLE_VERSION,
     COLOURS,
+    LEARNED_FOLDER,
+    LEARNED_RULE,
     MESHED,
     REJECTED,
     UNMESHED,
@@ -657,6 +659,247 @@ def test_an_unknown_entry_state_reads_back_as_unmeshed():
     table = AliasTable.from_dict(data)
 
     assert table.entries[0].state == UNMESHED
+
+
+# ---------------------------------------------------------------------------
+# Learning a literal from a file name
+# ---------------------------------------------------------------------------
+#
+# A folder name and an autofill rule are one kind of thing -- a string, and what
+# a person decided it means -- and these are the rules that come from putting
+# them in one table. The point of the unification is that there is exactly one
+# answer to "what does this literal mean", so the tests below are mostly about
+# the duplicates and the title.
+
+def test_a_rule_is_learned_and_shows_up_in_the_rules_list():
+    loose = session(["CN/2000s/A.mp4"])
+
+    outcome = loose.learn_rule("30 Sec", "length", "30 Sec")
+
+    assert outcome.created is True
+    assert outcome.conflict is None
+    assert [entry.name for entry in loose.rules()] == ["30 Sec"]
+    assert loose.rules()[0].learned == LEARNED_RULE
+
+
+def test_a_rule_remembers_the_file_name_it_was_taught_on():
+    loose = session(["CN/2000s/A.mp4"])
+
+    loose.learn_rule("Toonami", "block", "Toonami",
+                     filename="Toonami - 30 Sec.mkv")
+
+    assert loose.rules()[0].example_path == "Toonami - 30 Sec.mkv"
+
+
+def test_a_folder_name_and_a_rule_are_one_table():
+    """One literal, one meaning, always."""
+    loose = session(["30 Sec/2000s/A.mp4"])
+
+    outcome = loose.learn_rule("30 Sec", "length", "Short")
+
+    assert outcome.created is False, (
+        "the folder already claimed this literal, so nothing was added")
+    assert outcome.entry.learned == LEARNED_FOLDER
+    assert outcome.entry.value is None, "and the folder is still unmeshed"
+    assert loose.rules() == ()
+
+
+def test_a_folder_name_meshed_first_cannot_be_redefined_by_a_rule():
+    """The failure the unification exists to prevent: two systems comparing the
+    same string, silently disagreeing, with neither knowing."""
+    loose = session(["30 Sec/2000s/A.mp4"])
+    loose.assign("30 Sec", "length", "Short")
+
+    outcome = loose.learn_rule("30 Sec", "length", "30 Sec")
+
+    assert outcome.created is False
+    assert loose.entry("30 Sec").value == "Short", (
+        "the folder's answer stands; the rules modal offers to edit it instead")
+
+
+def test_editing_changes_what_every_clip_touching_that_literal_sees():
+    """Two clips under the folder, one edit: both see the new meaning, because
+    the table is keyed by literal and not by any one path."""
+    loose = session(["30 Sec/2000s/A.mp4", "30 Sec/B.mp4"])
+    loose.assign("30 Sec", "length", "Short")
+    loose.assign("2000s", "time_period", "2000s")
+
+    loose.edit_rule("30 Sec", "length", "30 Sec")
+
+    assert loose.tags_for("30 Sec/2000s/A.mp4").tags == {
+        "length": "30 Sec", "time_period": "2000s"}
+    assert loose.tags_for("30 Sec/B.mp4").tags == {"length": "30 Sec"}
+
+
+def test_editing_something_the_table_does_not_have_is_refused():
+    loose = session(["CN/A.mp4"])
+
+    with pytest.raises(KeyError):
+        loose.edit_rule("Never Seen", "block", "Toonami")
+
+
+def test_a_rule_may_not_target_the_title():
+    """A rule is a standing instruction; a title is unique per clip. Letting a
+    rule fill it re-introduces the automation the folder scan exists to avoid,
+    and a stale rule would rename clips in a finished library."""
+    loose = session(["CN/2000s/A.mp4"])
+
+    with pytest.raises(ValueError) as error:
+        loose.learn_rule("30 Sec", "title", "30 Sec")
+
+    assert "standing" in str(error.value)
+    assert loose.rules() == ()
+
+
+def test_a_rule_needs_something_to_look_for():
+    loose = session(["CN/A.mp4"])
+
+    with pytest.raises(ValueError, match="needs the text to look for"):
+        loose.learn_rule("   ", "length", "30 Sec")
+
+
+def test_a_rule_needs_a_value():
+    loose = session(["CN/A.mp4"])
+
+    with pytest.raises(ValueError, match="needs a tag value"):
+        loose.learn_rule("30 Sec", "length", "  ")
+
+
+def test_a_rule_refuses_a_namespace_commcut_does_not_know():
+    loose = session(["CN/A.mp4"])
+
+    with pytest.raises(ValueError, match="not a tag commcut knows"):
+        loose.learn_rule("30 Sec", "colour", "Red")
+
+
+def test_only_a_rule_can_be_removed():
+    """A folder name is in the table because the library contains it, so
+    forgetting it would silently un-mesh every clip under it."""
+    loose = session(["CN/2000s/A.mp4"])
+    loose.assign("CN", "network", "Cartoon Network")
+    loose.learn_rule("30 Sec", "length", "30 Sec")
+
+    with pytest.raises(ValueError, match="not a rule"):
+        loose.remove_rule("CN")
+    assert loose.entry("CN").state == MESHED
+
+    loose.remove_rule("30 Sec")
+
+    assert loose.rules() == ()
+    assert loose.entry("CN").state == MESHED
+
+
+def test_removing_a_literal_that_is_not_there_is_a_no_op():
+    session(["CN/A.mp4"]).remove_rule("Never Seen")
+
+
+# ---------------------------------------------------------------------------
+# Rules applied to a file name
+# ---------------------------------------------------------------------------
+
+def rules_session(*paths):
+    """A session over `paths`, with nothing meshed yet."""
+    return session(paths)
+
+
+def test_every_matching_rule_contributes_not_only_the_first():
+    """A file called `Toonami - 30 Sec` with rules for both is two tags.
+    Stopping at the first would make the rules an ordered list rather than a
+    set, and which one won would depend on the order they were learned."""
+    loose = rules_session("CN/Toonami - 30 Sec.mkv")
+    loose.learn_rule("Toonami", "block", "Toonami")
+    loose.learn_rule("30 Sec", "length", "30 Sec")
+
+    assert loose.tags_for_filename("Toonami - 30 Sec.mkv").tags == {
+        "block": "Toonami", "length": "30 Sec"}
+
+
+def test_a_rule_matches_a_substring_anywhere_in_the_name():
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("Bumper", "filler_type", "Bumper")
+
+    assert loose.tags_for_filename(
+        "Worlds Finest (Bumper 30s).mp4").tags == {"filler_type": "Bumper"}
+
+
+def test_a_rule_matches_regardless_of_case():
+    """A person writing `toonami` in a rule and then seeing `Toonami` in a file
+    name means the same token."""
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("toonami", "block", "Toonami")
+
+    assert loose.tags_for_filename("Toonami.mkv").tags == {"block": "Toonami"}
+
+
+def test_a_name_no_rule_matches_resolves_to_nothing():
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("30 Sec", "length", "30 Sec")
+
+    result = loose.tags_for_filename("Something Else.mkv")
+
+    assert result.tags == {}
+    assert result.resolved is True
+
+
+def test_two_rules_claiming_one_namespace_leave_it_unassigned():
+    """The same rule as the folder path, through the same `accumulate`."""
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("Morning", "filler_type", "Promo")
+    loose.learn_rule("30s", "filler_type", "Bumper")
+
+    result = loose.tags_for_filename("Morning 30s Promo.mkv")
+
+    assert "filler_type" not in result.tags
+    assert result.resolved is False
+
+
+def test_a_rule_and_a_folder_name_claiming_one_namespace_leave_it_unassigned():
+    """Not just two rules against each other: the two sources are combined by the
+    same `accumulate` inside `tags_for_clip`, so a folder and a rule cannot
+    disagree either. Neither half sees the other's contribution, so the merge has
+    to happen in one place -- which is why that function exists."""
+    loose = rules_session("Promo/Toonami.mkv")
+    loose.assign("Promo", "filler_type", "Promo")
+    loose.learn_rule("Toonami", "filler_type", "Bumper")
+
+    assert "filler_type" in loose.tags_for("Promo/Toonami.mkv").tags, (
+        "the folder alone is fine")
+    assert "filler_type" in loose.tags_for_filename("Toonami.mkv").tags, (
+        "the rule alone is fine")
+
+    combined = loose.tags_for_clip("Promo/Toonami.mkv")
+
+    assert "filler_type" not in combined.tags
+    assert combined.resolved is False
+    assert combined.needs_manual_edit is True
+
+
+def test_a_clip_whose_two_sources_agree_resolves_cleanly():
+    """The pair of the test above: same namespace, same value, no conflict. Two
+    sources naming one thing is the ordinary case and must not nag."""
+    loose = rules_session("Promo/Toonami.mkv")
+    loose.assign("Promo", "filler_type", "Promo")
+    loose.learn_rule("Toonami", "filler_type", "Promo")
+
+    combined = loose.tags_for_clip("Promo/Toonami.mkv")
+
+    assert combined.tags == {"filler_type": "Promo"}
+    assert combined.resolved is True
+
+
+def test_a_rule_does_not_re_map_a_folder_name_it_shares_a_literal_with():
+    """A literal is in the table once. Learned as a rule it matches the file
+    name; as a folder name it matches its path segment. Nothing is counted twice,
+    and a rule cannot quietly re-map a folder."""
+    loose = rules_session("Promo/A.mkv")
+    loose.assign("Promo", "filler_type", "Promo")
+
+    assert loose.rules() == ()
+    assert loose.tags_for("Promo/A.mkv").tags == {"filler_type": "Promo"}
+
+
+def test_an_empty_file_name_resolves_to_nothing():
+    assert rules_session("CN/A.mkv").tags_for_filename("").tags == {}
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ constructs a :class:`Shell` once, and the windows ask it to open each other.
 One visible window, not a stack
 ------------------------------------------------------------------------------
 
-The shell shows exactly one of {menu, scanner, editor, settings} at a time. A
+The shell shows exactly one of {menu, scanner, editor, settings, mesh, queue} at a time. A
 window opens another by asking the shell, the shell hides or closes what is
 there, and the new window takes the screen. When a non-menu window goes away,
 the menu comes back.
@@ -71,7 +71,7 @@ identity and shows whatever is current afterwards.
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
 
-from shared.diagnostics import log_exception, log_path
+from shared.diagnostics import log, log_exception, log_path
 
 #: name -> (module, builder) resolved on first use. Every builder takes the
 #: process's QApplication as its first argument, so the shell can call them
@@ -85,6 +85,7 @@ _BUILDERS = {
     "editor": ("editor.editor", "create"),
     "settings": ("settings.settings", "create"),
     "mesh": ("importer.mesh", "create"),
+    "queue": ("importer.queue", "create"),
 }
 
 #: The names a caller may open. Settings is listed so a bad name says what the
@@ -141,6 +142,27 @@ class OpenInstead(Exception):
         self.kwargs = kwargs
 
 
+class WindowBusy(Exception):
+    """A window that had to go away first would not close.
+
+    Not a build failure — the incoming window was built fine — so reporting it
+    through the "could not be opened" path in :meth:`Shell.open_safely` would
+    blame the wrong window. It exists because a window may refuse to close while
+    it still owns something that must not be destroyed yet, and the old
+    behaviour discarded ``close()``'s return value: the refusal was silent, the
+    outgoing window stayed on screen holding a live thread, and the incoming one
+    was presented on top of it. Two live windows, and the thread that caused the
+    refusal is destroyed by Qt on the way out.
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            f"The window you were in is still busy, so the {name} window was "
+            f"not opened. Nothing was changed. Try again in a moment."
+        )
+        self.name = name
+
+
 class Shell(QObject):
     """Owns the one visible window. One per process, built by main.py."""
 
@@ -184,6 +206,10 @@ class Shell(QObject):
           handler that opened the new one. Closed afterwards, ``
           WA_DeleteOnClose`` only posts a deferred delete, which cannot run
           until that handler has returned.
+
+        Closing it can still fail, because a window may refuse while it owns a
+        worker thread. That is reported as :class:`WindowBusy` rather than
+        ignored, and nothing is put on screen.
         """
         try:
             module_name, builder_name = _BUILDERS[name]
@@ -198,7 +224,15 @@ class Shell(QObject):
         window = self._build(name, kwargs)
         self._adopt(window, destroy_on_close=True)
 
-        self._stand_down()
+        busy = self._stand_down()
+        if busy is not None:
+            # The outgoing window is still up, so putting the new one on screen
+            # would break the one-visible-window rule and leave both alive. Give
+            # the new one back instead: its own `closeEvent` is what knows
+            # whether it is holding something that must outlive it.
+            window.close()
+            raise WindowBusy(name)
+
         self._current = window
         self._present(window)
         return window
@@ -217,6 +251,11 @@ class Shell(QObject):
         """
         try:
             return self.open(name, **kwargs)
+        except WindowBusy as busy:
+            log(str(busy))
+            QMessageBox.warning(None, "The previous window is still busy",
+                                str(busy))
+            return None
         except Exception as error:
             log_exception(f"the {name} window could not be opened", error)
             QMessageBox.warning(
@@ -260,7 +299,7 @@ class Shell(QObject):
             return self._build(redirect.name, redirect.kwargs)
 
     def _stand_down(self):
-        """Take the current window off the screen.
+        """Take the current window off the screen, or hand it back.
 
         The menu is hidden, because it is reused and holds nothing. Anything
         else is closed, because closing is what runs its closeEvent — and for
@@ -269,13 +308,22 @@ class Shell(QObject):
         one of those would keep a live player attached to a window the user
         cannot see, and would move the next window on top of a window that is
         still alive underneath it.
+
+        A window can refuse: `closeEvent` ignores the close while it still owns
+        a worker thread. That refusal is returned rather than swallowed, and
+        `_current` is put back, because the alternative is the one-visible-window
+        rule being enforced only when it happens to be convenient — which is how
+        two windows ended up alive at once, each holding a thread.
         """
         window = self._current
         if window is None:
             self._menu.hide()
-            return
+            return None
         self._current = None
-        window.close()
+        if not window.close():
+            self._current = window
+            return window
+        return None
 
     def _resolve(self, module_name, builder_name):
         import importlib

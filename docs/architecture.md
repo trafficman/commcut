@@ -55,7 +55,9 @@ commcut/
 │   ├── mpv.py               # MpvBridge + its shutdown, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
-│   ├── sources.py           # import/ policy: what can be opened, what is offered
+│   ├── sources.py           # what may be opened, and the import/ folder
+│   ├── tag_form.py          # the ten tag fields, shared by the editor and the queue
+│   ├── tagform.ui           # their layout, promoted into both windows
 │   ├── ffmpeg.py            # clip_to_temp, export_named_model, execute_export_plan
 │   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
 │   ├── naming.py            # Filename scheme policy + render_filename()
@@ -63,8 +65,12 @@ commcut/
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
-│   ├── mesh.py               # MeshSession: the wizard, as a value
+│   ├── mesh.py              # MeshSession: the wizard's model, and the alias table
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
+├── importer/                # The Library Importer's windows
+│   ├── mesh.py              # The Mesh Wizard
+│   ├── queue.py             # The Library Mesh Tag Editor
+│   ├── rules.py             # The Manage Autofill Rules dialog
 ├── tests/                   # pytest suite (see testing.md)
 └── prototypes/              # Earlier exploration / alternatives
     ├── BasicUI/             # First prototype
@@ -79,8 +85,7 @@ point: it builds the one `QApplication`, constructs `MainWindow`, installs a
 per-window script, and each window module exposes a `create(...)` builder rather
 than a `run()` entry point.
 
-`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings,
-mesh} at a time. Opening a window builds it, takes down whatever was on screen, and
+`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings, mesh, queue} at a time. Opening a window builds it, takes down whatever was on screen, and
 shows the new one. When a non-menu window goes away the menu comes back; when the
 menu goes away the app quits. Modal dialogs are not part of this — the main menu's
 file dialog and the editor's export progress and summary dialogs are `QDialog`s
@@ -109,6 +114,14 @@ Two details are load-bearing:
   second, `WA_DeleteOnClose` only posts a deferred delete, which cannot run until
   that handler has returned. The order also means a build that fails leaves the
   user exactly where they were.
+- **A window that refuses to close is not replaced.** `closeEvent` ignores the
+  close while the window still owns a worker thread, and `close()` returns `False`
+  when that happens. That return value used to be discarded: the shell set
+  `_current` to the incoming window and presented it over a window that was still
+  on screen, so two live windows each held a thread that could not be stopped.
+  `_stand_down` now hands the refusal back, `open` raises `WindowBusy`, and
+  `open_safely` reports it as its own outcome — the incoming window was built
+  fine, so the "could not be opened" wording would blame the wrong one.
 
 `Shell.open_safely` is the only way a window is opened. Every window opens the
 next one from inside a button handler, and an exception escaping one of those
@@ -163,6 +176,42 @@ is already too late. The observers are detached first: they fire on mpv's worker
 thread and emit Qt signals, so leaving them attached lets a callback land in a
 half-destroyed QObject — which is observable as an mpv command failing on a
 player that has already gone.
+
+## Ending a worker thread
+
+`create_mpv_player` is not the only thing a window owns that must not outlive it.
+Four windows run a `QThread`: the editor's export, the Settings window's
+vocabulary sync, the Mesh Wizard's load, and the tag editor's duration probe. They
+share one shape, and two details of it are load-bearing.
+
+**A thread has to be told to stop.** `thread.started.connect(worker.run)` runs the
+worker's slot inside the thread's `exec()` loop, and a slot returning does not
+leave that loop. Nothing ends the thread except the worker emitting `finished` and
+`thread.quit` being connected to it — so every worker emits `finished` on *every*
+exit, including the cancelled and failed paths, and `_start_probe`/`_start_worker`
+connect it to `thread.quit`. Without that connection the thread spins forever,
+`thread.finished` never fires, and every teardown hung off it silently never
+runs.
+
+**Teardown hangs off `thread.finished`, never off the worker's own signal.** A
+worker's `finished` is emitted from *inside* the still-running thread, so deleting
+the `QThread` on it destroys a live thread. Qt answers that with
+`QThread: Destroyed while thread is still running` — a `qFatal`, so it aborts the
+process, is invisible in `commcut.log` (a release Qt build on Windows writes it
+through `OutputDebugString`, not stderr), and cannot be caught by
+`install_excepthook`. This is invariant 14.
+
+The consequence that makes it worth stating: a window's `closeEvent` guard is
+usually "refuse to close while `self._thread` is set", because a `QThread` still
+running when its owner is destroyed aborts the process. That guard only comes off
+if the thread really stopped. So a thread that never ends makes the window
+permanently un-closable, and the shell's rule above stops it from being replaced
+— the wizard could not be closed at all, and advancing from it to the tag editor
+left two live windows up before the abort.
+
+Tests cover this with real `QThread`s and the real event loop, in
+`tests/test_mesh_window.py` and `tests/test_queue.py`. See
+[testing.md](testing.md).
 
 ## The main menu
 
@@ -372,10 +421,16 @@ The shared modules are:
    [importing.md](importing.md).
  - `shared/mesh.py` — the Mesh Wizard's model, with no Qt: which folder name is
    being asked about, what the two questions are, which path to show, and the
-   alias table that comes out. A folder name becomes a tag only through an explicit
-   `assign()`, and `preview_conflict()` lets a screen ask about a collision without
-   having committed it. `importer/mesh.py` renders it and decides nothing. See
-   [importing.md](importing.md#the-library-mesh-wizard).
+   alias table that comes out. A folder name and an autofill rule are the same
+   kind of thing — a literal, and what a person decided it means — so they share
+   one table and one collision rule, and a literal already in it is refused
+   rather than duplicated. A rule may not target `title`. `importer/mesh.py` and
+   `importer/queue.py` render this and decide nothing. See
+   [importing.md](importing.md).
+ - `shared/tag_form.py` — the ten tag fields, one widget, promoted into both the
+   editor and the queue. Two forms would be two dropdown configurations, and each
+   of those settings decides what a typed value becomes; see
+   [tag-vocabulary.md](tag-vocabulary.md).
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.

@@ -107,9 +107,22 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   name becomes a tag **only** through an explicit `assign`; there is no path that
   infers one, which is the one thing it exists to guarantee. A folder path that
   would hand one clip two values for one tag is refused rather than guessed: the
-  namespace goes unassigned and the clip is flagged for the edit queue. It ends at
-  a report and imports nothing. →
+  namespace goes unassigned and the clip is flagged. It ends at a report. →
   [importing.md](importing.md#the-library-mesh-wizard)
+- **Library Mesh Tag Editor** (`importer/queue.py`, `importer/rules.py`): the
+  Wizard's hand-off. Each clip in `import/` in turn, with the folder answers
+  applied, a video to pick the title out of, the tag form, and **Manage Autofill
+  Rules** for teaching it that a piece of a file name means a tag. A settled
+  clip's `.cnfo` is written immediately, so a long session has a save point per
+  clip and the tagged import takes over afterwards unchanged. Every clip is
+  visited, because a title is a *region* of a file name rather than a whole
+  token, and regions are the one thing that cannot be tokenised — which is also
+  why the "auto import and fix up the rest" options are retired rather than
+  merely unused. → [importing.md](importing.md#the-library-mesh-tag-editor)
+- **The shared tag form** (`shared/tag_form.py`, `shared/tagform.ui`): one
+  widget, promoted into both the editor and the queue, so there is one set of
+  dropdown rules in the app rather than two that drift. →
+  [tag-vocabulary.md](tag-vocabulary.md)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
@@ -230,15 +243,21 @@ The full vision in `README.md` has three pieces; two are not started:
   and deliberately are not cached. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
   [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
-- **The Library Importer's screens.** The backend and the Mesh Wizard are built;
-  nothing imports yet. What remains is the Manual Edit queue with its mpv preview,
-  the three-option end screen, and the import window itself — one more window, so
-  `_BUILDERS`, a `.ui`, `UI_DATAS`, `REQUIRED_UI` and the `WINDOW_UI` table in
-  `tests/test_frozen_mode.py`, which are already held to each other. The tag-form
-  helpers have to move out of `editor/editor.py` into `shared/` first, or the
-  queue's form will drift from the editor's. Reject currently *excludes* a folder
-  name's tag; it is a distinct state from unmeshed, so routing it to the queue is
-  an added state rather than a redesign. → [importing.md](importing.md)
+- **The Library Importer's import window.** The backend, the Wizard and the
+  queue are built and the queue's **Import Now** already runs the import, so the
+  window that would join them is convenience rather than capability. What is
+  genuinely missing is a **library browser** — nothing shows a user what is in
+  `export/`.
+- **Routing the unresolved clips to a person.** A clip whose folder path claims
+  one tag twice is flagged `needs_manual_edit`, but there is nowhere for it to
+  go yet: the queue offers to reopen at the first unfinished clip instead. The
+  Manual Edit queue is the answer, and it would replace that offer rather than
+  add to it.
+- **Persisting the learned rules.** Session-scoped behind `AliasTable`'s existing
+  `to_dict`/`from_dict`. A rule is a statement about the file names in
+  `import/`, which are throwaway once imported — but persisting them would make
+  the next import of somebody else's library much cheaper, and it is one flag.
+  → [importing.md](importing.md)
 - **Tagging an untagged library without the Wizard.** It reads folder names only.
   Filenames are not parsed, by decision — see
   [importing.md](importing.md#proposals-and-why-they-are-gone).
@@ -284,7 +303,7 @@ The full vision in `README.md` has three pieces; two are not started:
   heuristics for rapid concurrent detections or long spans without one.
 - **Exactly one window is visible at a time, and the main menu no longer sits
   open in the background.** `shared/session.py` shows one of {menu, scanner,
-  editor, settings}; opening a window takes down the one it replaces
+  editor, settings, mesh, queue}; opening a window takes down the one it replaces
   and shows the new one, and a non-menu window closing brings the menu back. The
   menu is hidden and reused rather than rebuilt, so there is only ever one menu
   and one taskbar entry. This replaced a stack in which the menu stayed open
@@ -295,9 +314,33 @@ The full vision in `README.md` has three pieces; two are not started:
   that shuts its mpv player down; and the new window is built *before* the old
   one is taken down, so a failed build leaves the user where they were and a
   window opened from a button handler is not destroyed from inside its own
-  signal. Modal dialogs (the editor's export progress and summary) are owned by
-  their window and are not part of this. →
+  signal. A window that *refuses* to close — which it does while it owns a worker
+  thread — is now reported (`WindowBusy`) instead of being overridden, which is
+  what used to leave two live windows up, each holding a thread. Modal dialogs
+  (the editor's export progress and summary) are owned by their window and are not
+  part of this. →
   [architecture.md](architecture.md#one-process-one-event-loop-one-visible-window)
+- **The Mesh Wizard's and the tag editor's worker threads never terminated.** Both
+  windows used `thread.started.connect(worker.run)`, and a slot returning does not
+  leave the thread's `exec()` loop — so nothing but `worker.finished →
+  thread.quit` ended the thread, `thread.finished` never fired, and everything hung
+  off it silently never ran. The Wizard's `closeEvent` refuses to close while
+  `self._thread` is set, so it became *permanently* un-closable; the shell
+  discarded that refusal and put the tag editor on top of it, and the two windows'
+  threads were destroyed by Qt on the way out — `QThread: Destroyed while thread
+  is still running`, a `qFatal`, so it aborted without a line in `commcut.log`. The
+  tag editor compounded it by hanging its own teardown off the *worker's* signal,
+  which is emitted from inside the still-running thread. Reported as "freeze when
+  advancing to the tag editor, then this message". Fixed in both windows, and the
+  shell now honours a refused close. The freeze itself was the two-window state
+  rather than slow work: the tag editor's GUI-thread share of opening is ~74 ms
+  for a 547-clip `import/` (measured), and it builds its mpv player in `__init__`
+  exactly as the editor does, which works. → [architecture.md](architecture.md#ending-a-worker-thread)
+- **A stubbed thread cannot catch a thread that never stops.** `FakeThread` emits
+  `started` and `finished` by hand and `deleteLater()` sets a flag, so the mesh and
+  queue suites could not see that bug at all — and they didn't. Both files now
+  also carry a `real_thread_*` fixture on a real `QThread` and the real event loop.
+  → [testing.md](testing.md)
 - **A window with an mpv player must shut it down before it is destroyed, and
   that was not being done.** `create_mpv_player` hands mpv the native handle of
   a child frame, so a player left alive when the window closes has outlived the

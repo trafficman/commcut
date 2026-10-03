@@ -5,33 +5,35 @@ real ``MediaPlayer`` methods onto this stub, which supplies only the ``ui``
 namespace and the segment model. That keeps the code under test the shipped
 code rather than a re-implementation.
 
-The stubbed widgets are built from the *same classes* the ``.ui`` file
-declares -- the tag fields are editable ``QComboBox``, not ``QLineEdit``. That
-is not cosmetic: a stubbed ``QLineEdit`` would let the locks, required-tag and
-export suites stay green after the shipped window switched to combos, which is
-precisely the conversion they exist to catch.
+The stub supplies only the ``ui`` namespace and the segment model; the tag form
+is the *real* one from ``shared/tag_form.py``, promoted into ``editorwindow.ui``
+in the shipped editor. That is not cosmetic: the form used to be ten widgets
+hand-built to mirror what ``editorwindow.ui`` described, which meant a rename or
+a dropped widget property could leave every test green while the shipped form
+was wrong. Now there is one form and the stub uses it.
 """
 
 import os
 import tempfile
 
 from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 from editor.editor import (
     ACTION_KEEP_EDITING,
     ExportWorker,
     MediaPlayer,
-    _LOCK_BUTTONS,
-    _REQUIRED_TAG_FIELDS,
-    _SUGGESTED_TAG_FIELDS,
-    _TAG_FIELDS,
-    _field_change_signal,
-    _field_text,
-    _set_field_text,
 )
 from shared.mpv import BoundaryPreview
 from shared.segments import SegmentModel
+from shared.tag_form import (
+    LOCK_BUTTONS,
+    REQUIRED_TAG_LABELS,
+    TAG_FIELDS,
+    TagForm,
+    field_change_signal,
+    set_field_text,
+)
 from shared.timeline import TimelineWidget
 
 
@@ -295,9 +297,7 @@ class EditorStub:
     _refresh_required_fields = MediaPlayer._refresh_required_fields
     _read_tags_from_form = MediaPlayer._read_tags_from_form
     _commit_form_tags_to_model = MediaPlayer._commit_form_tags_to_model
-    _configure_tag_combo = MediaPlayer._configure_tag_combo
     _init_tag_vocabulary = MediaPlayer._init_tag_vocabulary
-    _ordered_tag_values = MediaPlayer._ordered_tag_values
     _refresh_tag_combos = MediaPlayer._refresh_tag_combos
     _note_recent_tags = MediaPlayer._note_recent_tags
     _update_stage_button = MediaPlayer._update_stage_button
@@ -340,35 +340,24 @@ class EditorStub:
     def __init__(self, segments, duration=120.0, media_path=None):
         ensure_qapp()
         self.ui = type("Ui", (), {})()
-        for key, attr in _SUGGESTED_TAG_FIELDS.items():
-            # Editable combos, matching editorwindow.ui. The suggestable tag
-            # fields are QComboBox in the shipped window, and a stubbed
-            # QLineEdit would let every test in the suite stay green while the
-            # real widget's API and required-field styling were both wrong.
-            field = QComboBox()
-            field.setEditable(True)
-            field.setInsertPolicy(QComboBox.NoInsert)
-            setattr(self.ui, attr, field)
-        for key, attr in _TAG_FIELDS.items():
-            if attr not in _SUGGESTED_TAG_FIELDS.values():
-                # Title: a plain QLineEdit, as in the shipped window, because
-                # a per-clip-unique tag has nothing to suggest.
-                setattr(self.ui, attr, QLineEdit())
-        for attr in _LOCK_BUTTONS.values():
-            button = QPushButton()
-            button.setCheckable(True)  # matches checkable=true in editorwindow.ui
-            setattr(self.ui, attr, button)
+        # The real shared form, not a hand-built imitation of it.
+        #
+        # This used to construct ten widgets to mirror what editorwindow.ui
+        # described, which meant a rename or a dropped widget property in the
+        # .ui could leave every test green while the shipped form was wrong. The
+        # form is one widget now, so the stub uses it.
+        self.ui.tagForm = TagForm()
         for attr in ("stageButton", "undoButton", "clipIgnore"):
             setattr(self.ui, attr, QPushButton())
         # The Skip toggle is checkable in editorwindow.ui; without that,
         # setChecked would be a no-op and the ignored flag would never stick.
         self.ui.clipIgnore.setCheckable(True)
-        for key, attr in _LOCK_BUTTONS.items():
-            getattr(self.ui, attr).toggled.connect(
-                lambda checked, k=key: self.on_toggle_lock(k, checked))
-        for key, attr in _TAG_FIELDS.items():
-            _field_change_signal(getattr(self.ui, attr)).connect(
-                lambda text, k=key: self.on_tag_edited(k, text))
+        for namespace in LOCK_BUTTONS:
+            self.ui.tagForm.lock_button(namespace).toggled.connect(
+                lambda checked, k=namespace: self.on_toggle_lock(k, checked))
+        for namespace in TAG_FIELDS:
+            field_change_signal(self.ui.tagForm.field(namespace)).connect(
+                lambda text, k=namespace: self.on_tag_edited(k, text))
         # The tag dropdowns, pointed at a private temp folder per instance so a
         # suite run cannot write to the real install root and no two editors
         # share a vocabulary. The production path is covered by
@@ -391,12 +380,8 @@ class EditorStub:
         self.ui.toggleZoom.setCheckable(True)
         self.ui.toggleZoom.toggled.connect(self.on_toggle_zoom)
         self.ui.toggleZoom.setChecked(True)  # matches MediaPlayer.__init__
-        # Mirrors MediaPlayer.__init__: cache the authored stylesheets so the
-        # required-field outline can be toggled without clobbering them.
-        self._required_base_styles = {
-            key: getattr(self.ui, _TAG_FIELDS[key]).styleSheet()
-            for key in _REQUIRED_TAG_FIELDS
-        }
+        # The required-field outline's base stylesheets are cached by TagForm
+        # itself, in init_vocabulary, so the stub does not repeat that here.
 
         self.segment_model = SegmentModel("test.mp4", duration, segments)
         self.current_index = 0
@@ -454,10 +439,15 @@ class EditorStub:
     # --- helpers ---
 
     def set_tag(self, key, value):
-        _set_field_text(getattr(self.ui, _TAG_FIELDS[key]), value)
+        # Deliberately not `TagForm.write_tags`, which blocks the change signals
+        # so a programmatic fill cannot mark a segment edited. A test's set_tag
+        # is meant to behave like a person typing: the field's signal fires, the
+        # required-field outline re-derives, and the tests that assert on the
+        # outline see it change.
+        set_field_text(self.ui.tagForm.field(key), value)
 
     def get_tag(self, key):
-        return _field_text(getattr(self.ui, _TAG_FIELDS[key]))
+        return self.ui.tagForm.read_tags()[key]
 
     def combo_for(self, key):
         """The tag field's combo, so a test can read the offered values.
@@ -465,7 +455,7 @@ class EditorStub:
         Raises for a field that is not a dropdown -- title -- which is the
         assertion a test that pokes at this is really making.
         """
-        combo = getattr(self.ui, _TAG_FIELDS[key])
+        combo = self.ui.tagForm.field(key)
         assert isinstance(combo, QComboBox), f"{key} is not a dropdown"
         return combo
 
@@ -489,25 +479,26 @@ class EditorStub:
             self.set_tag(key, value)
 
     def click_lock(self, key):
-        getattr(self.ui, _LOCK_BUTTONS[key]).click()
+        self.ui.tagForm.lock_button(key).click()
 
     def checked_locks(self):
         return sorted(
-            key for key, attr in _LOCK_BUTTONS.items()
-            if getattr(self.ui, attr).isChecked()
+            key for key in LOCK_BUTTONS
+            if self.ui.tagForm.lock_button(key).isChecked()
         )
 
     def outlined_required_fields(self):
         """Tag keys of required fields currently showing the warning style."""
         return sorted(
-            key for key in _REQUIRED_TAG_FIELDS
-            if getattr(self.ui, _TAG_FIELDS[key]).styleSheet()
+            key for key in REQUIRED_TAG_LABELS
+            if self.ui.tagForm.field(key).styleSheet()
         )
 
     def form(self):
-        return {k: _field_text(getattr(self.ui, v))
-                for k, v in _TAG_FIELDS.items()
-                if _field_text(getattr(self.ui, v))}
+        return {
+            key: value for key, value in self.ui.tagForm.read_tags().items()
+            if value
+        }
 
     def go_to(self, index):
         self.current_index = index

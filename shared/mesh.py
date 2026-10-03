@@ -63,28 +63,52 @@ COLOURS = (
     "purple", "teal", "sienna", "slateblue",
 )
 
+#: The one tag a rule may not set. Unique per clip, so a standing instruction
+#: cannot fill it — see `MeshSession.learn_rule`.
+TITLE_TAG = "title"
+
 #: How many folders in a chain are "enough to be worth showing". A deep library
 #: would otherwise print its whole path on every page.
 MAX_PATH_DEPTH = 6
 
 
 # ---------------------------------------------------------------------------
-# What one folder name became
+# What one literal became
 # ---------------------------------------------------------------------------
+
+#: Where an `AliasEntry`'s literal came from. Both are a string a person chose a
+#: meaning for; the difference is only *what* it is matched against -- a path
+#: segment for a folder, anywhere in a file name for a rule.
+LEARNED_FOLDER = "folder"
+LEARNED_RULE = "rule"
+
 
 @dataclass(frozen=True)
 class AliasEntry:
-    """One folder name, and what a person decided about it."""
+    """One literal, and what a person decided it means.
 
-    #: The name exactly as it appears on disk, because that is what has to match
-    #: when the table is applied to a path.
+    A **folder name** and an **autofill rule** are the same kind of thing: a
+    string, a namespace, and a value a person chose. `learned` records where the
+    literal came from, and `example_path` where it was seen -- so a rule can be
+    explained and a folder name can be traced. That is the whole reason they are
+    one table rather than two: two systems comparing the same string is how a
+    folder named `30 Sec` and a rule for `30 Sec` end up meaning different things
+    with nothing to notice it.
+    """
+
+    #: The literal, as it appears. A folder name matches a path segment exactly;
+    #: a rule matches anywhere in a file name.
     name: str
     state: str
     namespace: str | None = None
     value: str | None = None
-    #: Videos whose path contains a folder of this name. Display only, but it is
-    #: the number that tells a user how much a decision affects.
+    #: Videos whose path contains a folder of this name. Display only, and
+    #: meaningless for a rule, which matches file names.
     paths: int = 0
+    #: LEARNED_FOLDER or LEARNED_RULE.
+    learned: str = LEARNED_FOLDER
+    #: The path a folder was found in, or the file name a rule was taught on.
+    example_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -280,6 +304,77 @@ class ResolvedTags:
         return not self.resolved
 
 
+def accumulate(contributions, *, example_path: str = "") -> ResolvedTags:
+    """Resolve `(namespace, value, source)` contributions into one clip's tags.
+
+The single place a namespace can be claimed twice, so the folder path and the
+rule path cannot disagree about what happens. Two contributions claiming one
+namespace: **neither value is taken.** The alternatives were shallowest-wins
+and deepest-wins, and both write an arbitrary choice — decided by folder
+order, or by which rule happened to be learned first — into the same record a
+deliberate tag would go in, where nothing later can tell them apart. So the
+namespace is left out, `resolved` goes False, and a person decides.
+
+`source` is the literal the contribution came from, which is what the
+conflict message names.
+"""
+    tags: dict[str, str] = {}
+    origins: dict[str, str] = {}
+    conflicts: list[MeshConflict] = []
+    #: Namespaces already contested. A third contribution must not quietly
+    #: re-populate one after the second removed it.
+    contested: set[str] = set()
+
+    for namespace, value, source in contributions:
+        existing = origins.get(namespace)
+        if existing is None and namespace in contested:
+            continue
+        if existing is not None:
+            if tags[namespace] != value:
+                conflicts.append(MeshConflict(
+                    namespace=namespace,
+                    existing_name=existing,
+                    existing_value=tags[namespace],
+                    incoming_name=source,
+                    incoming_value=value,
+                    example_path=example_path,
+                ))
+                contested.add(namespace)
+                del tags[namespace]
+                del origins[namespace]
+            continue
+        tags[namespace] = value
+        origins[namespace] = source
+
+    return ResolvedTags(tags=tags, conflicts=tuple(conflicts))
+
+
+@dataclass(frozen=True)
+class RuleOutcome:
+    """What `learn_rule` did.
+
+    Three answers, because "add this rule" has three distinct results and the
+    rules modal needs to say which one happened rather than infer it.
+    """
+
+    #: The entry in the table afterwards, whichever way it went.
+    entry: AliasEntry
+    #: False when the literal was already known and nothing was added.
+    created: bool
+    #: Set when the new meaning could reach the same clip as an existing one.
+    conflict: "MeshConflict | None" = None
+
+
+def _validate_namespace(namespace: str) -> str:
+    """The tag key must be one commcut knows, or there is nothing to write it to."""
+    if namespace not in CANONICAL_TAG_KEYS:
+        raise ValueError(
+            f"{namespace!r} is not a tag commcut knows; a folder name or rule can "
+            f"only be meshed onto one of {', '.join(sorted(CANONICAL_TAG_KEYS))}"
+        )
+    return namespace
+
+
 class MeshSession:
     """One run of the wizard over one folder tree.
 
@@ -314,7 +409,8 @@ class MeshSession:
                 existing = self._entries.get(name)
                 if existing is None:
                     self._entries[name] = AliasEntry(
-                        name=name, state=UNMESHED, paths=1)
+                        name=name, state=UNMESHED, paths=1,
+                        learned=LEARNED_FOLDER, example_path=video.relative_path)
                 else:
                     self._entries[name] = replace(
                         existing, paths=existing.paths + 1)
@@ -341,6 +437,27 @@ class MeshSession:
 
     def entries(self) -> tuple[AliasEntry, ...]:
         return tuple(sorted(self._entries.values(), key=lambda e: e.name.casefold()))
+
+    @property
+    def library(self):
+        """The destination library's catalog, or None. Read only, and the evidence
+        a caller ranks suggestions by."""
+        return self._library
+
+    @property
+    def vocabulary(self):
+        """The vocabulary file, or None. The weaker of the two kinds of evidence,
+        and labelled as such wherever it is shown."""
+        return self._vocabulary
+
+    def find(self, literal: str) -> AliasEntry | None:
+        """What this literal already means, or None if it is not in the table.
+
+        The non-raising counterpart to `entry`, for a caller asking "what does
+        this string already mean?" — which is most of what the rules modal does,
+        and a question rather than a mistake about a name that should be there.
+        """
+        return self._entries.get(literal)
 
     def entry(self, name: str) -> AliasEntry:
         return self._entries[name]
@@ -444,11 +561,7 @@ class MeshSession:
         committing, call `preview_conflict` first.
         """
         entry = self._check_unmeshed(name)
-        if namespace not in CANONICAL_TAG_KEYS:
-            raise ValueError(
-                f"{namespace!r} is not a tag commcut knows; a folder name can only "
-                f"be meshed onto one of {', '.join(sorted(CANONICAL_TAG_KEYS))}"
-            )
+        _validate_namespace(namespace)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(
                 "A meshed folder name needs a tag value. Either an existing one or "
@@ -538,7 +651,194 @@ class MeshSession:
             rejected=rejected,
         )
 
+    # ---------------------------------------------------------------------------
+# Learning a literal from a file name
+# ---------------------------------------------------------------------------
+
+    def learn_rule(self, literal: str, namespace: str, value: str, *,
+                   filename: str = "") -> RuleOutcome:
+        """Teach the table that `literal`, found in a file name, means a tag.
+
+        **A literal already in the table is refused**, and the entry that is already
+        there comes back so a caller can offer to edit it rather than add a second.
+        One literal, one meaning, always — which is the entire reason folder names
+        and rules share a table. Without it a folder named `30 Sec` meshed to
+        `length:Short` and a rule the user later typed for `30 Sec` would silently
+        disagree, and neither would know about the other.
+
+        **A rule may not target `title`.** A rule is a standing instruction; a title
+        is unique per clip. Letting a rule fill it re-introduces the automation the
+        folder scan exists to avoid, and a stale rule would rename clips in a
+        finished library. This is also why the editor keeps Title out of its
+        suggested fields.
+        """
+        literal = (literal or "").strip()
+        if not literal:
+            raise ValueError("An autofill rule needs the text to look for.")
+        if namespace == TITLE_TAG:
+            raise ValueError(
+                "An autofill rule cannot set the title. A rule is a standing "
+                "instruction and a title is unique per clip — the one tag that has "
+                "to come from you, every time."
+            )
+
+        existing = self._entries.get(literal)
+        if existing is not None:
+            return RuleOutcome(entry=existing, created=False)
+
+        _validate_namespace(namespace)
+        value = (value or "").strip()
+        if not value:
+            raise ValueError(
+                "An autofill rule needs a tag value. Either an existing one or one "
+                "of your own."
+            )
+
+        conflict = self._conflict_among_names(
+            {literal}, namespace, value, filename=filename)
+        created = AliasEntry(
+            name=literal, state=MESHED, namespace=namespace, value=value,
+            learned=LEARNED_RULE, example_path=filename)
+        self._entries[literal] = created
+        if conflict is not None:
+            self._conflicts.append(conflict)
+        return RuleOutcome(entry=created, created=True, conflict=conflict)
+
+
+    def edit_rule(self, literal: str, namespace: str, value: str) -> AliasEntry:
+        """Change what an existing literal means.
+
+        Separate from `learn_rule` because refusing a duplicate and changing one are
+        different answers to "what happens when this literal is already known", and a
+        caller offering "edit it instead" needs the second without having deleted the
+        first.
+        """
+        existing = self._entries.get(literal)
+        if existing is None:
+            raise KeyError(
+                f"{literal!r} is not in the table, so there is nothing to edit"
+            )
+        _validate_namespace(namespace)
+        value = (value or "").strip()
+        if not value:
+            raise ValueError("A tag value cannot be empty.")
+        edited = replace(existing, state=MESHED, namespace=namespace, value=value)
+        self._entries[literal] = edited
+        return edited
+
+
+    def remove_rule(self, literal: str) -> None:
+        """Forget a rule, leaving a folder name alone.
+
+        Only a rule can be forgotten. A folder name is in the table because the
+        library contains it, and dropping it would silently un-mesh every clip
+        under it.
+        """
+        entry = self._entries.get(literal)
+        if entry is None:
+            return
+        if entry.learned != LEARNED_RULE:
+            raise ValueError(
+                f"{literal!r} is a folder name in this library, not a rule. Folder "
+                f"names are meshed, not learned, and removing one would leave every "
+                f"clip under it untagged."
+            )
+        del self._entries[literal]
+
+
+    def rules(self) -> tuple[AliasEntry, ...]:
+        """The learned rules, sorted. What the rules list shows."""
+        return tuple(sorted(
+            (entry for entry in self._entries.values()
+             if entry.learned == LEARNED_RULE),
+            key=lambda entry: entry.name.casefold(),
+        ))
+
+
+    def tags_for_filename(self, filename: str) -> ResolvedTags:
+        """What the learned rules make of one file name.
+
+        **Every match contributes**, not just the first: a file called
+        `Toonami - 30 Sec` with rules for both is two tags, and stopping at the first
+        would make the rules an ordered list rather than a set.
+
+        Folder names are not consulted here. A folder name is matched against the
+        *path* by `tags_for`, and a literal is only in the table once, so a literal
+        learned as a rule matches the file name and a folder name matches its path
+        segment. Nothing is counted twice and no rule quietly re-maps a folder.
+
+        Matching is case-insensitive, because a person writing `toonami` in a rule
+        and then seeing `Toonami` in a file name means the same token.
+        """
+        if not filename:
+            return ResolvedTags(tags={})
+        haystack = filename.casefold()
+        return accumulate(
+            ((entry.namespace, entry.value, entry.name)
+             for entry in self.rules() if entry.name.casefold() in haystack),
+            example_path=filename,
+        )
+
+
+    def _conflict_among_names(self, names, namespace: str, value: str, *,
+                              filename: str = "") -> MeshConflict | None:
+        """Whether any of `names`, meshed as given, would collide with an entry
+        already in the table.
+
+        The co-occurrence test from `preview_conflict`, applied to a set of literals
+        rather than one, so the rules path and the folder path share one rule about
+        what a collision is.
+        """
+        needle = normalized_validation_key(value)
+        for other in sorted(self._entries.values(),
+                            key=lambda entry: entry.name.casefold()):
+            if (other.name not in names or other.state != MESHED
+                    or other.namespace != namespace
+                    or normalized_validation_key(other.value) == needle):
+                continue
+            for name in names:
+                shared = self._shares_a_path(name, other.name)
+                if shared is not None:
+                    return MeshConflict(
+                        namespace=namespace,
+                        existing_name=other.name,
+                        existing_value=other.value,
+                        incoming_name=name,
+                        incoming_value=value,
+                        example_path=shared or filename,
+                    )
+        return None
+
+    def tags_for_clip(self, relative_path: str) -> ResolvedTags:
+        """Everything one clip's tags come from: its folders and its file name.
+
+        This is the operation the Library Mesh Tag Editor wants, and the reason it
+        exists rather than leaving the caller to add the two halves together: the
+        collision rule has to span **both** sources. A folder `Promo` meaning
+        `filler_type:Promo` and a rule for `Toonami` meaning `filler_type:Bumper`
+        would hand one clip two values for one tag, and a caller that merged two
+        already-resolved dicts would silently pick one.
+
+        One `accumulate` over both, so the answer is the same as if the two had
+        been collected together in the first place.
+        """
+        chain = folder_chain(relative_path)
+        filename = os.path.basename(relative_path)
+        haystack = filename.casefold()
+
+        def contributions():
+            for name in chain:
+                entry = self._entries.get(name)
+                if entry is not None and entry.state == MESHED:
+                    yield entry.namespace, entry.value, name
+            for entry in self.rules():
+                if entry.name.casefold() in haystack:
+                    yield entry.namespace, entry.value, entry.name
+
+        return accumulate(contributions(), example_path=relative_path)
+
     # -- the outcome ------------------------------------------------------
+
 
     def tags_for(self, relative_path: str) -> ResolvedTags:
         """The tags a clip at `relative_path` would get."""
@@ -551,45 +851,20 @@ class MeshSession:
         model: the path is matched against the decisions, and what matches is what
         the clip gets.
 
-        Where a namespace is claimed twice in one chain, **neither value is
-        taken**. The alternatives were shallowest-wins and deepest-wins, and both
-        write a guess: an arbitrary one, decided by folder order, into the same
-        record a deliberate tag would go in, where nothing later can tell them
-        apart. So the namespace is left out, `resolved` goes False, and a person
-        decides — which is what `needs_manual_edit` is for.
-
         Takes a chain rather than a path so callers that already hold one do not
         have to re-split a string, and so nothing has to invent a fake path to
         stand in for a file name.
+
+        Delegates the collision rule to `accumulate`, which the rule path uses
+        too.
         """
-        tags: dict[str, str] = {}
-        conflicts: list[MeshConflict] = []
-        #: Namespaces already contested in this chain. A third folder must not
-        #: quietly re-populate one after the second removed it.
-        contested: set[str] = set()
-
-        for name in chain:
-            entry = self._entries.get(name)
-            if entry is None or entry.state != MESHED:
-                continue
-            existing = tags.get(entry.namespace)
-            if existing is None and entry.namespace in contested:
-                continue
-            if existing is not None and existing != entry.value:
-                conflicts.append(MeshConflict(
-                    namespace=entry.namespace,
-                    existing_name=name,
-                    existing_value=existing,
-                    incoming_name=name,
-                    incoming_value=entry.value,
-                    example_path=example_path,
-                ))
-                contested.add(entry.namespace)
-                del tags[entry.namespace]
-                continue
-            tags[entry.namespace] = entry.value
-
-        return ResolvedTags(tags=tags, conflicts=tuple(conflicts))
+        return accumulate(
+            ((entry.namespace, entry.value, name)
+             for name in chain
+             for entry in (self._entries.get(name),) if entry is not None
+             and entry.state == MESHED),
+            example_path=example_path,
+        )
 
     def aliases(self) -> AliasTable:
         """Every decision, meshed or rejected. The session's output."""

@@ -1,6 +1,6 @@
 """The one visible window: shared/session.py.
 
-The shell shows exactly one of {menu, scanner, editor, settings} at a
+The shell shows exactly one of {menu, scanner, editor, settings, mesh, queue} at a
 time, so its whole job is deciding what replaces what. Three of its rules carry
 enough weight to have their own tests here, because each one fails quietly:
 
@@ -14,6 +14,10 @@ enough weight to have their own tests here, because each one fails quietly:
   - A window that goes away brings the **menu** back, and the menu going away
     quits the app. X-click, "Back to main menu", a redirect, and a failed build
     are all the same trigger: the current window ended.
+  - A window that **refuses** to close is not replaced. `closeEvent` ignores the
+    close while the window owns a worker thread, and `close()` saying so used to
+    be discarded — which let the incoming window go up over a window that was
+    still there, both alive, each holding a thread.
 
 The windows are plain QMainWindows registered under test-only names. What is
 under test is the shell, not any particular window's UI, and building a real
@@ -30,7 +34,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 import shared.session as session_module
-from shared.session import OpenInstead, Shell, set_shell
+from shared.session import OpenInstead, Shell, WindowBusy, set_shell
 
 
 @pytest.fixture
@@ -52,6 +56,32 @@ def close(window, qapp):
     qapp.processEvents()
     qapp.sendPostedEvents(None, QEvent.DeferredDelete)
     qapp.processEvents()
+
+
+class StubbornWindow(QMainWindow):
+    """A window that refuses to close, the way one owning a worker thread does.
+
+    `closeEvent` ignoring the close is how a window says "I still own something
+    that must not be destroyed yet". `MeshWindow.closeEvent` and
+    `QueueWindow.closeEvent` both do it, and for the same reason: a `QThread`
+    still running when its owner is destroyed aborts the process.
+    """
+
+    def __init__(self, name):
+        super().__init__()
+        self.setWindowTitle(name)
+        self.released = False
+
+    def release(self):
+        """Stop refusing, so a test can get rid of it."""
+        self.released = True
+        self.close()
+
+    def closeEvent(self, event):
+        if not self.released:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 @pytest.fixture
@@ -81,17 +111,25 @@ def stack(qapp, monkeypatch):
         setattr(sys.modules[__name__], name, builder)
         return builder
 
+    def register_stubborn(name):
+        def builder(app, **kwargs):
+            calls.append((name, kwargs))
+            return StubbornWindow(name)
+        setattr(sys.modules[__name__], name, builder)
+
     for name in ("alpha", "beta", "gamma"):
         register(name)
     register("broken", error=FileNotFoundError("no source video found"))
     register("redirecting", redirect=(("alpha",), {"source": r"C:\videos\old.mp4"}))
     register("redirecting_missing", redirect=(("not-a-window",), {}))
+    register_stubborn("stubborn")
+    register_stubborn("stubborn_next")
 
     monkeypatch.setattr(
         session_module, "_BUILDERS",
         {name: (__name__, name) for name in
          ("alpha", "beta", "gamma", "broken", "redirecting",
-          "redirecting_missing")})
+          "redirecting_missing", "stubborn", "stubborn_next")})
 
     menu = QMainWindow()
     menu.setWindowTitle("menu")
@@ -103,6 +141,9 @@ def stack(qapp, monkeypatch):
         yield shell
     finally:
         set_shell(None)
+        if isinstance(shell.current, StubbornWindow):
+            shell.current.release()
+            qapp.processEvents()
 
 
 def test_the_menu_is_the_starting_point(stack):
@@ -176,6 +217,45 @@ def test_a_failed_open_reports_rather_than_raises(stack, monkeypatch):
 
     assert warnings, "a failed launch must say so rather than raise"
     assert "no source video" in warnings[0][2]
+
+
+def test_a_window_that_will_not_close_is_not_replaced(stack, monkeypatch):
+    """The refusal used to be thrown away, and that is how two live windows ended
+    up on screen at once.
+
+    `close()` returns False when `closeEvent` ignores the close, which is what a
+    window does while it still owns a worker thread. The shell discarded that
+    return value, put the incoming window up anyway, and moved `_current` off the
+    window that was still there -- so the one-visible-window rule held only when
+    it was convenient, and the thread behind the refusal was destroyed by Qt on
+    the way out.
+    """
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *args: warnings.append(args)))
+
+    stubborn = stack.open("stubborn")
+    stubborn.show()
+
+    assert stack.open_safely("stubborn_next") is None
+
+    assert stack.current is stubborn, "the shell kept pointing at the window it has"
+    assert stubborn.isVisible(), "and did not put the new window on top of it"
+    assert not stack.menu_widget.isVisible(), "nor fell back to the menu"
+    assert warnings, "a refused hand-off must say so rather than look like a no-op"
+    assert "still busy" in warnings[0][2]
+
+
+def test_a_refused_close_raises_rather_than_being_swallowed(stack):
+    """`open` is the half of the pair that has no dialog, so it has to say so
+    itself. `OpenInstead` is the precedent: a routing outcome is an explicit
+    exception, not a sentinel the caller has to know to test for."""
+    stack.open("stubborn")
+
+    with pytest.raises(WindowBusy) as error:
+        stack.open("stubborn_next")
+
+    assert "stubborn_next" in str(error.value)
 
 
 def test_a_source_path_travels_as_an_constructor_argument(stack):

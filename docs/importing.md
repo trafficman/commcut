@@ -374,15 +374,98 @@ settling, and the shape is settled so persistence is a later additive change.
 serialized. It is recomputed from the tree every run, so persisting it would freeze
 a number that goes stale the moment a folder moves.
 
-### Not built
+### The Library Mesh Tag Editor
 
-- **The Manual Edit queue**, which is where the unresolved clips above go, and
-  Reject's target.
-- **The three-option end screen** (*Manually Edit All* / *Auto Import*), and the
-  clip-to-queue decision behind it.
-- **Choosing a folder to import.** `create(app, root)` takes one and defaults to
-  `import/`; the control is a decision the import window will make.
-- **`candidates_from_videos`** — assembling `ImportCandidate`s from `FoundVideo`s
-  once a person has settled the tags, probing durations *after* tagging so the
-  clips the user declines are never probed.
-- **The import window**, and threading `MeshSession.aliases()` into `plan_import`.
+The queue, reached from the Wizard's report with **Tag the Titles Next**. It is
+the whole of untagged import's back half.
+
+**Why every clip is visited.** A title is not *underivable* — the filename is
+perfectly good title material. It is a **region** of a string that also contains
+other tags: `Toonami - 30 Sec - Cartoon (Remastered)` has four tokens and no
+boundaries. Everything else in the design is a **whole token** — a folder name is
+exactly itself, a rule is a substring the user named — and whole tokens automate.
+So every clip needs a person exactly once, to supply the one thing the machine
+cannot separate.
+
+This is also why the "auto import and fix up the rest" options are **retired**
+rather than merely unused: no clip can be finished without a title, so there is
+nothing for them to import.
+
+**A settled clip's `.cnfo` is written to `import/` immediately.** The tagged
+import then takes over unchanged, so the untagged path converges on the tagged
+one rather than forking it. Two consequences:
+
+- **Resume asks `missing_required_tags(record)`, not "is there a record".** A
+  clip the user tagged and then abandoned has a record with three of four tags.
+  Treating that as finished would strand the clip forever, and it is the single
+  most likely way a resume gets this wrong.
+- An eight-hundred-clip session has a save point per clip.
+
+**The record is `.cnfo`, not `.cmct`.** `shared/segments.sidecar_path` is the
+editor's in-progress boundary model; an imported clip's record is the one the
+export planner publishes, which is what `build_catalog` looks for.
+
+**`<source>` is the imported file's own name.** An imported clip was never cut
+from a compilation, and one honest value under the field's single reading beats a
+schema bump that would make the record unreadable to every older commcut.
+
+**Skip - Delete removes the file.** `import/` is a staging folder, not a library:
+anything in it is a copy from somewhere else or expendable. So there is a
+destructive option, and it is labelled as one, confirmed with the file's name and
+the consequence in words, kept off `Next`'s side of the button row, and never a
+default button. Progress counts what is *left*, so a deletion decrements the
+denominator instead of looking like a stalled queue.
+
+**An unprobeable clip is not a skip.** No duration means no record, so it cannot
+be finished — but it stays in `import/`, is named in the report with the reason,
+and comes back next run. It does not block the others. The two skips are opposites
+and the report keeps them apart.
+
+**`scan_keyframes` is never called.** A queue has no segments to mark and its
+clips are thirty seconds long, so an ffprobe pass over every frame is pure waste.
+
+**The duration probe runs on a thread that has to be told to stop.** One ffprobe
+per clip, started as the clip is shown, so `Plan Import` never waits on one.
+`ProbeWorker.run()` emits `finished` at the end of every path, `_start_probe`
+connects that to `thread.quit`, and the teardown hangs off `thread.finished` —
+not off the worker's own signal, which is emitted from inside the still-running
+thread. That is what lets `closeEvent` refuse to close while a probe is in flight
+and still come off afterwards. See
+[architecture.md](architecture.md#ending-a-worker-thread).
+
+### The rules, and why the title is what is left
+
+An autofill rule teaches commcut that a piece of a file name means a tag. Rules
+live in the Wizard's own table keyed by the literal string, which is the reason
+the modal looks the way it does:
+
+- **A literal already in the table is refused**, and the existing entry comes back
+  so the modal can offer to edit it. One literal, one meaning, always. Without
+  that, a folder named `30 Sec` meshed to `length:Short` and a rule later typed
+  for `30 Sec` would silently disagree, and neither would know about the other.
+- **Every match contributes**, not just the first: `Toonami - 30 Sec` with rules
+  for both is two tags, and stopping at the first would make the rules an ordered
+  list rather than a set.
+- **The namespace and value pickers are the Wizard's**, pre-selected from
+  `match_value` — so typing `Toonami` offers `block (14 clips)` with the
+  evidence attached. One table means one vocabulary.
+- **A rule may not target `title`**, and the modal's namespace list does not even
+  offer it. A rule is a standing instruction; a title is unique per clip. This
+  is the whole reason the title is the one tag still asked for, and it is why the
+  editor keeps Title out of its suggested and lockable fields too.
+
+`MeshSession.tags_for_clip` is the operation the queue wants, and it exists
+rather than leaving the caller to add the two halves: **the collision rule has to
+span both sources.** Neither `tags_for` (folders) nor `tags_for_filename` (rules)
+sees the other's contributions, so a caller merging two resolved dicts would
+silently pick a winner. One `accumulate` over both, so the answer is the same as
+if they had been collected together.
+
+### The tag form is one widget
+
+`shared/tag_form.py` and `shared/tagform.ui` hold the ten fields, and both
+windows host that widget. Two tag forms would be two dropdown configurations,
+and `docs/tag-vocabulary.md` records why each setting there is load-bearing: the
+insert policy, the completer's case sensitivity, its filter mode, its completion
+mode. The queue hides the lock buttons rather than omitting them — a lock carries
+a value to the next segment, and a queue has no next segment.

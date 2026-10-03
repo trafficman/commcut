@@ -180,14 +180,47 @@
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="buttonClose">
-     <property name="text">
-      <string>Close</string>
-     </property>
-     <property name="visible">
-      <bool>false</bool>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="finishButtons">
+     <item>
+      <widget class="QPushButton" name="buttonQueue">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Tag each clip's title, one at a time. The folder answers you already gave are applied to every clip.</string>
+       </property>
+       <property name="text">
+        <string>Tag the Titles Next</string>
+       </property>
+       <property name="default">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="finishSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="buttonClose">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>

@@ -58,6 +58,8 @@ UI_FILES = (
     ("scanner", "scannerwindow.ui"),
     ("settings", "settingswindow.ui"),
     ("importer", "meshwindow.ui"),
+    ("shared", "tagform.ui"),
+    ("importer", "queuewindow.ui"),
 )
 
 

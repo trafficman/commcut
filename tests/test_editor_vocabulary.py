@@ -12,9 +12,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QCompleter, QLineEdit
 
 from editor.editor import (
-    _EMPTY_VOCABULARY_HINT, _SUGGESTED_TAG_FIELDS, _TAG_FIELDS,
+    _EMPTY_VOCABULARY_HINT, _LOCK_BUTTONS, _SUGGESTED_TAG_FIELDS, _TAG_FIELDS,
 )
 from editor_stub import EditorStub, ensure_qapp
+from shared.environment import resource_path
+from shared.tag_form import TagForm
 from shared.timeline import TimelineWidget
 from shared.ui_loader import UiLoader
 from shared.vocabulary import Vocabulary, forget_cached_vocabulary
@@ -60,35 +62,41 @@ def editor_with(tmp_path, segments=None, **required):
 
 
 def stored_vocabulary(editor):
-    return Vocabulary.load(editor._vocabulary_path)
+    return Vocabulary.load(editor.ui.tagForm.vocabulary_path)
 
 
 # ---------------------------------------------------------------------------
 # The widget
 # ---------------------------------------------------------------------------
 
-def shipped_ui_file():
-    """The editor form as the app resolves it, through the same loader."""
+def shipped_tag_form():
+    """The tag form as the app resolves it, through the same loader.
+
+    `shared/tagform.ui`, not `editorwindow.ui`: the fields moved out of the
+    editor's own `.ui` and into the shared form the editor promotes, so a
+    property lost from the form is lost from both windows and only this file
+    looks at the shipped declaration.
+    """
     from shared.environment import resource_path
-    return str(resource_path("editor", "editorwindow.ui"))
+    return str(resource_path("shared", "tagform.ui"))
 
 
 def test_the_shipped_ui_file_declares_editable_combos_that_never_grow(qapp):
     """The `.ui` file itself, not the stub.
 
     The stub builds its own widgets, so nothing else in the suite would notice
-    if `editorwindow.ui` still declared a QLineEdit for a field that is supposed
-    to be a dropdown -- the shipped app would be a closed list while every widget
+    if `tagform.ui` still declared a QLineEdit for a field that is supposed to
+    be a dropdown -- the shipped app would be a closed list while every widget
     test stayed green. Both properties belong in the file as well as in
     `_configure_tag_combo`, because the file is what a hand-edit or a merge
     would change.
     """
     loader = UiLoader()
-    loader.register_widget(TimelineWidget)
-    ui = loader.load(shipped_ui_file(), None)
+    loader.register_widget(TagForm)
+    form = loader.load(shipped_tag_form(), None)
 
     for key, attr in _SUGGESTED_TAG_FIELDS.items():
-        field = getattr(ui, attr)
+        field = getattr(form, attr)
         assert isinstance(field, QComboBox), f"{key} is a {type(field).__name__}"
         assert field.isEditable() is True, f"{key} cannot be typed into"
         assert field.insertPolicy() == QComboBox.NoInsert, (
@@ -103,13 +111,36 @@ def test_the_title_field_is_a_plain_text_input(qapp):
     """A per-clip-unique tag has nothing to suggest, so a dropdown there would be
     a list with one useful entry per clip. It stays a QLineEdit."""
     loader = UiLoader()
-    loader.register_widget(TimelineWidget)
-    ui = loader.load(shipped_ui_file(), None)
+    loader.register_widget(TagForm)
+    form = loader.load(shipped_tag_form(), None)
 
-    title = getattr(ui, _TAG_FIELDS["title"])
+    title = getattr(form, _TAG_FIELDS["title"])
 
     assert isinstance(title, QLineEdit)
     assert not isinstance(title, QComboBox)
+
+
+def test_the_editor_does_not_draw_its_own_tag_fields():
+    """One tag form in the app, by construction.
+
+    If `editorwindow.ui` grew its own grid back, two forms would exist and the
+    dropdown configuration in `shared/tag_form.py` would apply to only one of
+    them -- the drift this whole refactor exists to prevent, and which no widget
+    test would otherwise notice, because the promoted form is a child of the
+    window and `findChild` recurses into it.
+
+    Asserted against the file's text rather than the loaded object: the source is
+    what a hand-edit or a merge changes, and a loaded widget cannot tell a field
+    declared on the window from one reached through the form.
+    """
+    source = open(
+        resource_path("editor", "editorwindow.ui"), encoding="utf-8").read()
+
+    for attr in set(_TAG_FIELDS.values()) | set(_LOCK_BUTTONS.values()):
+        assert f'name="{attr}"' not in source, (
+            f"{attr} is declared in editorwindow.ui, so the editor has a second "
+            f"tag form")
+    assert 'class="TagForm"' in source
 
 
 def test_every_tag_field_exactly_one_is_the_unsuggestable_one():
@@ -227,8 +258,8 @@ def test_the_values_are_in_the_file_and_not_just_in_the_editor(qapp, tmp_path):
 
     editor.on_stage()
 
-    assert os.path.exists(editor._vocabulary_path)
-    assert "Toonami" in open(editor._vocabulary_path, encoding="utf-8").read()
+    assert os.path.exists(editor.ui.tagForm.vocabulary_path)
+    assert "Toonami" in open(editor.ui.tagForm.vocabulary_path, encoding="utf-8").read()
 
 
 def test_a_fresh_editor_offers_what_a_previous_one_recorded(qapp, tmp_path):
@@ -240,7 +271,7 @@ def test_a_fresh_editor_offers_what_a_previous_one_recorded(qapp, tmp_path):
         [{"start": 0.0, "ignored": False, "tags": {}}],
         media_path=str(tmp_path / "compilation.mp4"),
     )
-    second._init_tag_vocabulary(first._vocabulary_path)
+    second._init_tag_vocabulary(first.ui.tagForm.vocabulary_path)
 
     assert "Toonami" in second.offered_values("block")
 
@@ -269,14 +300,14 @@ def test_the_ordering_is_per_editor_not_persisted(qapp, tmp_path):
         [{"start": 0.0, "ignored": False, "tags": {}}],
         media_path=str(tmp_path / "compilation.mp4"),
     )
-    second._init_tag_vocabulary(first._vocabulary_path)
+    second._init_tag_vocabulary(first.ui.tagForm.vocabulary_path)
 
     assert second.offered_values("block") == ("Toonami",)
 
 
 def test_the_remainder_is_alphabetical_so_the_list_is_deterministic(qapp, tmp_path):
     editor = editor_with(tmp_path)
-    vocabulary = editor._vocabulary
+    vocabulary = editor.ui.tagForm._vocabulary
     vocabulary.record({"block": "Toonami", "block2": "x"})
     vocabulary.record({"show": "Samurai Jack"})
     vocabulary.record({"show": "Cowboy Bebop"})

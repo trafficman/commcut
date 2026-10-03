@@ -40,6 +40,7 @@ from shared.diagnostics import log, log_exception
 from shared.exporting import export_folder
 from shared.importing import find_videos, import_folder
 from shared.mesh import COLOURS, MESHED, REJECTED, MeshSession, namespace_choices
+from shared.session import shell
 from shared.ui_loader import UiLoader
 from shared.vocabulary import get_vocabulary, vocabulary_path
 
@@ -73,11 +74,19 @@ class MeshWorker(QObject):
     The vocabulary sync is *shown*, not merely run. It prunes values no clip uses,
     so it cannot happen invisibly in a constructor: the user opens a wizard to look
     around and must not lose a tag they typed without being told.
+
+    `finished` is what ends the thread, and it is emitted on *every* exit
+    including the cancelled and failed ones. Without it the `QThread` never
+    terminates: `started` runs this slot inside the thread's `exec()` loop, and a
+    slot that returns does not leave that loop, so `thread.finished` is never
+    emitted and `MeshWindow._thread` is never cleared. The window then refuses to
+    close forever, and the thread is still spinning when Qt destroys it at exit.
     """
 
     ready = Signal(object, str, str)
     failed = Signal(str)
     advanced = Signal(str)
+    finished = Signal()
 
     def __init__(self, root: str, cancel_event=None):
         super().__init__()
@@ -114,6 +123,8 @@ class MeshWorker(QObject):
                           error)
             self.failed.emit(f"{type(error).__name__}: {error}")
             return
+        finally:
+            self.finished.emit()
         self.ready.emit(session, summary, problems)
 
 
@@ -178,8 +189,10 @@ class MeshWindow(QMainWindow):
         self.ui.buttonAssign.clicked.connect(self.on_assign)
         self.ui.buttonReject.clicked.connect(self.on_reject)
         self.ui.buttonClose.clicked.connect(self.close)
+        self.ui.buttonQueue.clicked.connect(self.on_queue)
         self.ui.textReport.setVisible(False)
         self.ui.buttonClose.setVisible(False)
+        self.ui.buttonQueue.setVisible(False)
 
         self._thread: QThread | None = None
         self._worker: MeshWorker | None = None
@@ -196,6 +209,7 @@ class MeshWindow(QMainWindow):
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
         worker.ready.connect(self._on_ready)
         worker.failed.connect(self._on_failed)
         worker.advanced.connect(self.ui.labelProgress.setText)
@@ -409,7 +423,22 @@ class MeshWindow(QMainWindow):
         self.ui.labelProgress.setText("")
         self.ui.textReport.setPlainText(self.session.report())
         self.ui.textReport.setVisible(True)
+        self.ui.buttonQueue.setVisible(True)
+        self.ui.buttonQueue.setEnabled(True)
+        # Both endings offered: the queue is the next step, and stopping here is
+        # legitimate — the folder answers are worth keeping even if the titles
+        # are not wanted yet.
         self.ui.buttonClose.setVisible(True)
+
+    def on_queue(self):
+        """Open the Library Mesh Tag Editor on this session.
+
+        The alias table crosses with the window rather than being written to disk:
+        it is a statement about *this* folder tree, and a saved copy would be
+        stale the moment the user reorganises. Re-running the Wizard rebuilds it
+        from the tree, which is where its truth lives.
+        """
+        shell().open_safely('queue', session=self.session, root=self.root)
 
     def closeEvent(self, event):
         """Refuse to close while the worker is reading.

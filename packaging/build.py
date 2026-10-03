@@ -88,6 +88,8 @@ UI_FILES = (
     'scanner/scannerwindow.ui',
     'settings/settingswindow.ui',
     'importer/meshwindow.ui',
+    'shared/tagform.ui',
+    'importer/queuewindow.ui',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
