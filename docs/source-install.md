@@ -4,7 +4,8 @@ The source release: what is in it, how to install it, what it resolves and from
 where, and the one thing about it that has not been verified.
 
 Applies to: `install_deps.sh`, `run.sh`, `commcut.command`,
-`packaging/source_release.py`, `shared/environment.py`, `shared/mpv.py`,
+`packaging/source_release.py`, `shared/environment.py`, `shared/icons.py`,
+`shared/mpv.py`,
 `shared/ffmpeg.py`, `shared/sources.py`, `requirements.txt`,
 `.github/workflows/source-release.yml`.
 
@@ -175,6 +176,52 @@ folder, which is writable, and that whole class of problem cannot arise.
 What a source release does *not* get is a bundled ffmpeg. The binaries come from
 the system instead. That inverts one policy the Windows build depends on, which
 is the subject of the next section.
+
+## The icon, and what each platform shows
+
+`shared/icons.py` sets one icon on the `QApplication` and every window inherits
+it, on all three platforms — see
+[architecture.md](architecture.md#the-application-icon) for the mechanism. What
+differs is what the *platform* does with it, and the honest per-platform answer
+is not the same on any two:
+
+| | Title bar | Dock / taskbar | File in a file manager |
+|---|---|---|---|
+| macOS | no icon is drawn — macOS has none | the Dock tile and the app-menu icon take the application icon | Python's, and Terminal's for `commcut.command`: there is no `.app` bundle, because `run.sh` execs the venv's interpreter |
+| Linux | the window icon, under any WM that draws one | most WMs' taskbars; **the GNOME/KDE dash and Alt-Tab stay generic**, because those read the icon from a `.desktop` file and commcut ships none | n/a — it is a clone, not an artifact |
+| Windows | the window icon | the taskbar button, grouped as one entry because it is one process | the exe icon, which is a *separate* mechanism compiled in by PyInstaller |
+
+**The Linux dock is a known gap, not an oversight.** A `.desktop` entry would fix
+it, and it is deliberately not shipped: `Icon=` in a desktop entry is resolved by
+absolute path, so the file could only be written by `install_deps.sh` at install
+time — which is the installer-ish side effect that
+[AGENTS.md](../AGENTS.md) invariant 16 keeps out of the launchers. It is a
+follow-up, and until then the window icon is what a Linux user gets.
+
+**The macOS row is the one claim here nobody has run.** Qt routes the application
+icon to AppKit's application icon image, so the Dock tile should show it — but as
+[What has not been verified](#what-has-not-been-verified) says, no macOS machine
+has run this app yet, and this is the first thing on that list to check. The
+`commcut.command` icon is a separate matter and is not fixable here: Finder opens
+a `.command` file by launching Terminal, so the icon belongs to Terminal.
+
+**What the artwork has to be.** Two files in `assets/`, and neither is optional in
+its own right — Qt's ICO reader is Windows-only, so macOS and Linux read the PNG,
+while PyInstaller's `icon=` on Windows accepts only `.ico`/`.exe` and there is no
+Pillow in `requirements.txt` to convert anything else:
+
+- `assets/commcut_icon.png` — square, at least 256px (512 is worth having for the
+  Dock tile), with a real alpha channel.
+- `assets/commcut_icon.ico` — square, multi-frame
+  (16/24/32/48/64/128/256), from the same artwork.
+
+Neither file is in the repository yet, and that is supported rather than broken:
+`app_icon()` returns a null icon and logs the two paths it looked in, and the
+archive simply ships `assets/` without them. Dropping the files into `assets/` is
+the whole procedure — `assets` is already a walked entry in
+`SOURCE_ENTRIES`, so a source release picks them up with no manifest edit, and
+`tests/test_icons.py` checks the real files for squareness, size and an alpha
+channel the day they appear.
 
 ## Where the binaries come from
 
@@ -405,6 +452,9 @@ What none of that establishes is that a video **renders**:
 - **Wayland on Linux.** `wid` embedding is an X11-shaped mechanism. A Linux
   session on Wayland is the open question, and it is the main reason Linux is
   designed-for rather than supported.
+- **The Dock icon.** Whether Qt's application icon reaches the macOS Dock tile is
+  the one claim in [The icon, and what each platform shows](#the-icon-and-what-each-platform-shows)
+  no machine has checked. It is cosmetic, and it is a two-second look.
 
 So: **a green CI run is not evidence that a platform works**, and neither is a
 green local suite. Only a person on that machine can confirm playback. The

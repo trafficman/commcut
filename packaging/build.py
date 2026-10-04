@@ -98,6 +98,24 @@ PAYLOAD_FILES = (
     'assets/commcut_banner.png',
 )
 
+# The application icon (shared/icons.py), which does not exist yet and is not
+# required to. The claim is the two-directional one and nothing weaker: a file
+# that is on disk *must* be in the payload, and a file that is not must not be
+# claimed to be. Asserting only the first half would pass forever with the icon
+# wired up and never bundled -- which is a build that runs perfectly from source
+# and shows Qt's default icon in every packaged window, the failure mode the
+# banner above exists to prevent.
+#
+# The same optionality is reached three other ways, none of them a shared list:
+# the spec filters the comprehension that becomes PyInstaller's `datas` (not
+# `UI_DATAS`, which stays the complete declaration);
+# tests/test_frozen_mode.py holds the spec and shared/icons.py to each other over
+# the names; and tests/test_release_build.py drives the check below.
+OPTIONAL_PAYLOAD_FILES = (
+    'assets/commcut_icon.png',
+    'assets/commcut_icon.ico',
+)
+
 # Folders the app expects next to the executable. import/ and export/ are in
 # APP_FOLDERS in shared/environment.py; temp/ is created on first run and is
 # pure scratch, so it is not shipped.
@@ -209,11 +227,35 @@ def check_binaries():
         _say(f"  {name}: {size / (1024 * 1024):.1f} MB")
 
 
+def check_icon():
+    """Report what icon the build will carry, and the half-delivered case.
+
+    Never a failure: the artwork is optional and the app is complete without
+    it. A release is what matters, though -- an exe with PyInstaller's default
+    logo ships unnoticed, because nothing at run time can tell you the icon was
+    forgotten. The two files are a pair in practice and not interchangeable:
+    with the PNG alone every window is right and Explorer's icon is not, which
+    is the one asymmetry worth naming rather than summarising as "no icon".
+    """
+    for path, without in (
+        (os.path.join(PROJECT_ROOT, 'assets', 'commcut_icon.ico'),
+         "commcut.exe keeps PyInstaller's default icon"),
+        (os.path.join(PROJECT_ROOT, 'assets', 'commcut_icon.png'),
+         "the windows show Qt's default icon"),
+    ):
+        if os.path.isfile(path):
+            _say(f"  {os.path.basename(path)}: {os.path.getsize(path)} bytes")
+        else:
+            _say(f"  {os.path.basename(path)}: not present, so {without}")
+
+
 def preflight():
     _say("checking platform")
     check_platform()
     _say("checking bundled binaries")
     check_binaries()
+    _say("checking the app icon")
+    check_icon()
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +331,21 @@ def _verify_payload(root):
                 f"{relative} is missing from the build. The payload must keep "
                 f"its source-tree subfolders so resource_path() resolves the "
                 f"same way frozen and unfrozen."
+            )
+
+    for relative in OPTIONAL_PAYLOAD_FILES:
+        # Read against PROJECT_ROOT, not against the build root: the question is
+        # whether this machine had the art when the build ran, and `root` is the
+        # output being checked rather than the input.
+        in_source = os.path.exists(os.path.join(PROJECT_ROOT, *relative.split('/')))
+        in_payload = os.path.exists(os.path.join(root, *relative.split('/')))
+        if in_source != in_payload:
+            raise BuildError(
+                f"{relative} is {'' if in_source else 'not '}in the source tree "
+                f"but {'' if in_payload else 'not '}in the build, and it has to "
+                f"be both or neither. The icon is optional because the artwork "
+                f"has not been made yet, not because a file can be quietly "
+                f"left out of the payload."
             )
 
 

@@ -199,11 +199,16 @@ exe, which is what makes the layout above work.
 ## Not an installer
 
 This is a portable smoke-test build, not a packaged release. There is no
-uninstaller, no Start Menu shortcut, no code signing, and no icon. If it ever
+uninstaller, no Start Menu shortcut, and no code signing. If it ever
 needs to be a real installer, the options are Inno Setup (handles
 `{localappdata}` natively, adds shortcuts and an uninstaller) or a 7-Zip SFX
 built from **`7zSD.sfx`** — note that the plain `7z.sfx` in the standard 7-Zip
 install ignores the whole config and prompts for a folder on every run.
+
+The exe does carry an icon, from `assets/commcut_icon.ico` — that artwork is not
+in the repository yet, so a build made today keeps PyInstaller's default. The
+pre-flight says which of the two you are getting, because nothing at run time can
+tell you afterwards.
 
 Not being signed means every release warns: Windows SmartScreen says "Windows
 protected your PC" and the run is *More info → Run anyway*. That is expected,

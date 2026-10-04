@@ -132,7 +132,7 @@ def test_every_module_in_the_app_directories_is_in_the_manifest(tree):
                    "assets"):
         for path, _dirs, files in os.walk(os.path.join(str(tree), folder)):
             for name in files:
-                if name.endswith((".py", ".ui", ".png")):
+                if name.endswith((".py", ".ui", ".png", ".ico")):
                     relative = os.path.relpath(
                         os.path.join(path, name), str(tree))
                     relative = relative.replace(os.sep, "/")
@@ -150,6 +150,22 @@ def test_the_payload_files_resource_path_asks_for_are_all_present():
 
     for payload_file in source_release.windows_build.PAYLOAD_FILES:
         assert payload_file in shipped, payload_file
+
+
+def test_the_icon_reaches_the_archive_without_a_manifest_edit(tree):
+    """`assets/` is a walked manifest entry, so adding the artwork needs no edit.
+
+    Written rather than assumed, because the alternative is a manifest edit
+    someone remembers to make on the day the artwork lands — and a source
+    release built without it opens windows on Qt's default icon while the
+    Windows build shows the real one. Creating the file in the copied tree is
+    the only way to see the walk pick it up.
+    """
+    icon = os.path.join(str(tree), "assets", "commcut_icon.png")
+    with open(icon, "wb") as handle:
+        handle.write(b"\x89PNG\r\n\x1a\n")
+
+    assert "assets/commcut_icon.png" in set(source_release.manifest_files())
 
 
 def test_every_window_module_the_shell_can_open_is_present():

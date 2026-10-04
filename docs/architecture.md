@@ -2,10 +2,10 @@
 
 How the app is put together: the repository layout, the one-process-per-window
 model, how a source video travels between windows, the shared library, the
-mpv bridge, and the splash flow.
+mpv bridge, the splash flow, and the application icon.
 
 Applies to: `main.py`, `mainwindow.py`, `mainwindow.ui`, `shared/environment.py`,
-`shared/diagnostics.py`, `shared/mpv.py`, `shared/splash.py`,
+`shared/diagnostics.py`, `shared/icons.py`, `shared/mpv.py`, `shared/splash.py`,
 `shared/timeline.py`, `shared/ui_loader.py`, `shared/sources.py`.
 
 Related: [packaging.md](packaging.md) (the same layout, frozen),
@@ -23,7 +23,8 @@ commcut/
 ├── bin/                     # Bundled binaries; Windows only. bin/mac and
 │   └── win/                 # bin/linux are resolved against but never exist:
 │                            # macOS and Linux resolve from the system instead.
-├── assets/                  # commcut_banner.png, drawn on the loading splash
+├── assets/                  # commcut_banner.png on the loading splash, and the
+│                            # commcut_icon.{png,ico} every window inherits
 ├── import/                  # Finished clips to import; not source videos
 ├── export/                  # Named clips are written here
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
@@ -73,6 +74,7 @@ commcut/
 │   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
 │   ├── values.py            # ValueSession: the tag-value model, and the value table
 │   ├── splash.py            # show_splash: the banner on the loading screen
+│   ├── icons.py             # app_icon: the one icon every window inherits
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── importer/                # The Library Importer's windows
 │   ├── mesh.py              # The Untagged Library Mesh
@@ -583,6 +585,37 @@ time. Close the splash *before* constructing the mpv-backed widget.
 `show_splash` pumps `app.processEvents()` once before returning, which is what
 makes the splash actually paint — without it the user sees the previous window for
 the length of the ffprobe run, which is the thing it exists to hide.
+
+## The application icon
+
+`main.py` calls `shared/icons.py:install_app_icon(app)` on the one line after
+`QApplication(argv)` and before `MainWindow()`, and that is the entire feature.
+Qt takes the application icon as the default for every widget constructed
+afterwards, so all seven windows and every modal dialog — including
+`Shell.open_safely`'s `QMessageBox` — carry it without a line of their own. The
+order is load-bearing: an icon installed after the first window is that window's
+default no more, and the menu is the one window that is never rebuilt. It is the
+same shape as `adopt_title()` in `shared/ui_loader.py` — one property, owned
+once, rather than restated by everything that needs it.
+
+`app_icon()` picks between two files and cannot pick wrong: it takes
+`assets/commcut_icon.ico` where Qt can decode it (Windows — the ICO image plugin
+is Windows-only) and falls back to `assets/commcut_icon.png`, which is what
+macOS and Linux read. Asking `QIcon.isNull()` rather than `os.path.exists()` is
+what makes a truncated or mislabelled file fall back instead of silently
+producing an empty icon.
+
+**Neither file exists yet**, and that is a supported state rather than a bug. The
+module returns a null `QIcon` and logs the two absolute paths it looked in,
+following the rule the splash already states for the banner: decoration must not
+become a dependency. A window with no icon is not an error, so the icon is an
+*optional* payload file on both release paths — bundled if it is on disk, not
+claimed if it is not, and refused by the build if the two disagree. See
+[packaging.md](packaging.md#the-app-icon-is-payload-data-that-does-not-exist-yet)
+for that mechanism and `source-install.md` for what each platform shows.
+`tests/test_icons.py` drives the choice and the fallbacks; the assertion that the
+call is in `main.py` and in the right place lives there too, because nothing else
+would notice its removal.
 
 ## No console: diagnostics
 

@@ -66,13 +66,36 @@ UI_FILES = (
 # Read-only resources that are not .ui files. Deliberately a separate list: the
 # walk further down asserts that *every* .ui in the tree is listed, and that would
 # be the wrong claim to make about a screenshot dropped into docs/. Everything
-# resource_path() is asked for has to be in PAYLOAD_FILES, and the banner is asked
+# resource_path() is asked for has to be in RESOURCE_FILES, and the banner is asked
 # for.
 BANNER_FILES = (
     ("assets", "commcut_banner.png"),
 )
 
-PAYLOAD_FILES = UI_FILES + BANNER_FILES
+# The application icon (shared/icons.py), in the same shape. Split out from
+# BANNER_FILES for one reason and one reason only: these two files are NOT in the
+# tree yet, so they cannot be asserted to exist the way the banner is. They are
+# optional payload files -- present iff present in the source tree -- which is a
+# weaker claim about a file and a stronger claim about the build than "it is
+# there". They are still read-only resources resolved through resource_path(), so
+# they belong in the list of things the spec bundles, and the two directions are
+# tested separately below rather than by an assertion that is sometimes skipped.
+ICON_FILES = (
+    ("assets", "commcut_icon.png"),
+    ("assets", "commcut_icon.ico"),
+)
+
+#: Everything `resource_path()` is asked for, whatever is on disk today. Named
+#: for its meaning rather than `PAYLOAD_FILES`, which is the same word in
+#: packaging/build.py with a *different* membership: that list holds only the
+#: files that must exist, and the icon is not one of them. Two lists under one
+#: name is precisely the drift this file exists to prevent.
+RESOURCE_FILES = UI_FILES + BANNER_FILES + ICON_FILES
+
+#: The subset that must exist. The icon is absent until its artwork is made, and
+#: nothing in this suite may go red because of that -- see shared/icons.py for
+#: why a missing cosmetic asset is a null icon and a log line, not an error.
+REQUIRED_RESOURCE_FILES = UI_FILES + BANNER_FILES
 
 
 @pytest.fixture
@@ -1209,12 +1232,77 @@ def test_bootstrap_failure_exits_before_opening_anything(monkeypatch):
 # Bundled resources
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("folder,name", PAYLOAD_FILES)
+@pytest.mark.parametrize("folder,name", REQUIRED_RESOURCE_FILES)
 def test_bundled_resource_resolves_unfrozen(folder, name):
-    """Unfrozen, resource_path must land on the file in the source tree."""
+    """Unfrozen, resource_path must land on the file in the source tree.
+
+    Parametrized over the required files only. The icon is not required yet, and
+    asserting it here anyway would either be a red suite until the artwork is
+    made or -- worse -- a silently skipped assertion once it is, which is how a
+    bundled-once-then-unbundled resource stops being checked at all. The two
+    tests below assert what can be asserted about it while it is absent, and
+    `tests/test_release_build.py` drives `_verify_payload` for the directions
+    that can only be seen in a built payload.
+    """
     path = resource_path(folder, name) if folder else resource_path(name)
 
     assert os.path.isfile(path), path
+
+
+@pytest.mark.parametrize("folder,name", ICON_FILES)
+def test_the_icon_is_declared_in_the_spec_and_filtered_by_whether_it_exists(
+        folder, name):
+    """The icon is a declared payload resource whose bundling is conditional.
+
+    Two claims, because the spec carries them as one mechanism. `UI_DATAS` names
+    the file unconditionally, so it cannot quietly fall out of the declaration
+    and so `test_source_and_payload_layouts_agree` below keeps covering it; and
+    the comprehension that becomes PyInstaller's `datas` is filtered on whether
+    the source file is there, because PyInstaller raises on a `datas` entry it
+    cannot find. Filtering the declaration rather than the input would leave the
+    two views disagreeing, and filtering nothing would mean no commcut could be
+    built at all until the artwork exists.
+
+    No skip and no `isfile` here on purpose: with the artwork absent, "declared
+    but not bundled" is the whole truth, and asserting it is what keeps the
+    absent case from being the untested one. That a file which *is* present then
+    reaches the payload is asserted where it can be observed rather than
+    inferred -- `tests/test_release_build.py` drives `build._verify_payload`.
+    """
+    source = f"{folder}/{name}"
+
+    spec_path = os.path.join(PROJECT_ROOT, "packaging", "commcut.spec")
+    with open(spec_path, encoding="utf-8") as handle:
+        spec_text = handle.read()
+
+    assert f"('{source}', '{folder}')" in spec_text, source
+    assert "if os.path.isfile(os.path.join(PROJECT_ROOT, source))" in spec_text
+
+
+def test_the_executable_icon_is_the_file_the_app_asks_for():
+    """The spec's `EXE_ICON` and `shared.icons.ICON_ICO` are one path, not two.
+
+    They have to be duplicated: the spec cannot import `shared.icons`, because
+    importing it at spec time would pull PySide6 into PyInstaller's own
+    interpreter for the sake of a string. That leaves the agreement asserted
+    here and nowhere else, which is why this test exists rather than a shared
+    constant.
+
+    The key is added rather than passed as `icon=None`, which is the shape that
+    lets a build without the artwork produce an exe at all; asserting the
+    assignment pins that, so a later `icon=EXE_ICON` is a deliberate change
+    rather than an accident.
+    """
+    from shared import icons
+
+    spec_path = os.path.join(PROJECT_ROOT, "packaging", "commcut.spec")
+    with open(spec_path, encoding="utf-8") as handle:
+        spec_text = handle.read()
+
+    relative = "/".join(icons.ICON_ICO)
+
+    assert f"'{relative}'" in spec_text
+    assert "EXE_KWARGS['icon'] = EXE_ICON" in spec_text
 
 
 def test_source_and_payload_layouts_agree():
@@ -1225,7 +1313,7 @@ def test_source_and_payload_layouts_agree():
     with open(spec_path, encoding="utf-8") as handle:
         spec_text = handle.read()
 
-    for folder, name in PAYLOAD_FILES:
+    for folder, name in RESOURCE_FILES:
         # Forward slashes regardless of host: PyInstaller datas entries are
         # always written that way, including the separator inside the path.
         source = f"{folder}/{name}" if folder else name

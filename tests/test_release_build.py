@@ -274,3 +274,100 @@ def test_the_entries_are_written_in_a_stable_order(portable):
         after = archive.namelist()
 
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# The post-build payload check
+# ---------------------------------------------------------------------------
+
+def _payload_files(root, relative):
+    """Write `relative` (a build.PAYLOAD_FILES entry) under `root`."""
+    _write(root / Path(relative), "payload")
+
+
+@pytest.fixture
+def payload_roots(tmp_path, monkeypatch):
+    """A source tree and a payload root, so the two can be made to disagree.
+
+    `_verify_payload` asks whether a file is in the payload *and* whether it was
+    in the source tree the build ran from, which is why it needs two roots
+    rather than one. Both are synthetic: the real PROJECT_ROOT is monkeypatched
+    so a developer's checkout is never the thing being asserted about.
+    """
+    source = tmp_path / "source"
+    payload = tmp_path / "payload"
+    monkeypatch.setattr(build, "PROJECT_ROOT", str(source))
+    return source, payload
+
+
+def test_a_payload_carrying_every_required_file_passes(payload_roots):
+    """The base case, with no icon anywhere.
+
+    Both because it is the arrangement the build actually runs in today, and
+    because the optional-file rule added below must not have quietly turned the
+    icon into a requirement: a build with no artwork is a complete build.
+    """
+    _source, payload = payload_roots
+    for relative in build.PAYLOAD_FILES:
+        _payload_files(payload, relative)
+
+    build._verify_payload(str(payload))
+
+
+def test_a_missing_required_payload_file_stops_the_build(payload_roots):
+    """A .ui the payload does not carry is the failure this check is for."""
+    _source, payload = payload_roots
+    for relative in build.PAYLOAD_FILES:
+        if relative == "mainwindow.ui":
+            continue
+        _payload_files(payload, relative)
+
+    with pytest.raises(build.BuildError):
+        build._verify_payload(str(payload))
+
+
+def test_the_icon_must_be_bundled_when_it_was_in_the_source_tree(payload_roots):
+    """Present on disk, absent from the payload: refused.
+
+    The direction that matters, and the one a one-directional assertion about
+    "optional files" would miss. It is what a build made between adding the
+    artwork to `assets/` and adding it to the spec looks like: the exe runs,
+    every window opens, and every window shows Qt's default icon.
+    """
+    source, payload = payload_roots
+    for relative in build.PAYLOAD_FILES:
+        _payload_files(payload, relative)
+    _payload_files(source, build.OPTIONAL_PAYLOAD_FILES[0])
+
+    with pytest.raises(build.BuildError):
+        build._verify_payload(str(payload))
+
+
+def test_the_icon_must_not_be_claimed_when_it_was_not_in_the_source_tree(
+        payload_roots):
+    """Absent on disk, present in the payload: also refused.
+
+    The other direction, and the one that keeps the optional list honest. A
+    payload file with no source behind it is a stale build artefact, and the
+    only reason to check is that "bundled iff present" is a claim about both.
+    """
+    source, payload = payload_roots
+    for relative in build.PAYLOAD_FILES:
+        _payload_files(payload, relative)
+    _payload_files(payload, build.OPTIONAL_PAYLOAD_FILES[0])
+
+    with pytest.raises(build.BuildError):
+        build._verify_payload(str(payload))
+
+
+def test_the_icon_is_accepted_in_both_places(payload_roots):
+    """The arrangement a build of the finished artwork produces."""
+    source, payload = payload_roots
+    for relative in build.PAYLOAD_FILES:
+        _payload_files(payload, relative)
+    for relative in build.OPTIONAL_PAYLOAD_FILES:
+        _payload_files(payload, relative)
+        _payload_files(source, relative)
+
+    build._verify_payload(str(payload))
+

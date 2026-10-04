@@ -231,6 +231,18 @@ Detail in [architecture.md](architecture.md) and
   ENOTDIR where Windows answers `FileNotFoundError` for the same path), which a
   green Windows suite could never have caught. → [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 
+- **The application icon is wired on all three platforms, and the artwork is not
+  made yet.** `shared/icons.py` sets one icon on the `QApplication` and every
+  window inherits it; `assets/commcut_icon.png` and `assets/commcut_icon.ico`
+  are *optional* payload files — bundled if they are on disk, not claimed if they
+  are not, and refused by the build if the two disagree — so the app builds and
+  runs today with Qt's default. Dropping the two files into `assets/` is the
+  whole procedure; no manifest or spec edit is needed on either release path.
+  macOS's Dock behaviour is unverified, and the Linux dock stays generic because
+  no `.desktop` file is shipped. →
+  [architecture.md](architecture.md#the-application-icon),
+  [source-install.md](source-install.md#the-icon-and-what-each-platform-shows)
+
 Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md).
 
 ### Not built

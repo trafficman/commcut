@@ -6,10 +6,11 @@ loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
 `packaging/source_release.py`, `packaging/README.md`, `shared/environment.py`,
-`shared/version.py`, `shared/session.py`, `shared/splash.py`,
-`assets/commcut_banner.png`, `main.py`, `.github/workflows/release.yml`,
+`shared/version.py`, `shared/session.py`, `shared/splash.py`, `shared/icons.py`,
+`assets/commcut_banner.png`, `assets/commcut_icon.png`, `assets/commcut_icon.ico`,
+`main.py`, `.github/workflows/release.yml`,
 `.github/workflows/source-release.yml`, `tests/test_frozen_mode.py`,
-`tests/test_release_build.py`.
+`tests/test_release_build.py`, `tests/test_icons.py`.
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
 Linux, which this build does not cover), [architecture.md](architecture.md) (the
@@ -59,7 +60,7 @@ two, and conflating them is the most common way this app breaks in a build:
 
 | | Resolves to (frozen) | Holds |
 |---|---|---|
-| `resource_root()` | `sys._MEIPASS` | the read-only payload: the `.ui` files and the splash banner |
+| `resource_root()` | `sys._MEIPASS` | the read-only payload: the `.ui` files, the splash banner, the app icon |
 | `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, `export/`, `temp/`, `commcut.log` |
 
 The payload directory is **wiped on exit**, so it is never the place for
@@ -102,6 +103,49 @@ separate list does buy is the guarantee that everything the app resolves through
 `resource_path()` is in `PAYLOAD_FILES`, and `build.py:_verify_payload` checks the
 same list after the build, so a missing banner is caught by the build rather than
 by a user looking at a blank splash.
+
+### The app icon is payload data that does not exist yet
+
+`assets/commcut_icon.png` and `assets/commcut_icon.ico` are read-only resources of
+exactly the same kind — resolved by `shared/icons.py` through
+`resource_path("assets", ...)` and listed in the spec's `UI_DATAS` — with one
+difference: **the artwork has not been made**, so they are in
+`build.py:OPTIONAL_PAYLOAD_FILES` rather than `PAYLOAD_FILES`, and the claim is
+two-directional. A file that is on disk must be in the payload; a file that is not
+must not be claimed to be. `_verify_payload` enforces both, and
+`tests/test_release_build.py` drives it with two synthetic roots so the absent
+case is tested rather than skipped.
+
+One-directional would have been worse than useless: "the icon is optional" reads
+like a claim that it is bundled when present, and the first half of that alone
+passes forever on a build where the PNG is in `assets/` and nothing copied it —
+which runs perfectly from source and shows Qt's default icon in every packaged
+window. That is the same failure the banner's list exists to prevent, so it gets
+the same treatment.
+
+**The spec filters `datas`, not `UI_DATAS`.** PyInstaller raises on a `datas`
+source it cannot find, so an absent icon listed unconditionally would mean no
+commcut could be built at all until the artwork exists. Filtering the list that
+gets handed to PyInstaller instead leaves the declaration intact — which is what
+`test_source_and_payload_layouts_agree` reads — and the spec prints what it
+dropped.
+
+**The exe's own icon is a separate mechanism.** What Explorer shows for
+`commcut.exe` is compiled into the binary by PyInstaller's `icon=`, from
+`assets/commcut_icon.ico` alone; no runtime call can affect it. The key is added
+to `EXE_KWARGS` only when the file is there, rather than passed as `icon=None`,
+so a build without the artwork still produces an exe — with PyInstaller's
+default. `build.py:check_icon` says which of the two you are getting at pre-flight,
+because an exe with the wrong icon ships unnoticed: nothing at run time can tell
+you it was forgotten.
+
+**Both files are needed and neither is redundant.** Qt's ICO image plugin is
+Windows-only, so the PNG is what macOS and Linux can read; and PyInstaller's
+`icon=` on Windows accepts only `.ico`/`.exe`, and `requirements.txt` has no
+Pillow to convert anything else. The artwork's own requirements — square, at
+least 256px, with a real alpha channel — are in `shared/icons.py`, and
+`tests/test_icons.py` checks the shipped files against them, skipping while they
+are absent.
 
 **Do not use `SCRIPT_DIR` for a resource.** It is
 `dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen

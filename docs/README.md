@@ -12,7 +12,7 @@ if you are looking for one specific thing.
 
 | Document | Read it when you need to know... |
 |---|---|
-| [architecture.md](architecture.md) | how the app is put together: the annotated repository layout, the one-process-per-window model, the main menu, how the source video travels between windows, the shared library and each module's role, the MpvBridge pattern, the splash flow, and diagnostics. |
+| [architecture.md](architecture.md) | how the app is put together: the annotated repository layout, the one-process-per-window model, the main menu, how the source video travels between windows, the shared library and each module's role, the MpvBridge pattern, the splash flow, the application icon, and diagnostics. |
 | [segment-model.md](segment-model.md) | anything about segments and the editor's Active Segment: the `.cmct` format, `SegmentModel` operations, the state machine and its buttons, the boundary peek, tag locks, what End Seg does in each case, and the required-record-field rule. |
 | [scanner.md](scanner.md) | the Segment Scanner: the 2-minute preview, the two marker timelines, `blackdetect` detection and the slider mapping, Test Scan vs. Finished, and the hand-off to the editor. |
 | [naming-and-organization.md](naming-and-organization.md) | how a tagged segment becomes a path: file naming scheme syntax, folder organization scheme syntax, the shared parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the walk that reads the library back, and the Settings window that edits both schemes. |

@@ -31,6 +31,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from mainwindow import MainWindow
+from shared.icons import install_app_icon
 from shared.session import Shell, set_shell
 
 
@@ -40,6 +41,7 @@ def run_main_menu(argv):
     # exists, which is why it is here and not in a window.
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv)
+    install_app_icon(app)
     diagnostics.install_excepthook(app)
 
     # The menu is the window the shell starts from and returns to. It is

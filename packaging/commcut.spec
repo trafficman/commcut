@@ -44,9 +44,25 @@ hiddenimports
 
 The four windows are named there, and reading the comment on the assignment is
 the way to find out why. In short: they used to be Analysis() entry points, so
-they were bundled by construction, and the lazy import that replaced them is the
-one shape of import modulegraph cannot see. A build missing them starts and
+they were bundled by construction, and the lazy import that replaced them is
+the one shape of import modulegraph cannot see. A build missing them starts and
 shows a menu whose two buttons both fail.
+
+optional assets
+------------------------------------------------------------------------------
+
+The two icon files are listed in ``UI_DATAS`` unconditionally and *filtered* into
+``datas`` by whether they are on disk. That is the shape that lets the app ship
+before the artwork exists: PyInstaller raises on a ``datas`` source it cannot
+find, so naming an absent file is an error, while omitting it silently from the
+list would leave ``UI_DATAS`` disagreeing with what the spec actually bundles --
+and the agreement tests read ``UI_DATAS``. The filter says which one it is doing,
+and says so out loud when it drops something.
+
+Dropped entries are reported rather than passed over in silence, for the reason
+``build.py``'s pre-flight checks exist: a build that installs cleanly and then
+shows the Qt default icon is not something anybody notices until a user has
+already installed it.
 """
 
 import os
@@ -79,6 +95,11 @@ ONEFILE = os.environ.get('COMMCUT_ONEFILE', '1') != '0'
 # (shared/splash.py). It is listed here for the same reason and with the same
 # consequence when omitted — from source the splash silently loses its banner and
 # in a packaged build it cannot find the file at all.
+#
+# assets/commcut_icon.png and assets/commcut_icon.ico are the application icon
+# (shared/icons.py), the second one read only on Windows. They are the *optional*
+# entries: the artwork does not exist yet, and the filter below drops an absent
+# one rather than letting PyInstaller raise on a datas source it cannot find.
 UI_DATAS = [
     ('mainwindow.ui', '.'),
     ('editor/editorwindow.ui', 'editor'),
@@ -89,13 +110,29 @@ UI_DATAS = [
     ('importer/queuewindow.ui', 'importer'),
     ('importer/valueswindow.ui', 'importer'),
     ('assets/commcut_banner.png', 'assets'),
+    ('assets/commcut_icon.png', 'assets'),
+    ('assets/commcut_icon.ico', 'assets'),
 ]
 
 # PyInstaller resolves a relative datas source against the *spec's* folder, not
 # the working directory, so the sources are made absolute here.
+#
+# The existence filter is what makes the icon entries optional, and it is applied
+# to the comprehension rather than to UI_DATAS so that the list stays the one
+# place a resource is declared — tests/test_frozen_mode.py substring-matches these
+# exact tuples in this file's source, and a list that shrank to match the disk
+# could not be checked against anything.
+_absent = [
+    source for source, _destination in UI_DATAS
+    if not os.path.isfile(os.path.join(PROJECT_ROOT, source))
+]
+for _source in _absent:
+    print(f"[commcut.spec] not bundled, {PROJECT_ROOT}/{_source} does not exist")
+
 datas = [
     (os.path.join(PROJECT_ROOT, source), destination)
     for source, destination in UI_DATAS
+    if os.path.isfile(os.path.join(PROJECT_ROOT, source))
 ]
 
 # Two kinds of module have to be named here rather than reached by the analysis.
@@ -185,6 +222,26 @@ EXE_KWARGS = dict(
     # positives. Not worth the size.
     upx=False,
 )
+
+# The executable's own icon: what Explorer shows for commcut.exe, what a Start
+# Menu shortcut copied from it carries, and — because one process runs all the
+# windows — what Windows groups them under. A build-time thing rather than a
+# window thing, which is why it is here and not in shared/icons.py.
+#
+# It reads the same file as shared/icons.py:ICON_ICO, which is a second
+# declaration of the same path rather than a shared one: importing shared.icons
+# here would pull PySide6 into PyInstaller's spec-time interpreter for the sake
+# of two strings. tests/test_frozen_mode.py holds the two to each other, exactly
+# as it already does for the banner.
+#
+# Added as a key rather than passed as `icon=None`, because a build without the
+# artwork must produce an exe with PyInstaller's default icon rather than an
+# error. Both EXE() calls below spread **EXE_KWARGS, so onedir and onefile are
+# covered by this one edit.
+EXE_ICON = os.path.join(PROJECT_ROOT, 'assets', 'commcut_icon.ico')
+
+if os.path.isfile(EXE_ICON):
+    EXE_KWARGS['icon'] = EXE_ICON
 
 
 if ONEFILE:

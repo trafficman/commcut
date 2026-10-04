@@ -50,6 +50,7 @@ commcut/
 ├── main.py                  # the entry point: the QApplication, the menu, the shell
 ├── mainwindow.py/.ui        # main menu (Editor, Settings)
 ├── bin/<os>/, assets/       # bundled binaries (Windows only); the splash banner
+│                            # and the app icon (optional; see docs/packaging.md)
 ├── import/                  # finished clips to import; NOT source videos
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
@@ -75,7 +76,8 @@ number the two build scripts check a tag against), `diagnostics`
 videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
-(the `.cnfo`), `vocabulary`, `mesh`, `values`, `tag_form`, `splash`, `ui_loader`.
+(the `.cnfo`), `vocabulary`, `mesh`, `values`, `tag_form`, `splash`, `icons`,
+`ui_loader`.
 Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
@@ -83,7 +85,7 @@ Per-module detail: [docs/architecture.md](docs/architecture.md).
 | Document | Read it when you need to know... |
 |---|---|
 | [docs/README.md](docs/README.md) | the doc index and the conventions this set follows |
-| [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, diagnostics |
+| [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, the application icon, diagnostics |
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
