@@ -211,19 +211,25 @@ state.
   can only be confirmed by a person on that machine — see
   [source-install.md](source-install.md#what-has-not-been-verified).
 - **A suite that has only ever run on one platform has not been tested on the
-  others, whatever it asserts.** Three of the four failures from the first
-  macOS/Linux run were cases of exactly this: a `NotADirectoryError` escaping
-  `shared/exporting.py` because the code caught `FileNotFoundError` where POSIX
-  answers ENOTDIR; a read failure classified as a corrupt record because
-  `record_error_reason` matches on message text; and a test that read
-  `subprocess.CREATE_NO_WINDOW` unconditionally. None was reachable from Windows.
-  Two lessons for the next one:
-  - Where a refusal depends on which `OSError` a platform raises, the test should
-    *inject* the other platform's answer rather than skip — that way every leg
-    holds it down.
-  - A test that arranges its condition with `chmod 000` has silently skipped on
-    Windows this whole time, because `chmod` does not stop the owner reading
-    there. If a test can be skipped, check what it was hiding. →
+  others, whatever it asserts.** Every failure from the first macOS/Linux runs
+  was a behaviour that was silently Windows-only, in three distinct ways:
+  - **Which `OSError` a platform raises.** `shared/exporting.py` caught
+    `FileNotFoundError` where POSIX answers `NotADirectoryError`, and
+    `shared/records.py` classified by message text. Where a refusal depends on
+    the host's answer, the test should *inject* the other platform's answer
+    rather than skip, so every leg holds it down.
+  - **A constant only one platform defines.**
+    `tests/test_frozen_mode.py` read `subprocess.CREATE_NO_WINDOW`
+    unconditionally. Supply it alongside a faked platform rather than skipping —
+    that way the other legs check the branch instead of ignoring it.
+  - **Case-insensitive path resolution.** Two paths differing only in case are
+    one file on Windows and two elsewhere, so a test written against Windows
+    encodes the collapse. If a test builds real files, no two of them may differ
+    only in case, or it is asserting the filesystem.
+- **A test that can skip may be hiding something.** The one test guarding
+  `record_error_reason`'s read-failure branch used `chmod 000`, which does not
+  stop the owner reading on Windows — so it skipped on every platform the suite
+  had ever run on, and the bug behind it waited. →
     [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 - **A shell script is not covered by a suite that never runs `sh`.**
   `test_source_release.py` parses `install_deps.sh`'s embedded Python and runs it

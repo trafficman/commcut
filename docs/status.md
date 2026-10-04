@@ -447,6 +447,16 @@ The full vision in `README.md` has three pieces; two are not started:
   which does not stop the owner reading on Windows, so it had skipped on every
   platform the suite had ever run on. →
   [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
+- **A test asserted the filesystem instead of the sort.**
+  `test_clips_are_visited_in_full_path_order` used `alpha/B.mp4` and
+  `Alpha/C.mp4` — one folder on a case-insensitive filesystem and two on a
+  case-sensitive one, so its expected string only ever held on Windows, where
+  writing `Alpha/` landed in the `alpha/` that already existed. The `casefold()`
+  ordering in `importer/queue.py` was correct throughout; the expectation had the
+  case-collapse baked in. Rewritten with three folders that sort differently
+  case-folded than case-sensitively, and differ in no letter-case from one
+  another. →
+  [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 - **`apt install libmpv2` did not produce a findable libmpv.** The search in
   `shared/environment.py` covered each system prefix's `lib/` plus `/usr/lib`,
   and a Debian package installs to `/usr/lib/x86_64-linux-gnu/` — which is none

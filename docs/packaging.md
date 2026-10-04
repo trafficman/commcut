@@ -500,6 +500,16 @@ of them were things a green Windows suite could not have found:
   macOS from inside the code under test. They now supply the constant as well as
   faking the platform, which means those legs verify the Windows branch rather
   than skipping it.
+- **`tests/test_queue.py::test_clips_are_visited_in_full_path_order` asserted
+  the filesystem rather than the sort.** Its clips were `alpha/B.mp4` and
+  `Alpha/C.mp4` — one folder on a case-insensitive filesystem, two on a
+  case-sensitive one. The expectation `alpha/C.mp4` only ever held on Windows,
+  where writing `Alpha/` landed in the `alpha/` that already existed. The code
+  under test (`casefold()` ordering in `importer/queue.py`) was correct; the
+  expected string had the case-collapse baked in. Rewritten with three folders
+  that sort differently case-folded than case-sensitively and differ in no
+  letter-case from one another.
+
 - **PySide6 needs system libraries that are not pip-installable.** `import
   PySide6.QtGui` `dlopen()`s `libEGL` at load time, so on a bare runner it fails
   before any platform plugin is chosen and `QT_QPA_PLATFORM=offscreen` does not
@@ -507,9 +517,11 @@ of them were things a green Windows suite could not have found:
   test failing. The Linux leg installs them.
 
 The pattern is worth stating, because it is the argument for the whole workflow
-rather than a detail of it: **three of these were refusals or guards that were
-silently Windows-only.** Not test gaps — code whose behaviour depended on which
-`OSError` the host raises, or on a constant that only exists on one platform. A
-suite that has only ever run on one platform has not been tested on the others,
-whatever it asserts.
+rather than a detail of it. **Every one of these five was a behaviour that was
+silently Windows-only**, in three different ways: a refusal keyed on which
+`OSError` the host raises; a guard that reads a constant only Windows defines;
+and an expectation that encoded case-insensitive path resolution. None of them
+was a test gap in the ordinary sense — the suite was green, and green on the one
+platform that had ever run it. A suite that has only ever run on one platform
+has not been tested on the others, whatever it asserts.
 

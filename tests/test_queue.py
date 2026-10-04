@@ -341,14 +341,27 @@ def test_a_record_that_cannot_be_read_leaves_the_clip_in_the_queue(harness):
 
 
 def test_clips_are_visited_in_full_path_order(harness):
-    """Case-folded, so `alpha/B` sorts before `alpha/C` whatever the filesystem
-    thinks, and two runs over the same folder visit them in the same order."""
+    """Case-folded, so `alpha/B` sorts before `Zebra/A` whatever the filesystem
+    thinks, and two runs over the same folder visit them in the same order.
+
+    The three folders are chosen so case-folding is *distinguishable* from
+    case-sensitivity: sorted on case, `Middle/C` and `Zebra/A` both precede
+    `alpha/B`, because `M` and `Z` are below `a`. Sorted case-folded it lands
+    between them.
+
+    None of the three differ only by case from another, and that is the whole
+    point. This test used `alpha/B.mp4` and `Alpha/C.mp4`, which are one folder
+    on a case-insensitive filesystem and two on a case-sensitive one, so the
+    expected string only ever held on Windows -- where `put_clips` wrote `Alpha/`
+    into the `alpha/` that already existed and the walk handed back `alpha/C.mp4`.
+    It passed for eight months by asserting the filesystem rather than the sort.
+    """
     open_queue = harness[0]
-    window = open_queue("Zebra/A.mp4", "alpha/B.mp4", "Alpha/C.mp4")
+    window = open_queue("Zebra/A.mp4", "alpha/B.mp4", "Middle/C.mp4")
 
     try:
         assert [clip.relative_path for clip in window.clips] == [
-            "alpha/B.mp4", "alpha/C.mp4", "Zebra/A.mp4"]
+            "alpha/B.mp4", "Middle/C.mp4", "Zebra/A.mp4"]
     finally:
         window.close()
         window.deleteLater()
