@@ -1218,6 +1218,67 @@ def test_play_and_seek_reach_the_player(harness):
         window.deleteLater()
 
 
+def test_the_playhead_can_be_scrubbed_while_the_video_is_playing(harness):
+    """A drag has to win over the position updates arriving during it.
+
+    mpv reports `time-pos` many times a second and every report was written into
+    the slider, so a drag while playing was fought over the whole way to the
+    release: the handle was pulled back to wherever the video had got to, and the
+    release seek landed there. Paused, `time-pos` stops moving, the handle is left
+    alone and the same drag works — which is what made it read as a rule about
+    the play state rather than a race over the handle.
+
+    The gesture is the slider's own signals, which is what a mouse press sends:
+    Qt's drag state cannot be driven from Python, so a fake drag would have tested
+    the fake.
+    """
+    open_queue = harness[0]
+    window = open_queue("CN/A.mp4")
+    bridge = RecordingBridge.instances[-1]
+
+    try:
+        slider = window.ui.sliderPosition
+        window._on_position_changed(1.0)
+        assert slider.value() == 1000, (
+            "with no hand on it, the handle is a readout of the video")
+
+        slider.sliderPressed.emit()
+        slider.setValue(20000)             # the hand has dragged the handle
+        window._on_position_changed(2.0)   # and the video keeps playing
+        window._on_position_changed(3.0)
+
+        assert slider.value() == 20000, (
+            "the handle belongs to the user while the mouse is on it")
+        slider.sliderReleased.emit()
+
+        assert bridge.seeks == [20.0], (
+            "so the release seeks where the handle was dropped, not where the "
+            "video had got to")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_handle_goes_back_to_being_a_readout_after_the_drag(harness):
+    """The other half: a flag that never came off would leave the slider frozen on
+    one value for the rest of the session, which is a worse failure than the one
+    it fixed."""
+    open_queue = harness[0]
+    window = open_queue("CN/A.mp4")
+
+    try:
+        slider = window.ui.sliderPosition
+        slider.sliderPressed.emit()
+        slider.sliderReleased.emit()
+
+        window._on_position_changed(7.0)
+
+        assert slider.value() == 7000
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_the_queue_never_uses_a_keyframe_scanner(harness):
     """`scan_keyframes` is an ffprobe pass over every frame. A queue has no
     segments to mark and its clips are thirty seconds long, so the module must

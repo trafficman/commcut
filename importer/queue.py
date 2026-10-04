@@ -238,6 +238,9 @@ class QueueWindow(QMainWindow):
         self._worker: ProbeWorker | None = None
         self._bridge: MpvBridge | None = None
         self._cancel = threading.Event()
+        #: Whether the mouse is on the position slider, which makes the handle
+        #: the user's rather than a readout. See `_on_scrub_began`.
+        self._scrubbing = False
 
         self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
@@ -257,7 +260,9 @@ class QueueWindow(QMainWindow):
         self.ui.textFileName.cursorPositionChanged.connect(
             self._refresh_add_title)
         self.ui.textFileName.textChanged.connect(self._refresh_add_title)
+        self.ui.sliderPosition.sliderPressed.connect(self._on_scrub_began)
         self.ui.sliderPosition.sliderReleased.connect(self._on_seek)
+        self.ui.sliderPosition.sliderReleased.connect(self._on_scrub_ended)
         # Every field re-derives what the required-tag rule decides: the outline
         # on the fields still empty, and whether Next can be pressed. Both come
         # from the one handler, so neither can answer for a later state of the
@@ -447,8 +452,34 @@ class QueueWindow(QMainWindow):
         if self._bridge is not None:
             self._bridge.toggle_play()
 
+    def _on_scrub_began(self):
+        """From here until the release, the handle belongs to the user.
+
+        mpv reports `time-pos` many times a second and every report was written
+        into the slider. That is right until the mouse is down on it: the reports
+        then arrive faster than a hand can move, the handle is pulled back to
+        wherever the video has got to, and the release seeks there — so the
+        scrub did nothing. Whether the video was playing only decided how fast the
+        drag lost that race, which is why it looked like a rule about the play
+        state: paused, `time-pos` stops moving, the handle is left alone, and the
+        same drag works.
+        """
+        self._scrubbing = True
+
+    def _on_scrub_ended(self):
+        """The mouse is off the handle, so the slider is a readout again.
+
+        Connected *after* `_on_seek`, so the flag stays set for the whole of the
+        gesture rather than coming off halfway through it.
+        """
+        self._scrubbing = False
+
     def _on_position_changed(self, position):
         self.ui.labelPosition.setText(_format_seconds(position))
+        if self._scrubbing:
+            # The label keeps counting, because it reports where the video is.
+            # The handle does not move, because it says where the user is going.
+            return
         if not self._bridge or not self._bridge.duration:
             return
         span = self._bridge.duration

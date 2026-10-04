@@ -495,6 +495,19 @@ and the report keeps them apart.
 **`scan_keyframes` is never called.** A queue has no segments to mark and its
 clips are thirty seconds long, so an ffprobe pass over every frame is pure waste.
 
+**A drag on the position slider outranks the position reports.** The slider is
+driven by `time-pos`, which mpv reports many times a second, and
+`_on_position_changed` writes every report into it — correct until the mouse is
+down on the handle. `_on_scrub_began`/`_on_scrub_ended` bracket the gesture on
+`sliderPressed`/`sliderReleased` and the position handler returns early in
+between: the reports arrive faster than a hand can move, so the handle was pulled
+back to wherever the video had got to and the release seek landed there. Whether
+the video was playing only decided how fast the drag lost that race, which is why
+this read as a rule about the play state — paused, `time-pos` stops moving and the
+same drag works. The time label keeps counting throughout, because it reports
+where the video *is*; only the handle is held for where the user is going.
+`sliderReleased` is connected to `_on_seek` first so the flag covers the seek too.
+
 **The duration probe runs on a thread that has to be told to stop.** One ffprobe
 per clip, started as the clip is shown, so `Plan Import` never waits on one.
 `ProbeWorker.run()` emits `finished` at the end of every path, `_start_probe`
