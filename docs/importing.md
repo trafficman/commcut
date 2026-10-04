@@ -476,6 +476,17 @@ the consequence in words, kept off `Next`'s side of the button row, and never a
 default button. Progress counts what is *left*, so a deletion decrements the
 denominator instead of looking like a stalled queue.
 
+**The red outline and the disabled `Next` are one answer, not two.**
+`QueueWindow._refresh_tag_state` is connected to every tag field's change signal
+and re-derives both: it outlines each required field that is still empty *and*
+sets whether `Next` can be pressed. `shared/tag_form.py:refresh_required_fields`
+is a push, not a self-updating widget — nothing repaints a field on its own — so
+a handler that only moved the button left every filled field wearing the box it
+was given for being empty, which reads as a mark on the clip rather than as a
+question about it. `_load_current` and `on_add_title` go through the same handler
+rather than calling the form directly, so there is one place that knows what this
+clip still needs.
+
 **An unprobeable clip is not a skip.** No duration means no record, so it cannot
 be finished — but it stays in `import/`, is named in the report with the reason,
 and comes back next run. It does not block the others. The two skips are opposites

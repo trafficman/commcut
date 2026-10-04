@@ -252,12 +252,13 @@ class QueueWindow(QMainWindow):
             self._refresh_add_title)
         self.ui.textFileName.textChanged.connect(self._refresh_add_title)
         self.ui.sliderPosition.sliderReleased.connect(self._on_seek)
-        # Every field re-derives what Next can do. The form owns the outline and
-        # the required rule; this only decides whether the button is live.
+        # Every field re-derives what the required-tag rule decides: the outline
+        # on the fields still empty, and whether Next can be pressed. Both come
+        # from the one handler, so neither can answer for a later state of the
+        # form than the other.
         for namespace in TAG_FIELDS:
             field_change_signal(self.ui.tagForm.field(namespace)).connect(
-                self._refresh_next)
-        self.ui.tagForm.refresh_required_fields()
+                self._refresh_tag_state)
 
         self._enumerate()
         self._load_current()
@@ -323,11 +324,10 @@ class QueueWindow(QMainWindow):
         settled = clip.existing_tags()
         resolved = self.session.tags_for_clip(clip.relative_path)
         self.ui.tagForm.write_tags(settled or resolved.tags)
-        self.ui.tagForm.refresh_required_fields()
         self._describe_conflicts(resolved)
         self._open_video(clip.path)
         self._refresh_add_title()
-        self._refresh_next()
+        self._refresh_tag_state()
         # Last, so nothing above can fail while a worker thread is already
         # running -- a `QThread` destroyed while running aborts the process, and a
         # constructor that raises leaves its window with nothing to close it.
@@ -464,8 +464,7 @@ class QueueWindow(QMainWindow):
             return
         self.ui.tagForm.write_tags({**self.ui.tagForm.read_tags(),
                                     "title": selected})
-        self.ui.tagForm.refresh_required_fields()
-        self._refresh_next()
+        self._refresh_tag_state()
 
     def on_manage_rules(self):
         clip = self._current_clip()
@@ -486,7 +485,19 @@ class QueueWindow(QMainWindow):
             return None
         return self.clips[self.position]
 
-    def _refresh_next(self):
+    def _refresh_tag_state(self):
+        """Re-derive everything the required-tag rule decides on this clip.
+
+        The outline and the Next button are that rule asked twice — once as a
+        red box on each field that is still empty, once as a button that cannot
+        be pressed yet — so both are answered together and neither can describe
+        a different moment than the other.
+
+        Recomputed on every keystroke, because an outline that outlives the
+        value it complained about is a complaint about a state the user has
+        already left.
+        """
+        self.ui.tagForm.refresh_required_fields()
         self.ui.buttonNext.setEnabled(not self.ui.tagForm.missing_required_labels())
 
     def on_next(self):

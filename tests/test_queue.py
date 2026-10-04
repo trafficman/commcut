@@ -482,7 +482,7 @@ def fill_form(window, **overrides):
     tags = {**REQUIRED, **overrides}
     for namespace, value in tags.items():
         set_field_text(window.ui.tagForm.field(namespace), value)
-    window._refresh_next()
+    window._refresh_tag_state()
 
 
 def test_next_is_disabled_until_the_required_tags_are_there(harness):
@@ -495,6 +495,44 @@ def test_next_is_disabled_until_the_required_tags_are_there(harness):
         fill_form(window, title="Something")
 
         assert window.ui.buttonNext.isEnabled() is True
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_outline_goes_away_as_a_required_field_is_filled(harness):
+    """Typing into an outlined field has to clear its own outline.
+
+    The outline was refreshed when the clip loaded and never again, so a field the
+    user went and filled kept the red box it was given for being empty. It also
+    came back on the next clip with fields the user had never looked at, which is
+    what made it read as a marking rather than as a question.
+
+    Driven through the real signal connection rather than by calling the handler,
+    because the bug was in what the handler was connected to and not in the
+    handler.
+    """
+    from shared.tag_form import REQUIRED_FIELD_BORDER, set_field_text
+
+    open_queue = harness[0]
+    window = open_queue("CN/A.mp4")
+
+    try:
+        title = window.ui.tagForm.field("title")
+        assert REQUIRED_FIELD_BORDER in title.styleSheet(), (
+            "the clip loaded with nothing tagged, so the title is outlined")
+
+        set_field_text(title, "Some Title")
+
+        assert title.styleSheet() == "", (
+            "the outline has to state what the form needs now, not what it "
+            "needed when the clip was shown")
+
+        for namespace in ("network", "filler_type", "time_period"):
+            set_field_text(window.ui.tagForm.field(namespace), "x")
+        for namespace in ("network", "filler_type", "time_period"):
+            assert window.ui.tagForm.field(namespace).styleSheet() == ""
+        assert title.styleSheet() == ""
     finally:
         window.close()
         window.deleteLater()
