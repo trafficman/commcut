@@ -197,35 +197,9 @@
      </item>
      <item>
       <layout class="QGridLayout" name="tagsLayout">
-       <item row="4" column="0">
-        <widget class="QLabel" name="labelYear">
-         <property name="maximumSize">
-          <size>
-           <width>80</width>
-           <height>16777215</height>
-          </size>
-         </property>
-         <property name="text">
-          <string>Year (O)</string>
-         </property>
-        </widget>
+       <item row="0" column="0" colspan="3">
+        <widget class="TagForm" name="tagForm" native="true"/>
        </item>
-       <item row="1" column="0">
-        <widget class="QLabel" name="labelType">
-         <property name="maximumSize">
-          <size>
-           <width>80</width>
-           <height>16777215</height>
-          </size>
-         </property>
-         <property name="text">
-          <string>Type</string>
-         </property>
-        </widget>
-       </item>
-             <item row="0" column="0" colspan="3">
-       <widget class="TagForm" name="tagForm" native="true"/>
-      </item>
       </layout>
      </item>
      <item>
@@ -241,15 +215,15 @@
  </widget>
  <customwidgets>
   <customwidget>
-   <class>TimelineWidget</class>
-   <extends>QWidget</extends>
-   <header>timeline</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
    <class>TagForm</class>
    <extends>QWidget</extends>
    <header>tag_form</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>TimelineWidget</class>
+   <extends>QWidget</extends>
+   <header>timeline</header>
    <container>1</container>
   </customwidget>
  </customwidgets>
