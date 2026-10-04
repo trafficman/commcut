@@ -94,6 +94,7 @@ state.
 | `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off, and both builders requiring it |
 | `test_main_window.py` | the main menu, the native file dialog (filter, native-ness, cancel), the launcher, and the failure paths |
 | `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement, and the sweep that every spawn site carries `no_console_kwargs()` |
+| `test_ui_contrast.py` | the sweep that no shipped `.ui` names a palette **swatch** (`Mid`, `Base`, `Button`, …) as a text colour — `palette(mid)` put an evidence line at a 1.7:1 contrast ratio on the light scheme and 2.0:1 on the dark one, and a QSS rule that resolves to a bad colour is not an error, so nothing else would have noticed |
 | `test_mpv_player.py` | how the player is built: libmpv loaded before the import that needs it, the native handle, and the zero-handle refusal (no real player) |
 | `test_scheme.py` | strict scheme parsing |
 | `test_naming.py` | filename rendering, including the README pattern |

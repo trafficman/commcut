@@ -300,6 +300,20 @@ flowchart TD
 
 `find_videos` reports `has_record` per clip, and this worker is where that gets used.
 
+**Nothing on this window's text is drawn in a palette swatch.** The evidence line
+and the Tagged Library Mesh's status line both asked for `color: palette(mid)`,
+which reads as "muted" and is not: `Palette::Mid` is a **fill** colour, chosen to
+sit between the background and the highlight. Measured against its own window it
+is a contrast ratio of 1.7:1 on the light scheme and 2.0:1 on the dark one, where
+it is a light grey on a dark grey — unreadable in both, and it went unnoticed
+because it is the least urgent text on the screen. Both labels carry things the
+user has to act on (the evidence behind a suggested namespace, and the one place
+a refusal is reported), so they now use the window's own text colour, which the
+platform keeps readable in whichever scheme is in force. The app sets no palette
+of its own, so "whichever scheme" is the user's system. `tests/test_ui_contrast.py`
+sweeps the shipped `.ui` files so a swatch cannot come back as a text colour —
+the failure mode is silent, so nothing else would notice.
+
 ### The safety property, and how it is enforced
 
 > A folder name becomes a tag **only** because a person chose a namespace and a

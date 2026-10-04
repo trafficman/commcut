@@ -94,9 +94,6 @@
      <property name="wordWrap">
       <bool>true</bool>
      </property>
-     <property name="styleSheet">
-      <string notr="true">color: palette(mid);</string>
-     </property>
     </widget>
    </item>
    <item>
@@ -167,9 +164,6 @@
      </property>
      <property name="wordWrap">
       <bool>true</bool>
-     </property>
-     <property name="styleSheet">
-      <string notr="true">color: palette(mid);</string>
      </property>
     </widget>
    </item>
