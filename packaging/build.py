@@ -82,7 +82,11 @@ PORTABLE_DIR = os.path.join(DIST_DIR, 'commcut-portable')
 BIN_SOURCE_DIR = os.path.join(PROJECT_ROOT, 'bin', 'win')
 BINARIES = ('ffmpeg.exe', 'ffprobe.exe', 'libmpv-2.dll')
 
-UI_FILES = (
+# The read-only files that must land in the payload, as paths relative to the
+# project root with forward slashes. Mostly .ui files, plus the splash banner:
+# everything shared/environment.py's resource_path() is asked for. Keeping the one
+# list means a file added here is checked after the build rather than trusted.
+PAYLOAD_FILES = (
     'mainwindow.ui',
     'editor/editorwindow.ui',
     'scanner/scannerwindow.ui',
@@ -91,6 +95,7 @@ UI_FILES = (
     'shared/tagform.ui',
     'importer/queuewindow.ui',
     'importer/valueswindow.ui',
+    'assets/commcut_banner.png',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
@@ -272,17 +277,17 @@ def run_pyinstaller(onedir):
 
 
 def _verify_payload(root):
-    """Assert the .ui files landed where shared/environment.py will look.
+    """Assert the payload files landed where shared/environment.py will look.
 
     They are bundled, so they extract to sys._MEIPASS, not to the folder the
     exe sits in -- but their layout *inside* the payload must mirror the source
     tree, because resource_path() is called with one expression either way.
     """
-    for relative in UI_FILES:
+    for relative in PAYLOAD_FILES:
         if not os.path.exists(os.path.join(root, *relative.split('/'))):
             raise BuildError(
-                f"{relative} is missing from the build. The .ui files must keep "
-                f"their source-tree subfolders so resource_path() resolves the "
+                f"{relative} is missing from the build. The payload must keep "
+                f"its source-tree subfolders so resource_path() resolves the "
                 f"same way frozen and unfrozen."
             )
 

@@ -47,7 +47,8 @@ There is no pytest config: `tests/conftest.py` puts the project root on
 ```
 commcut/
 ├── main.py                  # the entry point: the QApplication, the menu, the shell
-├── mainwindow.py/.ui        # main menu (Editor, Settings)├── bin/<os>/                # bundled ffmpeg, ffprobe, libmpv (Windows only)
+├── mainwindow.py/.ui        # main menu (Editor, Settings)
+├── bin/<os>/, assets/       # bundled binaries (Windows only); the splash banner
 ├── import/                  # finished clips to import; NOT source videos
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
@@ -60,8 +61,7 @@ commcut/
 ├── shared/                  # the library all three windows build on
 ├── tests/                   # pytest suite (docs/testing.md)
 ├── docs/                    # the documents indexed below
-├── experiments/             # code answering a question the docs could not;
-│                            # never shipped, never bundled
+├── experiments/             # never shipped; code answering what docs could not
 └── prototypes/              # historical; the active code is editor/ and scanner/
 ```
 
@@ -73,8 +73,8 @@ number `packaging/build.py` checks a tag against), `diagnostics`
 videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back),
-`mesh` (the Untagged Library Mesh), `values` (the Tagged Library Mesh),
-`tag_form` (the tag fields both windows show), `ui_loader` (promoted widgets).
+`mesh` (the Untagged Library Mesh), `values` (the Tagged Library Mesh), `tag_form`
+(the tag fields), `splash` (the banner), `ui_loader` (promoted widgets).
 Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation

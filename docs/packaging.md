@@ -1,13 +1,14 @@
 # Packaging and frozen mode
 
 How the Windows build is assembled, and the rules that only bite once the app
-is frozen: the two roots, the `.ui` payload layout, and per-platform library
+is frozen: the two roots, the read-only payload layout, and per-platform library
 loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
 `packaging/README.md`, `shared/environment.py`, `shared/version.py`,
-`shared/session.py`, `main.py`, `.github/workflows/release.yml`,
-`tests/test_frozen_mode.py`, `tests/test_release_build.py`.
+`shared/session.py`, `shared/splash.py`, `assets/commcut_banner.png`, `main.py`,
+`.github/workflows/release.yml`, `tests/test_frozen_mode.py`,
+`tests/test_release_build.py`.
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
 Linux, which this build does not cover), [architecture.md](architecture.md) (the
@@ -19,7 +20,7 @@ same code unfrozen — one process, one visible window, diagnostics),
 `packaging/build.py` produces `dist/commcut-portable/`:
 
 ```
-commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the .ui files)
+commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the payload files)
 bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
 import/             drop finished clips in here to import them; a source
                     video is picked from anywhere with a file dialog
@@ -57,7 +58,7 @@ two, and conflating them is the most common way this app breaks in a build:
 
 | | Resolves to (frozen) | Holds |
 |---|---|---|
-| `resource_root()` | `sys._MEIPASS` | the five `.ui` files |
+| `resource_root()` | `sys._MEIPASS` | the read-only payload: the `.ui` files and the splash banner |
 | `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, `export/`, `temp/`, `commcut.log` |
 
 The payload directory is **wiped on exit**, so it is never the place for
@@ -77,17 +78,29 @@ ffmpeg next to the exe and not find it. The spec sets `contents_directory="."`
 so the payload sits beside the exe. Onefile has no contents directory and
 ignores it. `packaging/build.py` asserts `_internal/` is absent.
 
-## `.ui` files keep their source subfolders
+## Read-only payload files keep their source subfolders
 
 `resource_path()` takes a project-root-relative path and is called with the
 same expression whether or not the app is frozen — `resource_path("settings",
-"settingswindow.ui")`. Flattening the `.ui` files into the payload root
+"settingswindow.ui")`. Flattening the payload files into the payload root
 would make that correct only in a packaged build and wrong from source, so the
 spec mirrors the source layout instead: `mainwindow.ui` at the payload root and
-`editor/`, `scanner/`, `settings/` beside it.
+`editor/`, `scanner/`, `settings/`, `assets/` beside it.
 `tests/test_frozen_mode.py::test_source_and_payload_layouts_agree` reads the
-spec's `datas` list and compares it against the code's view, so a `.ui` file
-that moves cannot be silently mis-bundled.
+spec's `datas` list and compares it against the code's view, so a file that
+moves cannot be silently mis-bundled.
+
+**`assets/commcut_banner.png` is payload data of exactly the same kind.** It is the
+logo `shared/splash.py` draws, resolved with `resource_path("assets", ...)` and
+listed in the spec's `UI_DATAS`, so it is covered by the agreement test above as
+well. It is listed separately from the `.ui` files in
+`tests/test_frozen_mode.py:BANNER_FILES` so the tree walk that requires *every*
+`.ui` to be listed does not become a claim about every image in the tree — a
+screenshot in `docs/` is not something a build should be shipping. What that
+separate list does buy is the guarantee that everything the app resolves through
+`resource_path()` is in `PAYLOAD_FILES`, and `build.py:_verify_payload` checks the
+same list after the build, so a missing banner is caught by the build rather than
+by a user looking at a blank splash.
 
 **Do not use `SCRIPT_DIR` for a resource.** It is
 `dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen
@@ -332,9 +345,9 @@ signed `.app` bundle, which is read-only.
 
 Post-build, it asserts `_internal/` is absent, and that `prototypes/` and
 `tests/` were not bundled. `docs/` is not bundled either — the spec's `datas`
-list names only the `.ui` files, so documentation never reaches the payload. The
-`.ui` layout itself cannot be checked on disk for a onefile build (it unpacks at
-run time), so `tests/test_frozen_mode.py` asserts it instead.
+list names only the read-only payload files, so documentation never reaches the
+payload. The payload layout itself cannot be checked on disk for a onefile build
+(it unpacks at run time), so `tests/test_frozen_mode.py` asserts it instead.
 
 `--zip` adds one more check, and it is the only one that looks at a *shipping*
 artifact. `zip_portable` requires the exe, all three `bin/win/` binaries, and

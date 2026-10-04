@@ -39,9 +39,10 @@ from shared.ffmpeg import (
 # Qt libs
 from PySide6.QtWidgets import (
     QMainWindow, QDialog, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QProgressDialog, QPushButton, QStyle, QSplashScreen,
+    QPlainTextEdit, QProgressDialog, QPushButton, QStyle,
     QVBoxLayout, QComboBox, QCompleter,
 )
+from shared.splash import show_splash
 from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 from shared.tag_form import (
@@ -56,7 +57,7 @@ from shared.tag_form import (
     set_field_text,
 )
 from PySide6.QtCore import Qt, QFile, QObject, QUrl, Signal, Slot, QThread
-from PySide6.QtGui import QDesktopServices, QPixmap, QColor
+from PySide6.QtGui import QDesktopServices
 
 
 # scan_keyframes and _KEYFRAME_EPSILON live in shared.mpv now.
@@ -1237,14 +1238,7 @@ def create(app, source):
     media_path = validate_source_video(source)
     log(f"editor working on {media_path}")
 
-    pixmap = QPixmap(480, 270)
-    pixmap.fill(QColor(30, 30, 30))
-    splash = QSplashScreen(pixmap)
-    splash.show()
-
-    splash.showMessage(f"Now loading {os.path.basename(media_path)}…",
-                       Qt.AlignCenter | Qt.AlignBottom, QColor(200, 200, 200))
-    app.processEvents()
+    splash = show_splash(app, f"Now loading {os.path.basename(media_path)}…")
 
     keyframes = scan_keyframes(media_path)
 

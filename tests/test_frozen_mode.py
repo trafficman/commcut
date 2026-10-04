@@ -63,6 +63,17 @@ UI_FILES = (
     ("importer", "valueswindow.ui"),
 )
 
+# Read-only resources that are not .ui files. Deliberately a separate list: the
+# walk further down asserts that *every* .ui in the tree is listed, and that would
+# be the wrong claim to make about a screenshot dropped into docs/. Everything
+# resource_path() is asked for has to be in PAYLOAD_FILES, and the banner is asked
+# for.
+BANNER_FILES = (
+    ("assets", "commcut_banner.png"),
+)
+
+PAYLOAD_FILES = UI_FILES + BANNER_FILES
+
 
 @pytest.fixture
 def frozen(monkeypatch, tmp_path):
@@ -944,11 +955,11 @@ def test_bootstrap_failure_exits_before_opening_anything(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Bundled .ui files
+# Bundled resources
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("folder,name", UI_FILES)
-def test_ui_file_resolves_unfrozen(folder, name):
+@pytest.mark.parametrize("folder,name", PAYLOAD_FILES)
+def test_bundled_resource_resolves_unfrozen(folder, name):
     """Unfrozen, resource_path must land on the file in the source tree."""
     path = resource_path(folder, name) if folder else resource_path(name)
 
@@ -956,14 +967,14 @@ def test_ui_file_resolves_unfrozen(folder, name):
 
 
 def test_source_and_payload_layouts_agree():
-    """The subfolder each .ui file sits in, in the source tree, is the one the
-    spec must mirror. Read the spec's datas list and compare, so a .ui file
-    that is moved cannot be silently mis-bundled."""
+    """The subfolder each payload file sits in, in the source tree, is the one the
+    spec must mirror. Read the spec's datas list and compare, so a file that is
+    moved cannot be silently mis-bundled."""
     spec_path = os.path.join(PROJECT_ROOT, "packaging", "commcut.spec")
     with open(spec_path, encoding="utf-8") as handle:
         spec_text = handle.read()
 
-    for folder, name in UI_FILES:
+    for folder, name in PAYLOAD_FILES:
         # Forward slashes regardless of host: PyInstaller datas entries are
         # always written that way, including the separator inside the path.
         source = f"{folder}/{name}" if folder else name

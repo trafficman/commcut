@@ -74,6 +74,11 @@ ONEFILE = os.environ.get('COMMCUT_ONEFILE', '1') != '0'
 #
 # Forward slashes on both sides, deliberately: these are PyInstaller paths, not
 # OS paths, and must not be run through os.path.join on Windows.
+#
+# assets/commcut_banner.png is not a .ui: it is the logo the loading splash draws
+# (shared/splash.py). It is listed here for the same reason and with the same
+# consequence when omitted — from source the splash silently loses its banner and
+# in a packaged build it cannot find the file at all.
 UI_DATAS = [
     ('mainwindow.ui', '.'),
     ('editor/editorwindow.ui', 'editor'),
@@ -83,6 +88,7 @@ UI_DATAS = [
     ('shared/tagform.ui', 'shared'),
     ('importer/queuewindow.ui', 'importer'),
     ('importer/valueswindow.ui', 'importer'),
+    ('assets/commcut_banner.png', 'assets'),
 ]
 
 # PyInstaller resolves a relative datas source against the *spec's* folder, not

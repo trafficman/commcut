@@ -5,8 +5,8 @@ model, how a source video travels between windows, the shared library, the
 mpv bridge, and the splash flow.
 
 Applies to: `main.py`, `mainwindow.py`, `mainwindow.ui`, `shared/environment.py`,
-`shared/diagnostics.py`, `shared/mpv.py`, `shared/timeline.py`,
-`shared/ui_loader.py`, `shared/sources.py`.
+`shared/diagnostics.py`, `shared/mpv.py`, `shared/splash.py`,
+`shared/timeline.py`, `shared/ui_loader.py`, `shared/sources.py`.
 
 Related: [packaging.md](packaging.md) (the same layout, frozen),
 [segment-model.md](segment-model.md) (the Editing Wizard),
@@ -24,6 +24,7 @@ commcut/
 │   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
 │   ├── linux/               # Linux binaries (placeholders, none shipped yet)
 │   └── mac/                 # macOS binaries (placeholders, none shipped yet)
+├── assets/                  # commcut_banner.png, drawn on the loading splash
 ├── import/                  # Finished clips to import; not source videos
 ├── export/                  # Named clips are written here
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
@@ -67,6 +68,7 @@ commcut/
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
 │   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
 │   ├── values.py            # ValueSession: the tag-value model, and the value table
+│   ├── splash.py            # show_splash: the banner on the loading screen
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── importer/                # The Library Importer's windows
 │   ├── mesh.py              # The Untagged Library Mesh
@@ -490,9 +492,10 @@ that records the seek sequence.
 
 ## Splash flow (pre-work before the window appears)
 
-`__main__` in both the editor and the scanner shows a `QSplashScreen`, then
-runs `scan_keyframes` (via ffprobe) while it's up. The scan is currently
-synchronous on the GUI thread — it's typically sub-second for a 2-minute
+`__main__` in both the editor and the scanner calls `shared/splash.py:show_splash`,
+which puts a `QSplashScreen` up with the project's banner and the message
+underneath it, then runs `scan_keyframes` (via ffprobe) while it's up. The scan is
+currently synchronous on the GUI thread — it's typically sub-second for a 2-minute
 preview. `PreScanWorker` is scaffolding in the editor for future off-thread
 stages, not yet wired into `__main__`. The editor's other worker,
 `ExportWorker`, is the pattern to follow: it holds plain data, emits
@@ -500,11 +503,43 @@ stages, not yet wired into `__main__`. The editor's other worker,
 becomes a reported outcome rather than PySide6's abort path. See
 [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
 
+Both windows used to build this by hand and identically — a filled pixmap, a
+`QSplashScreen`, `showMessage`, `processEvents`, `close()` — which is one rule with
+two copies of it, and a banner on one screen and not the other is exactly what two
+copies produce. `show_splash` is the one copy. It returns the splash rather than
+being a context manager **on purpose**: the caller closes it immediately before
+constructing its mpv-backed widget, which is the next paragraph, and a `with`
+block would end at the end of the scan instead.
+
+Three decisions inside it are worth stating:
+
+- **The banner is `assets/commcut_banner.png`, resolved through
+  `resource_path()` and bundled by `UI_DATAS` in the spec.** It is a read-only
+  payload resource like a `.ui` file, with the same consequence when omitted: fine
+  from source, and a splash with no logo in a packaged build. `build.py`'s
+  post-build `_verify_payload` checks it landed.
+- **The splash's background is white because the banner's is.** The PNG has an
+  opaque white background and dark artwork, so the old dark splash framed the logo
+  in a white rectangle with a black wordmark on near-black. Filling with the
+  banner's own colour makes its edges disappear into the screen, and the caption
+  below is dark for the same reason.
+- **A banner that cannot be read is logged and dropped, not raised.** Decoration on
+  a progress screen must never become a dependency: the worst response to a missing
+  PNG would be a window that will not open.
+
+The banner is scaled to fit the space *above* the message band with its aspect
+ratio kept and centred in what is left — never stretched to fill, and never allowed
+to grow down into the caption. `MESSAGE_BAND` is the room reserved at the bottom
+for the text, and it is subtracted from the box the logo is scaled into, so the two
+cannot overlap. `tests/test_splash.py` asserts the painted pixels in both
+directions of the aspect ratio rather than the calls.
+
 **Hard-won gotcha:** mpv's Direct3D device initialization hangs when
 another top-level window (the splash) is the active window at construction
 time. Close the splash *before* constructing the mpv-backed widget.
-`app.processEvents()` is called once after `splash.show()` to ensure the
-splash actually paints.
+`show_splash` pumps `app.processEvents()` once before returning, which is what
+makes the splash actually paint — without it the user sees the previous window for
+the length of the ffprobe run, which is the thing it exists to hide.
 
 ## No console: diagnostics
 

@@ -20,11 +20,11 @@ from shared.segments import (
 from scanner.marker_timeline import MarkerTimelineWidget
 from shared.session import OpenInstead, shell
 from shared.sources import validate_source_video
+from shared.splash import show_splash
 from shared.ui_loader import UiLoader, adopt_title
 
-from PySide6.QtWidgets import QMainWindow, QStyle, QSplashScreen
-from PySide6.QtCore import Qt, QFile
-from PySide6.QtGui import QPixmap, QColor
+from PySide6.QtWidgets import QMainWindow, QStyle
+from PySide6.QtCore import QFile
 
 # Seconds of test footage the scanner works on (stream-copied to temp/).
 CLIP_DURATION = 120
@@ -394,16 +394,7 @@ def create(app, source):
     # this exact case 20 times with no hang), but closing a splash is three
     # lines and costs nothing when it turns out to be unnecessary, so it stays
     # until the packaged build has run on untested hardware.
-    pixmap = QPixmap(480, 270)
-    pixmap.fill(QColor(30, 30, 30))
-    splash = QSplashScreen(pixmap)
-    splash.show()
-    splash.showMessage(
-        f"Loading {os.path.basename(media_path)}…",
-        Qt.AlignCenter | Qt.AlignBottom,
-        QColor(200, 200, 200),
-    )
-    app.processEvents()
+    splash = show_splash(app, f"Loading {os.path.basename(media_path)}…")
 
     keyframes = scan_keyframes(media_path)
 
