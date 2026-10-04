@@ -19,17 +19,27 @@ prove a platform works).
 `dist/commcut-<version>-source-<os>-<arch>.tar.gz` on a tag push and attaches it,
 with a `.sha256` sidecar, to the same draft release as the Windows zip. Each leg
 of its matrix runs the test suite first, so a release is refused for a test
-reason before an archive exists.
+reason before an archive exists. The legs run in parallel and are independent:
+they share no state, and the release they attach to is created by whichever one
+gets there first. (See [packaging.md](packaging.md#the-source-releases-and-why-they-are-a-second-workflow)
+for why that is done with an idempotent attach rather than a shared
+`concurrency.group` — a GitHub concurrency group cancels pending jobs rather
+than waiting for them, so sharing one across workflows makes them evict each
+other.)
 
 Two properties of that workflow are worth knowing before changing either:
 
-- **Its concurrency group is character-identical to `release.yml`'s.** GitHub's
-  concurrency is repo-wide across workflows, so the two serialize on one draft
-  release. Without it both can fail `gh release view` and both try to create it,
-  and the loser fails a run that did its job.
-- **It builds on the platform it is releasing for.** The Windows job is the only
-  path that has ever shipped and was left alone; the two new legs need none of
-  its machinery and none of its 384 MB of Git LFS binaries.
+- **The Linux leg installs Qt's system libraries before the suite.** PySide6 is
+  a pip package but not a self-contained one: `import PySide6.QtGui` `dlopen()`s
+  `libEGL` at load time, so on a runner that lacks it the import fails *before*
+  any platform plugin is chosen and `QT_QPA_PLATFORM=offscreen` cannot help. The
+  symptom is 16 test files erroring during collection rather than one test
+  failing, which reads as a suite problem and is not one.
+- **It installs the system packages the shipped script refuses to install.** A
+  workflow may use `sudo`; `install_deps.sh` will not. So the job runs
+  `brew install` / `apt install` itself and then runs `./install_deps.sh` against
+  an extracted copy of the archive, which is what turns "the script runs" into
+  "libmpv actually resolves on this platform".
 
 ### What is in it, and what is not
 
@@ -320,7 +330,7 @@ collision checks.
 the CI run does and does not settle.
 
 `.github/workflows/source-release.yml` runs on macOS and Linux and it does
-establish three things on those platforms:
+establish four things on those platforms:
 
 - **the suite passes there.** `FakeBridge` stands in for libmpv by design, so
   this is not evidence that a player exists — it is evidence that the code, the
@@ -334,6 +344,13 @@ establish three things on those platforms:
 - **the three launchers run.** The archive is extracted and `install_deps.sh` is
   executed inside it, so a quoting bug or a wrong relative path fails the
   release instead of the user.
+- **the refusals are named the same way everywhere.** The first non-Windows runs
+  found two refusals that were silently Windows-only — a raw `NotADirectoryError`
+  leaking out of the export preflight, and a test that could not run off
+  Windows. Both are described in
+  [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found),
+  and they are the strongest argument for running this suite anywhere but the
+  platform it was written on.
 
 What none of that establishes is that a video **renders**:
 

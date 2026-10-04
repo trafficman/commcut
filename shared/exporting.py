@@ -398,7 +398,21 @@ def plan_clip_destination(
 def _is_link_or_reparse_point(path: str) -> bool:
     try:
         path_stat = os.lstat(path)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # Two different "no", and only one of them used to be caught.
+        #
+        # `FileNotFoundError` is the whole path being absent, which is the normal
+        # case -- most of what this is asked about does not exist yet.
+        #
+        # `NotADirectoryError` is POSIX's answer when an *ancestor* of the path
+        # is a file: `lstat(".../Cartoon Network/Promo")` where `Cartoon Network`
+        # is a file gives ENOTDIR. Windows answers `FileNotFoundError` for the
+        # same path, so catching only that made the refusal platform-dependent --
+        # on macOS and Linux the preflight leaked a raw ENOTDIR out of
+        # `plan_export` instead of naming the problem the line below already knows
+        # how to name. A path that cannot be reached because something above it is
+        # a file is definitionally not a symlink, so answering False is correct
+        # here, and the caller's next check reports it by name.
         return False
     if stat.S_ISLNK(path_stat.st_mode):
         return True

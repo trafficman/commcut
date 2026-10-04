@@ -9,25 +9,24 @@
 #
 # Three things here are load-bearing.
 #
-#   concurrency.group   Character-identical to release.yml's. GitHub's
-#                       concurrency is repo-wide across workflows, so the same
-#                       group name serializes these two on one draft release.
-#                       Without it both can fail `gh release view` and both try
-#                       to create the release, and the loser fails a run that
-#                       actually did its job.
+#   the build steps      A source archive's contents are platform-independent:
+#                        nothing is compiled, and the only platform-specific thing
+#                        is the filename. So the Windows checkout could build
+#                        either archive, and `lfs: false` (the default) is left
+#                        alone on purpose -- setting it true would pull ~384 MB
+#                        of bin/win/ binaries for a release that must not contain
+#                        any of them.
 #   the extract step     Builds the archive and then extracts it and runs
-#                       ./install_deps.sh inside it. Without that, three shell
-#                       scripts ship having never been executed by anything, and
-#                       the first person to try one finds out. It costs a second
-#                       PySide6 download per runner and it is the reason the
-#                       launchers are covered at all.
-#   --target / no LFS    A source archive's contents are platform-independent:
-#                       nothing is compiled, and the only platform-specific thing
-#                       is the filename. So the Windows checkout could build
-#                       either archive, and `lfs: false` (the default) is left
-#                       alone on purpose -- setting it true would pull ~384 MB of
-#                       bin/win/ binaries for a release that must not contain
-#                       any of them.
+#                        ./install_deps.sh inside it. Without that, three shell
+#                        scripts ship having never been executed by anything, and
+#                        the first person to try one finds out. It costs a second
+#                        PySide6 download per runner and it is the reason the
+#                        launchers are covered at all.
+#   the attach steps     Attach idempotently rather than under a lock -- see the
+#                        concurrency note below. This workflow used to share
+#                        release.yml's concurrency group, which was wrong twice
+#                        over: a shared group does not serialize, it *discards*,
+#                        and it can cancel another workflow's pending job.
 #
 # The tag is not trusted to be the version: packaging/source_release.py refuses
 # anything that disagrees with shared/version.py, by the same function the
@@ -48,9 +47,28 @@ on:
 permissions:
   contents: read
 
-# Same string as release.yml. See above.
+# Deliberately NOT release.yml's group name.
+#
+# GitHub's concurrency group is not a mutex. It keeps at most one *running* and
+# one *pending* job per group, and when a new arrival comes in, the existing
+# pending job "will be canceled and replaced". Sharing a group across workflows
+# therefore does not order them -- it makes them evict each other, and the docs
+# say so explicitly: "concurrency group names must be unique across workflows to
+# avoid canceling in-progress jobs or runs from other workflows."
+#
+# With three builds contending for one group here, a late-arriving leg could
+# cancel the Windows job while it was merely waiting, and a Linux leg that hung
+# for forty minutes on a missing PySide6 wheel would have held the group and
+# cost the Windows release too.
+#
+# Nothing needs serializing. The builds share no state -- separate runners,
+# separate working copies, separate output -- and the attach step below is
+# idempotent, so three runners uploading three different filenames to one release
+# is safe without coordination. What is left to serialize is this workflow
+# against itself: two runs for the same tag should not fight, and they should not
+# cancel each other either.
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: source-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -58,9 +76,9 @@ jobs:
     name: ${{ matrix.name }} source release
     runs-on: ${{ matrix.os }}
     strategy:
-      # One in flight at a time: both legs attach to the same draft release, and
-      # the point of the shared concurrency group is that they do not race.
-      max-parallel: 1
+      # In parallel, not one at a time. Each leg is a separate verification of
+      # its own platform and neither depends on nor conflicts with the other;
+      # serializing them would make the release wait for the sum of them.
       fail-fast: false
       matrix:
         include:
@@ -79,6 +97,23 @@ jobs:
           # workflow ran from, so without it the re-run would build a different
           # commit than the tag it is cutting a release for.
           ref: ${{ inputs.tag || github.ref }}
+
+      # The libraries QtGui links against. Not optional and not a PyPI package:
+      # `import PySide6.QtGui` dlopen()s libEGL at load time, so the import fails
+      # before any platform plugin is chosen and `QT_QPA_PLATFORM=offscreen`
+      # does not help. This is why 16 test files errored during *collection* on
+      # ubuntu rather than one test failing.
+      #
+      # No `--no-install-recommends`-surviving explanations: these are the ones
+      # the hosted image does not already carry. If this step ever stops being
+      # enough the error names the missing .so directly.
+      - name: Qt libraries PySide6 links against
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libfontconfig1
 
       - uses: actions/setup-python@v5
         with:
@@ -238,48 +273,44 @@ jobs:
           fi
           echo "$asset: $got"
 
-      # Re-running a workflow is a normal thing to do, and `gh release create`
-      # fails hard when a release for the tag exists. A green no-op is more
-      # useful than a red X for "I already did this". --clobber on the upload is
-      # what makes a re-run replace the asset instead of colliding with it.
-      - name: does a release already exist for this tag
-        id: existing
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release view "$TAG" --json isDraft
-
-      # The tag and asset names arrive through env for the same reason as in
-      # release.yml: an expression interpolated into a shell script becomes the
-      # script.
-      - name: create the draft release
-        if: steps.existing.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-          ASSET: ${{ steps.build.outputs.asset }}
-          PATH_TO_ASSET: ${{ steps.build.outputs.path }}
-        run: |
-          gh release create "$TAG" \
-            "$PATH_TO_ASSET" \
-            "$PATH_TO_ASSET.sha256" \
-            --draft --verify-tag \
-            --title "commcut $TAG" \
-            --generate-notes
-
-      - name: attach to an existing release
-        if: steps.existing.outcome == 'success'
+      # Attach idempotently, in one step, rather than "does it exist? create if
+      # not" in two.
+      #
+      # The two-step version has a window between the `view` and the `create`
+      # where another workflow can create the release first, and the loser fails
+      # with "release already exists" -- a red run that actually did its job. The
+      # `||` on the create is the whole fix: whoever loses that race falls
+      # through and uploads instead. Three runners uploading three *different*
+      # filenames to one release is safe without any coordination at all.
+      #
+      # Re-running is then a green no-op that refreshes the assets, because
+      # --clobber replaces the named file rather than colliding with it.
+      #
+      # The tag and asset name arrive through env, never ${{ }} in the script
+      # body: a tag is reachable input, and an expression interpolated into a
+      # shell script is substituted before the shell ever parses it.
+      - name: attach to the release, creating the draft if it is not there yet
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
           ASSET: ${{ steps.build.outputs.asset }}
           PATH_TO_ASSET: ${{ steps.build.outputs.path }}
         run: |
-          gh release upload "$TAG" \
-            "$PATH_TO_ASSET" \
-            "$PATH_TO_ASSET.sha256" \
-            --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release for $TAG exists; attaching"
+            gh release upload "$TAG" "$PATH_TO_ASSET" "$PATH_TO_ASSET.sha256" \
+              --clobber
+          else
+            echo "no release for $TAG yet; creating the draft with this leg's assets"
+            gh release create "$TAG" \
+              "$PATH_TO_ASSET" \
+              "$PATH_TO_ASSET.sha256" \
+              --draft --verify-tag \
+              --title "commcut $TAG" \
+              --generate-notes \
+            || gh release upload "$TAG" "$PATH_TO_ASSET" "$PATH_TO_ASSET.sha256" \
+                 --clobber
+          fi
 
       # Only on success. With always() this would also print after a failed
       # build, claiming a release that is not there.

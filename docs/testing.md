@@ -210,6 +210,21 @@ state.
   on that platform. The suite covers *resolution*; playback on macOS and Linux
   can only be confirmed by a person on that machine — see
   [source-install.md](source-install.md#what-has-not-been-verified).
+- **A suite that has only ever run on one platform has not been tested on the
+  others, whatever it asserts.** Three of the four failures from the first
+  macOS/Linux run were cases of exactly this: a `NotADirectoryError` escaping
+  `shared/exporting.py` because the code caught `FileNotFoundError` where POSIX
+  answers ENOTDIR; a read failure classified as a corrupt record because
+  `record_error_reason` matches on message text; and a test that read
+  `subprocess.CREATE_NO_WINDOW` unconditionally. None was reachable from Windows.
+  Two lessons for the next one:
+  - Where a refusal depends on which `OSError` a platform raises, the test should
+    *inject* the other platform's answer rather than skip — that way every leg
+    holds it down.
+  - A test that arranges its condition with `chmod 000` has silently skipped on
+    Windows this whole time, because `chmod` does not stop the owner reading
+    there. If a test can be skipped, check what it was hiding. →
+    [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 - **A shell script is not covered by a suite that never runs `sh`.**
   `test_source_release.py` parses `install_deps.sh`'s embedded Python and runs it
   against a stubbed `shared` package, which works anywhere. But

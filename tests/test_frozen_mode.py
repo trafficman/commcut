@@ -868,11 +868,32 @@ def _suppresses_the_console(call):
     return False
 
 
+def _pretend_to_be_windows(monkeypatch):
+    """Make the Windows branch of `no_console_kwargs` reachable from any host.
+
+    Two things are needed, not one. `platform.system()` is what the function
+    reads, and `subprocess.CREATE_NO_WINDOW` is a Windows-only constant that
+    simply does not exist in the `subprocess` module on macOS or Linux -- so a
+    test that only faked the platform failed there with `AttributeError`, from
+    inside the code under test, on a host that could never produce a Windows
+    child in the first place.
+
+    Supplying the constant is not pretending to test Windows; the value is
+    Windows' business, not commcut's. What these tests claim is that *given* a
+    Windows platform, the helper returns exactly that flag and nothing else --
+    and now the macOS and Linux CI legs actually check it, rather than skipping
+    the one branch that matters for the shipped build.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        environment.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+
 def test_a_windows_child_is_told_not_to_open_a_console(monkeypatch):
     """A console program started by a console-less parent is given a new,
     *visible* console window. commcut.exe is GUI-subsystem and has no console,
     so this is what every ffmpeg call in the shipped build needs."""
-    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    _pretend_to_be_windows(monkeypatch)
 
     assert no_console_kwargs() == {
         "creationflags": environment.subprocess.CREATE_NO_WINDOW}
@@ -890,7 +911,7 @@ def test_a_platform_without_console_windows_gets_no_flags(monkeypatch):
 def test_each_console_call_gets_its_own_dict_to_merge_into(monkeypatch):
     """Callers splat this into their own keyword arguments, so a shared module
     level dict could be mutated by one call site and change another's."""
-    monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
+    _pretend_to_be_windows(monkeypatch)
 
     first = no_console_kwargs()
     first["creationflags"] = "clobbered"

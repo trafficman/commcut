@@ -1,10 +1,12 @@
 """Tests for named-export settings, destination planning, and preflight."""
 
+import errno
 import json
 import os
 
 import pytest
 
+from shared import exporting
 from shared.exporting import (
     DEFAULT_FILE_NAMING_SCHEME,
     EXPORT_FOLDER_NAME,
@@ -491,6 +493,55 @@ def test_plan_export_rejects_existing_file_used_as_parent(
 
     with pytest.raises(ExportPlanError, match="parent is not a directory"):
         plan_export(make_model(tags_list=[required_tags]), schemes, str(root))
+
+
+def test_the_same_refusal_is_named_when_lstat_answers_enotdir(
+    monkeypatch, schemes, required_tags, tmp_path
+):
+    """The refusal above is the specification; this pins *how* it survives POSIX.
+
+    Windows answers `FileNotFoundError` when `lstat` is given a path whose
+    ancestor is a file, and macOS and Linux answer `NotADirectoryError`. Catching
+    only the first made the preflight platform-dependent: on the latter, the raw
+    ENOTDIR escaped `plan_export` and a user would have seen a stray OSError
+    instead of the one problem this module is supposed to name.
+
+    Found by the macOS source-release CI leg, which is the only reason this is
+    known. The failure is injected rather than waited for, because the real
+    behaviour is only reachable on a POSIX filesystem -- and an injected
+    ENOTDIR runs identically on the Windows leg, so all three platforms hold this
+    down rather than only the one that happens to break.
+    """
+    root = tmp_path / "library"
+    blocked_parent = root / "Cartoon Network"
+    blocked_parent.parent.mkdir(parents=True)
+    blocked_parent.write_bytes(b"not a directory")
+
+    real_lstat = os.lstat
+
+    def posix_lstat(path, *args, **kwargs):
+        parent = os.path.dirname(os.fspath(path))
+        while parent and parent != os.path.dirname(parent):
+            if os.path.lexists(parent) and not os.path.isdir(parent):
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), os.fspath(path))
+            parent = os.path.dirname(parent)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(exporting.os, "lstat", posix_lstat)
+
+    with pytest.raises(ExportPlanError, match="parent is not a directory"):
+        plan_export(make_model(tags_list=[required_tags]), schemes, str(root))
+
+
+def test_is_link_or_reparse_point_never_raises_for_an_unreachable_path(tmp_path):
+    """The contract the caller relies on: it wants a yes/no answer, and there is
+    no path whose answer is an exception."""
+    unreachable = tmp_path / "a-file" / "below-it"
+    (tmp_path / "a-file").write_bytes(b"not a directory")
+
+    assert exporting._is_link_or_reparse_point(str(unreachable)) is False
+    assert exporting._is_link_or_reparse_point(str(tmp_path / "absent")) is False
 
 
 def test_plan_export_rejects_invalid_model_shape(tmp_path, schemes):

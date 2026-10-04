@@ -64,6 +64,18 @@ REASON_UNSUPPORTED_VERSION = "unsupported-version"
 REASON_UNKNOWN_TAG_KEY = "unknown-tag-key"
 REASON_UNKNOWN_ELEMENT = "unknown-element"
 REASON_INVALID = "invalid-record"
+#: The bytes never became text: the file could not be opened, or was not UTF-8.
+#:
+#: Not a record problem, and the distinction matters to the caller -- the Library
+#: Importer tells a user "commcut refused this" and "I could not read this" with
+#: different advice, and only one of them is actionable by editing tags.
+#:
+#: `shared/catalog.py` reports the same code for a record that is simply missing,
+#: which is the one case where `load_record` lets the underlying `OSError`
+#: through, so the string is defined here and re-exported there rather than
+#: written down twice. See the "could not be read" branch in
+#: `record_error_reason` for why this was not reachable at all until then.
+REASON_UNREADABLE = "unreadable"
 
 
 def record_error_reason(error: RecordError) -> str:
@@ -78,6 +90,20 @@ def record_error_reason(error: RecordError) -> str:
     reads, so a reworded message fails a test rather than silently changing a code.
     """
     message = str(error)
+    if "could not be read" in message:
+        # Checked first, and checked by this phrase, because it is the one reason
+        # that is not about the record's own contents. `load_record` reports every
+        # other OSError this way, so without this branch a record the app simply
+        # could not open -- a permissions problem, a file that is a directory, one
+        # that is not UTF-8 -- fell through to REASON_INVALID and was reported as
+        # commcut refusing a corrupt record. The file was never parsed at all.
+        #
+        # Unreachable in practice until this branch existed: it needs a record
+        # that fails to open, and `test_a_record_that_cannot_be_read_at_all_says_so`
+        # is the only test that arranges one -- by chmod, which does not stop the
+        # owner reading on Windows, so that test skipped on every platform the
+        # suite had ever run on.
+        return REASON_UNREADABLE
     if "not well-formed" in message:
         return REASON_NOT_WELL_FORMED
     if "unknown tag key" in message:

@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from shared.records import (
     RECORD_EXTENSION,
+    REASON_UNREADABLE,
     ClipRecord,
     RecordError,
     load_record,
@@ -48,9 +49,14 @@ from shared.vocabulary import PruneResult
 RECORD_SCAN_EXTENSION = RECORD_EXTENSION
 
 #: `CatalogProblem.reason` when the record file itself could not be opened or
-#: read. The record-error reasons come from `shared/records.py`, which is where
-#: they are raised.
-REASON_UNREADABLE = "unreadable"
+#: read. `REASON_UNREADABLE` is re-exported from `shared.records`, which owns it:
+#: `load_record` reports most read failures as a `RecordError`, and
+#: `record_error_reason` classifies those to that same code, so declaring the
+#: string here as well would be a second copy that could disagree with the branch
+#: actually doing the work.
+#:
+#: `REASON_WALK_ERROR` is this module's own, because a walk failure is not a
+#: record's problem at all -- it is the tree the records live in.
 REASON_WALK_ERROR = "walk-error"
 #: `CatalogProblem.reason` when a record parsed but has no video beside it.
 #:

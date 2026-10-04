@@ -434,10 +434,28 @@ that has ever shipped and should not be restructured to accommodate two
 platforms that need none of its machinery, and the preconditions are opposites —
 this one needs Git LFS and PyInstaller, the other needs neither.
 
-Its load-bearing detail is that **its concurrency group is character-identical
-to the one above**. GitHub's concurrency is repo-wide across workflows, so the
-two serialize on one release; without that they can both fail `gh release view`
-and both try to create it.
+Its load-bearing detail is that **both workflows attach idempotently rather than
+under a lock**. That is worth spelling out, because the obvious alternative is
+wrong in a way that only shows up under load:
+
+A GitHub `concurrency.group` is not a mutex. It keeps at most one *running* and
+one *pending* job per group, and when a new arrival is queued, the existing
+pending job "will be canceled and replaced". GitHub's own reference says group
+names "must be unique across workflows to avoid canceling in-progress jobs or
+runs from other workflows".
+
+So sharing one group across these two workflows would not have ordered them onto
+a single draft — it would have made them evict each other. With three builds
+contending, a late-arriving leg could cancel the Windows job while it was merely
+waiting, and a Linux leg that hung on a missing PySide6 wheel would have held
+the group and cost the Windows release too.
+
+What is actually true is that the three builds need no coordination at all:
+separate runners, separate working copies, separate output. The only shared thing
+is the release, and the only race is `gh release create` — which the attach step
+resolves with `|| gh release upload`, so whichever workflow loses the create race
+attaches instead of failing. Uploading different filenames concurrently to one
+release is safe.
 
 `packaging/source_release.py` is the builder, and it is loaded by path for the
 same reason this file is: `packaging/` is a namespace portion and the real
@@ -450,4 +468,48 @@ are byte-identical, and it prints an `artifact:` line the workflow reads back
 instead of reconstructing the filename. All of that is
 [source-install.md](source-install.md)'s subject, along with what the macOS and
 Linux CI legs do and do not prove.
+
+### What running the suite on macOS and Linux actually found
+
+Worth recording, because these are the first non-Windows runs of anything and
+they earned their keep immediately. All four macOS failures were real, and three
+of them were things a green Windows suite could not have found:
+
+- **`shared/exporting.py:_is_link_or_reparse_point` caught only
+  `FileNotFoundError`.** POSIX answers `NotADirectoryError` (ENOTDIR) when
+  `lstat` is given a path whose *ancestor* is a file — which is exactly what
+  happens when an export destination's parent directory has been replaced by a
+  file. Windows answers `FileNotFoundError` for the same path, so the preflight
+  leaked a raw ENOTDIR out of `plan_export` instead of naming the problem the
+  very next line already knew how to name. The regression test injects the POSIX
+  behaviour so all three legs hold it down.
+- **`shared/records.py:record_error_reason` classified a read failure as a
+  corrupt record.** `load_record` reports every `OSError` as a `RecordError`, and
+  the classifier matches on the message — so "Record could not be read: [Errno
+  13] Permission denied" matched no branch and fell through to
+  `REASON_INVALID`. `is_record_problem` then reported `True`, which tells a user
+  to fix their tags over a file commcut could not open.
+  `shared/catalog.py:REASON_UNREADABLE` had been effectively unreachable for
+  anything except a *missing* record, because `load_record` re-raises only
+  `FileNotFoundError` unwrapped. This one is the most interesting of the four,
+  because the test guarding it used `chmod 000`, which does not stop the owner
+  reading on Windows — so it had skipped on every platform the suite had ever
+  run on, and the bug was waiting rather than absent.
+- **`tests/test_frozen_mode.py` referenced `subprocess.CREATE_NO_WINDOW`
+  directly**, a constant that exists only on Windows, so the two tests failed on
+  macOS from inside the code under test. They now supply the constant as well as
+  faking the platform, which means those legs verify the Windows branch rather
+  than skipping it.
+- **PySide6 needs system libraries that are not pip-installable.** `import
+  PySide6.QtGui` `dlopen()`s `libEGL` at load time, so on a bare runner it fails
+  before any platform plugin is chosen and `QT_QPA_PLATFORM=offscreen` does not
+  help — which is why 16 test files errored during *collection* rather than one
+  test failing. The Linux leg installs them.
+
+The pattern is worth stating, because it is the argument for the whole workflow
+rather than a detail of it: **three of these were refusals or guards that were
+silently Windows-only.** Not test gaps — code whose behaviour depended on which
+`OSError` the host raises, or on a constant that only exists on one platform. A
+suite that has only ever run on one platform has not been tested on the others,
+whatever it asserts.
 

@@ -226,6 +226,10 @@ Detail in [architecture.md](architecture.md) and
   `./install_deps.sh` inside it with the system packages installed. So the code
   imports, libmpv resolves, and the three launchers run on those platforms —
   none of which was true before. **Playback is still unverified**; see below.
+  It also means the suite is no longer Windows-only: the first such run found a
+  raw `NotADirectoryError` escaping the export preflight (POSIX answers
+  ENOTDIR where Windows answers `FileNotFoundError` for the same path), which a
+  green Windows suite could never have caught. → [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 
 Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md).
 
@@ -431,6 +435,18 @@ The full vision in `README.md` has three pieces; two are not started:
   into an `NSView*` on macOS, and, on Linux, whether `wid` embedding works at
   all under Wayland. A person on each machine is the only oracle for both. See
   [source-install.md](source-install.md#what-has-not-been-verified).
+- **A record that cannot be read was reported as a corrupt one.**
+  `shared/records.py:load_record` reports every read failure as a `RecordError`,
+  and `record_error_reason` classifies by matching the message — so
+  "Record could not be read: [Errno 13] Permission denied" matched no branch and
+  fell through to `REASON_INVALID`. `is_record_problem` then said True, advising
+  a user to fix their tags over a file commcut could not open.
+  `shared/catalog.py:REASON_UNREADABLE` was effectively unreachable except for a
+  *missing* record, because `load_record` lets only `FileNotFoundError` through
+  unwrapped. Invisible until this run: the only test covering it used `chmod 000`,
+  which does not stop the owner reading on Windows, so it had skipped on every
+  platform the suite had ever run on. →
+  [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
 - **`apt install libmpv2` did not produce a findable libmpv.** The search in
   `shared/environment.py` covered each system prefix's `lib/` plus `/usr/lib`,
   and a Debian package installs to `/usr/lib/x86_64-linux-gnu/` — which is none

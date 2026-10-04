@@ -35,6 +35,14 @@ permissions:
 
 # Two runs of the same tag must not race. Not cancelled on progress: a release
 # halfway through a PyInstaller build is worth letting finish.
+#
+# This group is this workflow's alone. It used to be shared with
+# source-release.yml, on the theory that one group would serialize the two onto
+# a single draft release. It does not do that: a concurrency group keeps at most
+# one running and one pending job, and a new arrival *cancels* the pending one,
+# so sharing a name across workflows makes them evict each other rather than
+# wait for each other. Coordination happens in the attach step instead, which is
+# idempotent.
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -109,36 +117,55 @@ jobs:
           $got = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
           if ($want -ne $got) { throw "sha256 mismatch: sidecar says $want, file is $got" }
 
-      # Re-running a workflow is a normal thing to do, and gh release create
-      # fails hard when a release for the tag exists. A green no-op is more
-      # useful than a red X for "I already did this".
-      - name: does a release already exist for this tag
-        id: existing
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.build.outputs.tag }}
-        run: gh release view "$env:TAG" --json isDraft
-
+      # Attach idempotently, in one step.
+      #
+      # This used to be "does a release exist? create if not", in two steps, and
+      # that had two problems once a second workflow started attaching to the
+      # same tag:
+      #
+      #   - the gap between `view` and `create` is a race. If the source-release
+      #     workflow created the draft first, `gh release create` fails with
+      #     "release already exists" and this run goes red having built a
+      #     perfectly good exe.
+      #   - there was no upload path at all. A re-run against an existing draft
+      #     rebuilt a 190 MB zip and then attached nothing, silently.
+      #
+      # The `|| gh release upload` is the whole fix: whoever loses the create
+      # race falls through and uploads instead. Uploading is safe to do
+      # concurrently from several workflows because --clobber replaces the one
+      # named asset rather than colliding with the others.
+      #
       # Draft, not published: the exe has not run on a real machine yet, and
       # a release cannot be re-cut for a tag that is already published. The
       # assets are downloadable from a draft, so smoke testing needs no change
       # to this. The tag and asset name arrive through env for the same reason
       # as above; ${env:ASSET} is braced so PowerShell cannot read the
       # ".sha256" as part of the variable name.
-      - name: create the draft release
-        if: steps.existing.outcome == 'failure'
+      - name: attach to the release, creating the draft if it is not there yet
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.build.outputs.tag }}
           ASSET: ${{ steps.verify.outputs.asset }}
+        shell: pwsh
         run: |
-          gh release create "$env:TAG" `
-            "dist/$env:ASSET" `
-            "dist/${env:ASSET}.sha256" `
-            --draft --verify-tag `
-            --title "commcut $env:TAG" `
-            --generate-notes
+          # $LASTEXITCODE, not the truthiness of gh's output: `if (gh ...)` would
+          # depend on whether the command happened to print anything, which is a
+          # different question from whether the release exists.
+          gh release view "$env:TAG" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "release for $env:TAG exists; attaching"
+            gh release upload "$env:TAG" "dist/$env:ASSET" "dist/${env:ASSET}.sha256" --clobber
+          }
+          else {
+            Write-Host "no release for $env:TAG yet; creating the draft with this run's assets"
+            gh release create "$env:TAG" `
+              "dist/$env:ASSET" `
+              "dist/${env:ASSET}.sha256" `
+              --draft --verify-tag `
+              --title "commcut $env:TAG" `
+              --generate-notes `
+            || gh release upload "$env:TAG" "dist/$env:ASSET" "dist/${env:ASSET}.sha256" --clobber
+          }
 
       # Only on success. With always() this would also print after a failed
       # build, claiming a release that is not there.

@@ -3,6 +3,7 @@
 Applies to: `shared/catalog.py`, `shared/records.py`, `shared/sources.py`.
 """
 
+import builtins
 import os
 
 import pytest
@@ -553,6 +554,76 @@ def test_a_record_that_cannot_be_read_at_all_says_so(tmp_path):
         "Cartoon Network/Promo/Locked.cnfo": REASON_UNREADABLE,
     }
     assert catalog.problems[0].is_record_problem is False
+
+
+def test_a_record_that_cannot_be_opened_is_unreadable_on_every_platform(
+    tmp_path, monkeypatch
+):
+    """The same refusal, arranged so it happens everywhere.
+
+    The test above needs a read to be refused, and the only portable way to ask
+    for that is `chmod 000` -- which does not stop the *owner* reading on Windows.
+    So on Windows it skipped, on Linux and macOS it ran, and it failed on both:
+    `load_record` reports an unreadable file as a `RecordError`, whose message
+    matched no branch in `record_error_reason` and fell through to
+    `REASON_INVALID`. A record commcut never managed to parse was being reported
+    as a corrupt record commcut had read and refused, and `is_record_problem`
+    said True -- advising the user to fix their tags over a file commcut could not
+    open.
+
+    Refusing the read is injected rather than arranged, the way
+    `test_a_walk_error_is_its_own_reason` refuses a `scandir`. A directory named
+    `*.cnfo` would not do: the scan reads `file_names`, so it is never offered to
+    the reader at all.
+    """
+    write_clip(tmp_path, "Kept")
+    blocked = write_clip(tmp_path, "Blocked")
+
+    real_open = builtins.open
+
+    def refusing_open(file, *args, **kwargs):
+        if os.path.abspath(os.fspath(file)) == os.path.abspath(str(blocked)):
+            raise PermissionError(13, "Permission denied", str(blocked))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", refusing_open)
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Blocked.cnfo": REASON_UNREADABLE,
+    }
+    blocked_problem = next(
+        problem for problem in catalog.problems
+        if problem.path.endswith("Blocked.cnfo")
+    )
+    assert blocked_problem.is_record_problem is False
+
+
+def test_an_unparseable_record_is_still_a_record_problem(tmp_path):
+    """The other side of the line the test above pins.
+
+    "The bytes never became text" and "commcut read it and refused it" are
+    different problems with different advice, and `is_record_problem` is how a
+    caller tells them apart. Widening `record_error_reason` to recognise a read
+    failure must not swallow the genuine refusals, or every corrupt record in a
+    library would start being reported as a filesystem problem.
+    """
+    odd = write_clip(tmp_path, "Headless")
+    with open(odd, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<commcut-clip version="1">\n'
+            '  <segment index="1" start="0.0" duration="1.0" />\n'
+            "</commcut-clip>\n"
+        )
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert reasons_in(catalog) == {
+        "Cartoon Network/Promo/Headless.cnfo": REASON_INVALID,
+    }
+    assert catalog.problems[0].is_record_problem is True
 
 
 def test_a_walk_error_is_its_own_reason(tmp_path, monkeypatch):
