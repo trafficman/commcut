@@ -293,6 +293,19 @@
        </property>
       </widget>
      </item>
+     <item>
+      <widget class="QPushButton" name="buttonMenu">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Close this window. The main menu comes back, and every clip stays in the import folder exactly as it is — nothing is lost and nothing has to be finished.</string>
+       </property>
+       <property name="text">
+        <string>Back to main menu</string>
+       </property>
+      </widget>
+     </item>
     </layout>
    </item>
   </layout>

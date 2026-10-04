@@ -250,6 +250,11 @@ class ImportPlan:
     #: Clips left out, each with its reason. Never silently empty.
     skipped: tuple[ImportSkip, ...] = ()
     export_root: str = ""
+    #: The folder the clips are being read from — `import/`. **A safety boundary,
+    #: not a convenience**: a `move` will remove the folders this run emptied, and
+    #: only ever up to here. Empty means do not clean up at all, which is what a
+    #: caller who has not said where the boundary is gets.
+    source_root: str = ""
     transfer: str = TRANSFER_COPY
     #: Bytes a copying transfer has to write.
     total_bytes: int = 0
@@ -334,6 +339,7 @@ def plan_import(
     *,
     transfer: str = TRANSFER_COPY,
     existing: Catalog | None = None,
+    source_root: str | None = None,
 ) -> ImportPlan:
     """Resolve every candidate to a destination, and decide what to do about each.
 
@@ -352,6 +358,12 @@ def plan_import(
       already present. This is what makes a re-run a no-op instead of a failure.
     - taken, anything else -> **refused by name**, naming the tags that differ. No
       clobber for a real conflict, as the export preflight has it.
+
+    `source_root` is `import/`, and it is a **safety boundary rather than a
+    convenience**: a `move` removes the folders this run emptied, and
+    `prune_emptied_directories` will never climb past it. Omitting it means nothing
+    is cleaned up, which is the right answer for a caller that has not said where
+    the boundary is.
 
     `transfer` is recorded in the plan rather than acted on; planning writes
     nothing.
@@ -481,6 +493,7 @@ def plan_import(
         clips=tuple(clips),
         skipped=tuple(skipped),
         export_root=root,
+        source_root=os.path.abspath(os.fspath(source_root)) if source_root else "",
         transfer=transfer,
         total_bytes=total_bytes,
     )
@@ -610,6 +623,90 @@ def _transfer_file(source: str, destination: str, transfer: str) -> str:
     return TRANSFER_COPY
 
 
+def _is_within(path: str, root: str) -> bool:
+    r"""Whether `path` is `root` or something under it, on this volume.
+
+    `commonpath` is the check rather than string prefixing, because
+    `C:\import-old` starts with `C:\import` and a prefix test would treat a
+    *sibling* of the import folder as a child of it. It raises `ValueError` across
+    drives, and that is an answer rather than a problem: a different volume is
+    outside the boundary by definition.
+    """
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def prune_emptied_directories(
+    directories: Iterable[str], stop_at: str
+) -> tuple[str, ...]:
+    """Remove the directories a move emptied, and nothing else.
+
+    A `move` takes the file out of `import/` and leaves the folder it was in
+    standing there empty, which for a staging folder reads as "it did not work". So
+    the folders are cleaned up — and this is the only recursive deletion in the
+    app, which is why the safety is structural rather than a matter of being
+    careful:
+
+    - **Only `os.rmdir`, never `rmtree`.** That single choice is the whole defence
+      against deleting a file: `rmdir` succeeds only on a genuinely empty
+      directory, and it fails atomically otherwise. There is no flag and no
+      condition to get wrong, so a folder that gained something between the move and
+      the cleanup is simply left alone.
+    - **Only the directories named.** The caller seeds this with the parents of the
+      files *this run moved*. An empty folder the user made on purpose is not in
+      that set and is never touched, however empty it is.
+    - **Never past `stop_at`**, which is the import folder. Climbing stops there,
+      and `stop_at` itself is never removed — the user chose that folder and it is
+      where they will drop the next batch.
+    - **Never a link.** `os.path.islink` is checked before descending or removing,
+      so a link pointing outside the tree cannot be followed into or deleted. (On
+      Windows a junction is not a link by that test, but `rmdir` on a junction to a
+      populated directory fails anyway, so the `rmdir`-only rule covers it.)
+
+    **Repeated until nothing more can go**, which is what makes a shared parent come
+    out. Two kinds of filler under `import/CN/2000s/` both have to be moved, and
+    whichever leaf is climbed first reaches `2000s` while the other is still there —
+    so its first attempt necessarily fails. A single pass leaves `2000s` and `CN`
+    standing there empty, which is exactly what this is for. Retrying lets the second
+    leaf's removal turn that first failure into a success.
+
+    Returns the directories removed, absolute and deepest-first within a pass, for a
+    caller that wants to say what happened. Failure is never an error: a folder left
+    behind is litter, not a broken import.
+    """
+    stop = os.path.abspath(os.fspath(stop_at))
+    pending = {os.path.abspath(os.fspath(directory))
+               for directory in directories}
+    removed: list[str] = []
+
+    def climb(start: str) -> bool:
+        """Remove `start` and its empty parents. Whether anything went."""
+        current = start
+        progressed = False
+        while current != stop and _is_within(current, stop):
+            if os.path.islink(current) or not os.path.isdir(current):
+                break
+            try:
+                os.rmdir(current)
+            except OSError:
+                # Not empty, not ours, or not removable. Either way it stops here —
+                # and it stops only *this* climb, because another leaf emptying it
+                # later is retried rather than written off.
+                break
+            removed.append(current)
+            progressed = True
+            current = os.path.dirname(current)
+        return progressed
+
+    while True:
+        still_going = {directory for directory in pending if climb(directory)}
+        if not still_going:
+            return tuple(removed)
+        pending = still_going
+
+
 def execute_import(
     plan: ImportPlan,
     on_progress: Callable[[int, str], None] | None = None,
@@ -633,6 +730,14 @@ def execute_import(
 
     One failing clip does not stop the run. Its destination is left clean and it
     goes in `failed` with its reason.
+
+    **A `move` also tidies `import/` up, and only that.** The record beside a moved
+    video goes with it, and the folders it emptied are removed. Both are conditional
+    on the transfer *actually* having moved the file, so a `copy` and a `link` leave
+    the source folder exactly as it was — and with them the record, because
+    `link` leaves the video in place and a record with no sibling video is litter
+    that nothing would ever read. See `prune_emptied_directories` for why that
+    deletion is safe.
     """
     if on_progress is None:
         on_progress = lambda _done, _path: None  # noqa: E731
@@ -643,24 +748,30 @@ def execute_import(
 
     written: list[str] = []
     failed: list[ImportSkip] = []
+    emptied: set[str] = set()
     root = plan.export_root
+
+    def result(cancelled: bool) -> ImportResult:
+        if plan.source_root:
+            prune_emptied_directories(emptied, plan.source_root)
+        return ImportResult(
+            written=tuple(written),
+            already_present=plan.already_present,
+            failed=tuple(failed),
+            cancelled=cancelled,
+        )
 
     for position, clip in enumerate(plan.clips):
         relative = clip.relative_path
         if should_cancel():
-            return ImportResult(
-                written=tuple(written),
-                already_present=plan.already_present,
-                failed=tuple(failed),
-                cancelled=True,
-            )
+            return result(cancelled=True)
         on_progress(position, relative)
 
         video_path = os.path.join(root, *clip.destination.relative_components)
         record_path = os.path.join(root, *clip.destination.record_relative_components)
         try:
             os.makedirs(os.path.dirname(video_path), exist_ok=True)
-            _transfer_file(clip.source_path, video_path, plan.transfer)
+            happened = _transfer_file(clip.source_path, video_path, plan.transfer)
         except OSError as error:
             failed.append(ImportSkip(
                 source_path=clip.source_path, relative_path=relative,
@@ -692,14 +803,37 @@ def execute_import(
             ))
             continue
 
+        if happened == TRANSFER_MOVE:
+            _take_the_source_record(clip.source_path)
+            emptied.add(os.path.dirname(clip.source_path))
+
         written.append(relative)
 
     on_progress(len(plan.clips), "")
-    return ImportResult(
-        written=tuple(written),
-        already_present=plan.already_present,
-        failed=tuple(failed),
-    )
+    return result(cancelled=False)
+
+
+def _take_the_source_record(source_path: str) -> None:
+    """Remove the record that sat beside a video `move` has just taken away.
+
+    Derived from the video's stem rather than carried on the plan, and that is safe
+    rather than convenient: `build_catalog` pairs a record with a video **only** when
+    they share a stem, so the stem-derived path is the very record that came with
+    this candidate and not some other one in the folder.
+
+    A failure is logged and nothing else. The clip is safely in the library by this
+    point, and a record left behind is litter that `build_catalog` now reports rather
+    than something worth failing an import over.
+    """
+    record_path = os.path.splitext(source_path)[0] + RECORD_EXTENSION
+    if not os.path.isfile(record_path):
+        return
+    try:
+        os.remove(record_path)
+    except OSError as error:
+        log(f"a moved clip's record could not be removed from the import folder: "
+            f"{record_path} ({error.strerror or error}). Nothing else is wrong with "
+            f"the import; that file can be deleted by hand.")
 
 
 def _sibling_temp(path: str) -> str:

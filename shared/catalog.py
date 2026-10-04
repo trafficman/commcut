@@ -52,6 +52,15 @@ RECORD_SCAN_EXTENSION = RECORD_EXTENSION
 #: they are raised.
 REASON_UNREADABLE = "unreadable"
 REASON_WALK_ERROR = "walk-error"
+#: `CatalogProblem.reason` when a record parsed but has no video beside it.
+#:
+#: Reported rather than dropped silently, and that is a change: the scan used to
+#: `continue` past one. The clip rule is unchanged — it is still not a clip, because
+#: a tag set for a file that is not there is worse than nothing — but a record
+#: nobody can see is a record nobody can delete. `move` used to create these by the
+#: hundred (it took the video and left the record), and a user who deleted a clip by
+#: hand got the same silence.
+REASON_ORPHANED_RECORD = "orphaned-record"
 
 
 @dataclass(frozen=True)
@@ -296,6 +305,13 @@ def build_catalog(
                 continue
             video_path = _sibling_video(record_path, videos)
             if video_path is None:
+                problems.append(CatalogProblem(
+                    relative,
+                    "this record has no video beside it, so it describes nothing. "
+                    "Nothing reads it and nothing will ever clean it up — if the "
+                    "video is gone for good, this file can be deleted.",
+                    reason=REASON_ORPHANED_RECORD,
+                ))
                 continue
             clips.append(CatalogClip(
                 path=video_path,

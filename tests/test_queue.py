@@ -709,6 +709,66 @@ def test_the_value_mesh_is_opened_on_the_same_folder(harness, monkeypatch):
         window.deleteLater()
 
 
+def test_the_report_offers_a_way_back_to_the_menu(harness):
+    """The report is an **ending**, and it did not have one.
+
+    It offered two ways *on* — to the value mesh, or back to unfinished clips — and
+    a user who had just imported everything was left holding the window manager's X.
+    Same button and the same wording as the editor's export summary, because it is
+    the same decision: the work is finished, so go back rather than stay.
+    """
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4")
+
+    window = open_queue("CN/A.mp4")
+    try:
+        window._show_report()
+
+        assert window.ui.buttonMenu.isHidden() is False
+        assert window.ui.buttonMenu.text() == "Back to main menu"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_going_back_to_the_menu_asks_nothing(harness):
+    """Nothing is lost by leaving, so nothing is asked.
+
+    The records written so far stay in `import/`, unfinished clips stay unfinished,
+    and `is_already_done` picks the run back up where it stopped — which is why the
+    button's tooltip says so rather than the press asking about it.
+    """
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4")
+
+    window = open_queue("CN/A.mp4")
+    try:
+        window.on_back_to_menu()
+        assert Recorder.seen == []
+    finally:
+        window._thread = None
+        window.close()
+        window.deleteLater()
+
+
+def test_the_report_hides_it_again_when_the_run_reopens(harness):
+    """Otherwise going back to the clips leaves a menu button on a per-clip screen,
+    where it would close the run the user just resumed."""
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4", "CN/B.mp4")
+    window = open_queue("CN/A.mp4")
+    try:
+        fill_form(window)
+        window.on_next()
+        window.on_reopen_unfinished()
+
+        assert window.ui.buttonMenu.isHidden() is True
+        assert window.ui.buttonImport.isHidden() is True
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_reopening_a_partial_record_keeps_what_was_already_tagged(harness):
     open_queue, root, _ = harness
     partial = {key: value for key, value in REQUIRED.items()

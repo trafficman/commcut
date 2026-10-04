@@ -242,6 +242,7 @@ class QueueWindow(QMainWindow):
         self.ui.buttonPlay.clicked.connect(self.on_play_pause)
         self.ui.buttonValues.clicked.connect(self.on_review_values)
         self.ui.buttonImport.clicked.connect(self.on_import_now)
+        self.ui.buttonMenu.clicked.connect(self.on_back_to_menu)
         # `cursorPositionChanged` rather than a "selection changed" signal,
         # because QPlainTextEdit has none: a selection is a cursor range, and
         # moving either end moves the position. Together with `textChanged` it
@@ -557,6 +558,12 @@ class QueueWindow(QMainWindow):
         self.ui.buttonValues.setVisible(has_values)
         self.ui.buttonImport.setVisible(True)
         self.ui.buttonReopen.setVisible(bool(self.deleted or self.unprobeable))
+        # The report is an **ending**, not a step. Without this the screen offered
+        # only two ways on — to another window, or back to unfinished clips — and a
+        # user who had just imported everything was left holding the window manager's
+        # X. Same button, same wording as the editor's export summary, because it is
+        # the same decision.
+        self.ui.buttonMenu.setVisible(True)
         self._refresh_import_button()
 
     def _has_values_to_review(self) -> bool:
@@ -614,6 +621,7 @@ class QueueWindow(QMainWindow):
         self.ui.textReport.setVisible(False)
         self.ui.buttonImport.setVisible(False)
         self.ui.buttonValues.setVisible(False)
+        self.ui.buttonMenu.setVisible(False)
         self.ui.buttonReopen.setVisible(False)
         self.position = 0
         self._load_current()
@@ -648,6 +656,23 @@ class QueueWindow(QMainWindow):
         self._close_video()
         confirm_and_import(self, self.root, self.library_root,
                            os.path.join(PROJECT_ROOT, "settings.json"))
+
+    def on_back_to_menu(self):
+        """Close this window, and let the shell bring the menu back.
+
+        `close()` rather than `shell().open('menu')`: the menu is **hidden** while
+        another window is up, not closed, so closing the child is what reveals it —
+        and this window's `closeEvent` is what knows whether it still owns a
+        player that must not be destroyed yet.
+
+        Deliberately not a confirmation. Nothing is lost by leaving: the records
+        written so far stay in `import/`, unfinished clips stay unfinished, and
+        `is_already_done` picks the run back up where it stopped. Which is why the
+        button's tooltip says so rather than the press asking about it.
+        """
+        self._close_video()
+        self._stop_probe()
+        self.close()
 
     # -- closing ----------------------------------------------------------
 

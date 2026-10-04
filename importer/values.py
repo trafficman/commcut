@@ -162,6 +162,9 @@ class ValuesWindow(QMainWindow):
         self.library_root = library_root or export_folder()
         self.session = session
         self._intro = ""
+        #: Clips the current plan would rewrite. Read by `on_import_now` so it can
+        #: name what importing without applying would discard.
+        self._pending_clips = 0
 
         self._thread: QThread | None = None
         self._worker: ValueWorker | None = None
@@ -172,6 +175,7 @@ class ValuesWindow(QMainWindow):
         self.ui.buttonDelete.clicked.connect(self.on_delete)
         self.ui.buttonKeep.clicked.connect(self.on_keep)
         self.ui.buttonApply.clicked.connect(self.on_apply)
+        self.ui.buttonImportPlan.clicked.connect(self.on_import_now)
         self.ui.buttonClosePlan.clicked.connect(self.close)
         self.ui.buttonQueue.clicked.connect(self.on_queue)
         self.ui.buttonImport.clicked.connect(self.on_import_now)
@@ -399,9 +403,18 @@ class ValuesWindow(QMainWindow):
         plan = self._plan()
         self.ui.textReport.setPlainText(self._plan_text(plan))
         self.ui.textReport.setVisible(True)
-        self.ui.buttonApply.setVisible(True)
-        self.ui.buttonApply.setEnabled(bool(plan.clips))
+        # **Hidden rather than disabled** when there is nothing to write. A greyed
+        # button on a screen whose text says "nothing needs writing" is a control
+        # that looks broken, and it used to be the only other thing here besides
+        # Close — so a user who had kept every value, read that the clips were ready
+        # to import, and found no way to import them.
+        self.ui.buttonApply.setVisible(bool(plan and plan.clips))
+        self.ui.buttonApply.setEnabled(True)
+        self.ui.buttonImportPlan.setVisible(True)
+        self.ui.buttonImportPlan.setDefault(True)
         self.ui.buttonClosePlan.setVisible(True)
+        #: What Import Now would discard, so the confirmation can name it.
+        self._pending_clips = len(plan.clips) if plan else 0
 
     def _plan(self):
         try:
@@ -464,11 +477,12 @@ class ValuesWindow(QMainWindow):
 
     def _show_done(self, written: int, failures) -> None:
         """After writing: what changed, and whether the Tag Editor is needed."""
-        for widget in (self.ui.textReport, self.ui.buttonApply,
-                       self.ui.buttonClosePlan):
-            widget.setVisible(False)
         self._set_question_enabled(False)
         self._set_answer_row_shown(False)
+        for widget in (self.ui.textReport, self.ui.buttonApply,
+                       self.ui.buttonImportPlan, self.ui.buttonClosePlan):
+            widget.setVisible(False)
+        self._pending_clips = 0
         self.ui.labelQuestion.setText(
             f"{written} record(s) rewritten in {self.root}."
             if written else
@@ -504,7 +518,33 @@ class ValuesWindow(QMainWindow):
         shell().open_safely('queue', root=self.root)
 
     def on_import_now(self) -> None:
-        """Hand the folder to the importer, unchanged."""
+        """Hand the folder to the importer, unchanged.
+
+        Reachable from **both** ending screens, which is the fix for the plan screen
+        being a dead end: it used to offer Apply and Close, and Import Now only
+        appeared after Apply — so a user who had answered every question and decided
+        they did not actually want the changes written had no route to an import at
+        all.
+
+        **Applying is never implied.** Importing under the untranslated values while
+        the answers sit unwritten would put them in the library, where nothing parses
+        a name back into a tag to fix them later (invariant 12). So when there is
+        something to write, importing asks first and names how many records would be
+        left as they are. When there is nothing to write it asks nothing, because
+        there is nothing to discard.
+        """
+        if self._pending_clips and QMessageBox.question(
+            self,
+            "Import without writing these changes?",
+            f"{self._pending_clips} record(s) in {self.root} would be left carrying "
+            f"the values they arrived with, and the {len(self.session.entries())} "
+            f"answer(s) given here would not be written.\n\n"
+            f"Anything already imported cannot be changed this way later — the tags "
+            f"live in the library, not in a name.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
         confirm_and_import(self, self.root, self.library_root,
                            os.path.join(PROJECT_ROOT, "settings.json"))
 

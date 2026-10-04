@@ -298,6 +298,8 @@ flowchart TD
     Part -->|"all tagged"| Values["offer the Tagged Library Mesh"]
 ```
 
+`find_videos` reports `has_record` per clip, and this worker is where that gets used.
+
 ### The safety property, and how it is enforced
 
 > A folder name becomes a tag **only** because a person chose a namespace and a
@@ -655,10 +657,93 @@ consequence shows up later and is caught by `plan_import`'s `DestinationIndex` a
 ## One import screen, two callers
 
 The Tag Editor and the Tagged Library Mesh both end at the same place — every clip in
-`import/` has a record, and the user can import them — so the progress dialog and the
-summary live in `importer/importrun.py:confirm_and_import` and both windows call it.
-Two copies of that screen would drift. It is only presentation; every rule about what
-an import does belongs to `shared/importing.py`, which holds no Qt type.
+`import/` has a record, and the user can import them — so the transfer question, the
+progress dialog and the summary live in `importer/importrun.py:confirm_and_import`
+and both windows call it. Two copies of that screen would drift. It is only
+presentation; every rule about what an import does belongs to `shared/importing.py`,
+which holds no Qt type.
+
+### What happens to the videos: copy, link, or move
+
+The transfer is asked as a **modal, every run**, and **copy is pre-selected every
+run** — not remembered. `shared/importing.py` already fixes copy as the only transfer
+safe to assume, because a cancelled run, a wrong tag or a wrong destination must not
+destroy the user's media; a dialog that remembered the last answer would quietly
+un-fix that on the second import. Each option says **what it does to the folder**
+rather than leaving "move" to be interpreted, and the question comes *before* the
+plan is built, so `move` can never be chosen into an out-of-space failure.
+
+| Transfer | `import/` afterwards | In the library |
+|---|---|---|
+| copy | unchanged | independent copies; deleting one loses nothing else |
+| link | unchanged | hard links; takes no extra room, but deleting one loses both. Not possible across drives or on FAT/exFAT — those fall back to copy, per clip |
+| move | **emptied**, and the folders it emptied are removed | the files themselves |
+
+The summary says which of those happened, because "imported 12 clips" says nothing
+about the folder the user was looking at.
+
+### `move` tidies `import/`, and that deletion is fenced in
+
+A move otherwise leaves the whole staging folder standing there empty, which for a
+folder whose only purpose is to be emptied reads as "it did not work". So `move` also
+takes the record that sat beside the video, and removes the folders the run emptied.
+
+That is the only recursive deletion in the app, so the safety is **structural** — it
+does not depend on the caller being careful, and each rule is pinned in
+`tests/test_import_prune.py`:
+
+- **Only `os.rmdir`, never `rmtree`.** That one choice is the whole defence against
+  deleting a file: `rmdir` succeeds only on a genuinely empty directory and fails
+  atomically otherwise. There is no flag and no condition to get wrong, so a folder
+  that gained something — from a sync client, another commcut, the user — between the
+  move and the cleanup is simply left alone.
+- **Only the directories named**, seeded with the parents of the files *this run
+  moved*. An empty folder the user made on purpose is not in that set and is never
+  touched, however empty it is.
+- **Never past `import/`,** and never `import/` itself. The boundary is
+  `ImportPlan.source_root`, stated by the caller rather than inferred from the
+  candidates; a caller that omits it gets no deletion at all. Membership is tested
+  with `os.path.commonpath`, not a string prefix, because `C:\import-old` starts with
+  `C:\import`.
+- **Never a link,** checked before descending or removing, so a link pointing outside
+  the tree is neither followed into nor deleted.
+- **Retried until nothing more can go.** Two kinds of filler under
+  `import/CN/2000s/` both have to be moved, and whichever leaf is climbed first
+  reaches `2000s` while the other is still there — so its first attempt necessarily
+  fails. A single pass leaves `2000s` and `CN` standing there empty, which is exactly
+  what the cleanup is for. A folder that was non-empty when first tried is retried
+  rather than written off; the loop stops when a pass removes nothing, which is what
+  a folder still holding an un-imported clip guarantees.
+
+The record goes with the video only for `move`. `copy` and `link` leave the video in
+place, so removing its record would delete metadata for a clip that still exists.
+
+### An orphaned record is reported, not ignored
+
+A record with no sibling video is still **not a clip** — a tag set for a file that is
+not there is worse than nothing — but `build_catalog` used to `continue` past one in
+silence. That is how `move` filled `import/` with hundreds of invisible records
+before the rule above existed, and how a user who deletes a clip out from under a
+library got the same silence. It is now a `CatalogProblem` with
+`REASON_ORPHANED_RECORD`, and the two importer windows already display
+`Catalog.problems` grouped by reason.
+
+### The endings
+
+Both windows' last screens offer **Back to main menu**, which closes the window and
+lets the shell bring the still-open menu back — the same button and wording as the
+editor's export summary, because it is the same decision. Leaving is not a
+destructive act and is not confirmed: the records written so far stay in `import/`,
+unfinished clips stay unfinished, and `is_already_done` picks the run back up.
+
+The Tagged Library Mesh's **plan screen is an ending too**, not just a confirmation.
+`Import Now` is offered there, next to Apply. Applying is never implied by it: with
+records still to write, importing asks and names how many would be left carrying the
+values they arrived with, because a tag applied wrongly is fixed by editing the
+library record — nothing parses a name back into a tag (invariant 12). With nothing
+to write there is nothing to discard and it asks nothing. Apply is **hidden** in that
+case rather than disabled; it used to be disabled, which left the screen telling the
+user their clips were ready to import with no control that imported them.
 
 That summary separates the three ways a clip can be left out, because lumping them is
 how a refusal reads as a failure: **already in the library** with the same tags is a

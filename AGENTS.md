@@ -68,9 +68,9 @@ commcut/
 `shared/` in one line each: `environment` (roots, binaries, `mpv_import_context`),
 `session` (the `QApplication` and the one visible window), `version` (the release
 number `packaging/build.py` checks a tag against), `diagnostics`
-(log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, and
-`MpvBridge.shutdown`), `timeline` (editor timeline), `segments` (`SegmentModel`,
-`.cmct`), `sources` (which videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
+(log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, `MpvBridge.shutdown`),
+`timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources` (which
+videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back),
 `mesh` (the Untagged Library Mesh), `values` (the Tagged Library Mesh),
@@ -86,7 +86,7 @@ Per-module detail: [docs/architecture.md](docs/architecture.md).
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
-| [docs/importing.md](docs/importing.md) | the Library Importer's backend: reading somebody else's library, the occupied-destination rule, per-clip skipping, the transfer modes, and why a path can only ever propose a tag |
+| [docs/importing.md](docs/importing.md) | the Library Importer: both meshes and the tag editor, reading somebody else's library, the occupied-destination rule, copy/link/move and what a move deletes, and why a path can only ever propose a tag |
 | [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, what counts as "used" |
 | [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the tag-driven release pipeline |
 | [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |
@@ -192,7 +192,8 @@ diagnose. The linked document has the full reasoning.
     into tags, ever; the Rename Wizard reads the record and rewrites the path.
     The record is published between a successful encode and the commit of the
     video, and it replaces rather than refuses, so `video present ⟹ record
-    present` holds without any reconciliation. →
+    present` holds without any reconciliation. A `move` removes a record only with
+    its video, and a record with no sibling video is reported. →
     [docs/naming-and-organization.md](docs/naming-and-organization.md#the-clip-record)
 13. **The tag vocabulary is advisory; nothing validates a tag against it.**
     `shared/vocabulary.py` records values the user has used and the editor offers
@@ -234,7 +235,6 @@ diagnose. The linked document has the full reasoning.
   moving a file does not force a documentation edit. `tests/test_*.py` is the
   one exception: it is a coverage claim, and it is checked.
 - **Each document opens with a purpose line and an `Applies to:` list** of the
-  source paths it describes, so you can tell whether it is the right one before
-  reading it.
+  source paths it describes, so you can tell whether it is the right one first.
 - **`AGENTS.md` stays under 240 lines.** The ceiling is enforced by
   `tests/test_docs.py`; new detail goes in `docs/`, not here.

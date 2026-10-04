@@ -422,12 +422,96 @@ def test_nothing_is_written_until_every_value_has_an_answer(window_factory,
             "Apply appears only once there is nothing left to ask")
         window.on_keep()
 
-    assert window.ui.buttonApply.isHidden() is False, (
-        "and it appears the moment the last answer is given")
     tags = {clip.relative_path: clip.tag_dict()
             for clip in build_catalog(str(tmp_path / "import")).clips}
     assert tags["Toonami/A.mp4"]["network"] == "CN", (
         "answering a question changes a table, not a file")
+
+
+def test_the_plan_screen_is_an_ending_even_with_nothing_to_write(window_factory):
+    """The dead end this window used to have.
+
+    Answer every value with *keep* and there is nothing for `plan_translation` to
+    do, so Apply had nothing to do either. Apply was therefore disabled, the only
+    remaining button was Close, and the screen's own text said "the clips are ready
+    to import as they are" — an instruction the window provided no way to follow.
+
+    So Import Now is offered on the plan screen, and Apply is **hidden** rather than
+    greyed out: a disabled control on a screen that says there is nothing to do is
+    a control that looks broken.
+    """
+    window = window_factory()
+    answer_everything(window)
+
+    assert window.ui.buttonImportPlan.isHidden() is False, (
+        "the plan screen has to be able to start an import, or a user who kept "
+        "everything has nowhere to go")
+    assert window.ui.buttonClosePlan.isHidden() is False
+    assert window.ui.buttonApply.isHidden() is True, (
+        "and the button that has nothing to do is not merely sitting there "
+        "disabled")
+
+
+def test_applying_is_never_implied_by_importing(window_factory, tmp_path,
+                                                monkeypatch):
+    """The trap the plan screen's Import button could have opened.
+
+    Importing without applying files the clips under the values they currently
+    carry, and nothing parses a name back into a tag afterwards (invariant 12) — so
+    the answers the user just gave would be silently dropped into a library they
+    cannot take back. With something to write, importing asks and names the count.
+    """
+    window = window_factory()
+    answer_everything(window, {("network", "CN"): "Cartoon Network"})
+    assert window._pending_clips == 2
+
+    asked = []
+    answer = {"yes": False}
+
+    def question(_parent, title, message, *_buttons, default=0):
+        asked.append((title, message))
+        return (QMessageBox.StandardButton.Yes if answer["yes"]
+                else QMessageBox.StandardButton.No)
+
+    monkeypatch.setattr(values_module.QMessageBox, "question",
+                        staticmethod(question))
+    calls = []
+    monkeypatch.setattr(values_module, "confirm_and_import",
+                        lambda *args: calls.append(args))
+
+    window.on_import_now()
+
+    assert calls == [], "declining the confirmation must not import"
+    assert asked and "2 record(s)" in asked[0][1], (
+        "and the question has to say what is being left behind")
+    assert "cannot be changed this way later" in asked[0][1]
+
+    answer["yes"] = True
+    window.on_import_now()
+    assert len(calls) == 1
+
+
+def test_importing_with_nothing_pending_asks_nothing(window_factory,
+                                                     monkeypatch):
+    """Nothing to write means nothing to discard, so a confirmation would be a
+    question about nothing — and a dialog the user cannot tell the meaning of is
+    worse than no dialog."""
+    window = window_factory()
+    answer_everything(window)
+    assert window._pending_clips == 0
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("asked about a discard that cannot happen")
+
+    monkeypatch.setattr(values_module.QMessageBox, "question",
+                        staticmethod(refuse))
+    calls = []
+    monkeypatch.setattr(values_module, "confirm_and_import",
+                        lambda *args: calls.append(args))
+
+    window.on_import_now()
+
+    assert len(calls) == 1
 
 
 def test_the_plan_says_what_writing_would_touch(window_factory):

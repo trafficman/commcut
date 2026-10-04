@@ -202,6 +202,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="buttonImportPlan">
+       <property name="toolTip">
+        <string>Import without writing the changes above. Any answer you have just given will not be written, and the clips will be filed under the values they currently hold.</string>
+       </property>
+       <property name="text">
+        <string>Import Now</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="planSpacer">
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>
@@ -219,8 +229,11 @@
        <property name="visible">
         <bool>false</bool>
        </property>
+       <property name="toolTip">
+        <string>Close this window. The records stay as they are in the import folder, so nothing is lost and nothing has to be finished.</string>
+       </property>
        <property name="text">
-        <string>Close</string>
+        <string>Back to main menu</string>
        </property>
       </widget>
      </item>
@@ -275,8 +288,11 @@
        <property name="visible">
         <bool>false</bool>
        </property>
+       <property name="toolTip">
+        <string>Close this window. The records stay as they are in the import folder, so nothing is lost and nothing has to be finished.</string>
+       </property>
        <property name="text">
-        <string>Close</string>
+        <string>Back to main menu</string>
        </property>
       </widget>
      </item>

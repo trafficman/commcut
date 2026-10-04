@@ -8,6 +8,7 @@ import os
 import pytest
 
 from shared.catalog import (
+    REASON_ORPHANED_RECORD,
     REASON_UNREADABLE,
     REASON_WALK_ERROR,
     Catalog,
@@ -98,9 +99,17 @@ def test_a_record_with_a_sibling_video_is_a_clip(tmp_path):
     assert catalog.problems == ()
 
 
-def test_a_record_with_no_video_is_ignored(tmp_path):
-    """The orphan a previous export failure left behind. A scan that turned it
-    into a clip would offer a tag set for a file that is not there."""
+def test_a_record_with_no_video_is_not_a_clip_but_is_reported(tmp_path):
+    """The orphan a previous export failure left behind.
+
+    It is **not** a clip, and that is the part that has not changed: a scan that
+    turned it into one would offer a tag set for a file that is not there.
+
+    It *is* now reported. It used to be dropped silently, which meant a folder could
+    fill with records that nothing would read, delete, or even mention — the state
+    `move` used to leave behind by the hundred, and the state a user gets when they
+    delete a video out from under a library.
+    """
     directory = tmp_path / "Cartoon Network" / "Promo"
     directory.mkdir(parents=True)
     write_record(str(directory / "Orphan.cnfo"), make_record())
@@ -108,7 +117,10 @@ def test_a_record_with_no_video_is_ignored(tmp_path):
     catalog = build_catalog(str(tmp_path))
 
     assert catalog.clips == ()
-    assert catalog.problems == ()
+    assert [problem.reason for problem in catalog.problems] == [
+        REASON_ORPHANED_RECORD]
+    assert "no video beside it" in catalog.problems[0].message
+    assert catalog.problems[0].path == "Cartoon Network/Promo/Orphan.cnfo"
 
 
 def test_a_video_with_no_record_is_ignored(tmp_path):

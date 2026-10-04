@@ -133,10 +133,25 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   planned. Merging two values into one is permitted and reported. The clips it
   leaves unfinished go back through the Tag Editor, which is why that window serves
   both paths. → [importing.md](importing.md#the-tagged-library-mesh)
-- **One import screen** (`importer/importrun.py`): the progress dialog and the
-  summary, called by both windows that end at the import. Refusals, already-present
-  clips and failures are three separate lists, because lumping them is how a refusal
-  reads as a failure.
+- **One import screen** (`importer/importrun.py`): the transfer question, the
+  progress dialog and the summary, called by both windows that end at the import.
+  **copy / link / move is asked as a modal on every run, with copy pre-selected every
+  run** — not remembered, because the backend already fixes copy as the only transfer
+  safe to assume and a remembered answer would quietly un-fix that. `move` is
+  described by what it does to the folder rather than by the word "move", and it
+  takes the source record and the folders it emptied with it. That cleanup is the app's
+  only recursive deletion, so it is `os.rmdir` only — never `rmtree` — over the
+  directories this run moved out of, never past `import/`, never a link; each rule is
+  pinned in `tests/test_import_prune.py` — including that the climb is retried until
+  nothing more can go, so a folder shared by two kinds of filler still comes out. Refusals, already-present clips and failures
+  are three separate lists, and the summary says what the import folder looks like
+  afterwards, because "imported 12 clips" says nothing about it. →
+  [importing.md](importing.md#what-happens-to-the-videos-copy-link-or-move)
+- **Both importer windows end with Back to main menu**, and the Tagged Library Mesh's
+  plan screen offers Import Now beside Apply. Applying is never implied by importing:
+  with records still to write it asks and names how many would be left untranslated,
+  and with nothing to write Apply is hidden rather than disabled. →
+  [importing.md](importing.md#the-endings)
 - **The shared tag form** (`shared/tag_form.py`, `shared/tagform.ui`): one
   widget, promoted into both the editor and the queue, so there is one set of
   dropdown rules in the app rather than two that drift. →
@@ -281,10 +296,6 @@ The full vision in `README.md` has three pieces; two are not started:
 - **Tagging an untagged library without the Untagged Library Mesh.** It reads folder
   names only. Filenames are not parsed, by decision — see
   [importing.md](importing.md#proposals-and-why-they-are-gone).
-- **Choosing a transfer mode.** `plan_import` supports copy, link and move and there
-  is still no screen for the choice: **Import Now** uses the schemes' configured
-  default. Adding the radio buttons means editing `importer/importrun.py` in one
-  place rather than two windows.
 
 ## Known gaps and traps
 
