@@ -118,13 +118,19 @@ OPTIONAL_PAYLOAD_FILES = (
 
 # Folders the app expects next to the executable. import/ and export/ are in
 # APP_FOLDERS in shared/environment.py; temp/ is created on first run and is
-# pure scratch, so it is not shipped.
+# pure scratch, so it is not shipped. export/ is shipped because it is the
+# *default* export root, not because every install uses it -- the user can point
+# commcut anywhere from Settings.
 PLACEHOLDER_FOLDERS = ('import', 'export')
 
 IMPORT_PLACEHOLDER = """\
 This folder is for importing finished clips into your library.
 
 Copy clips here, then run commcut.exe and press "Import".
+
+This is the only folder commcut will move or delete clips out of, and it is
+fixed here on purpose. If you want to choose where your library lives, that is
+the export folder in Settings -- not this one.
 
 If each video has a .cnfo record beside it -- a folder exported from another
 commcut, say -- commcut reads the tags straight out of the records. If they do
@@ -145,6 +151,9 @@ to the export folder.
 EXPORT_PLACEHOLDER = """\
 Named clips are written here, in the folder tree that the folder organization
 scheme in Settings describes. Nothing else lives in this folder.
+
+This is the default. Settings has an "Export Folder" row that accepts any folder
+on this computer, and an empty row means you are back to this one.
 """
 
 # Git LFS pointer files are ~130 bytes of ASCII. A real ffmpeg.exe is over a

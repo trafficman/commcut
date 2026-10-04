@@ -11,7 +11,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Real
 
-from shared.environment import install_root
+from shared import environment
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
@@ -36,8 +36,11 @@ from shared.scheme import canonical_tag_name
 FILE_NAMING_SCHEME_KEY = "file_naming_scheme"
 FOLDER_ORGANIZATION_SCHEME_KEY = "folder_organization_scheme"
 
-#: Folder under the install root that named clips are written to. Fixed for this
-#: alpha, like `shared/sources.py:IMPORT_FOLDER_NAME` beside it.
+#: Where the user chooses to put named clips, when they have chosen. Absent or
+#: blank means the default below.
+EXPORT_FOLDER_KEY = "export_folder"
+
+#: Default folder under the install root that named clips are written to.
 EXPORT_FOLDER_NAME = "export"
 
 REQUIRED_EXPORT_TAG_NAMES: frozenset[str] = frozenset({
@@ -47,6 +50,97 @@ REQUIRED_EXPORT_TAG_NAMES: frozenset[str] = frozenset({
     "time_period",
 })
 OUTPUT_EXTENSION = ".mp4"
+
+
+class ExportSettingsError(ValueError):
+    """Export settings are missing, malformed, or invalid."""
+
+
+class ExportPlanError(ValueError):
+    """The requested batch cannot be exported safely."""
+
+
+def default_export_folder() -> str:
+    """The export root when the user has not chosen one: `export/` beside the app."""
+    return os.path.join(environment.install_root(), EXPORT_FOLDER_NAME)
+
+
+def _overlaps(candidate: str, other: str) -> bool:
+    r"""True when either path contains the other, comparing case as the OS does.
+
+    Both arguments must be absolute and normalized. `normcase` is what makes
+    this correct on Windows, where `C:\CommCut\Import` and `c:\commcut\import`
+    are one folder and would otherwise read as two unrelated ones.
+
+    A `ValueError` from `commonpath` -- different drives, or a relative path
+    mixed with an absolute one -- answers False. Two paths on different drives
+    cannot contain each other, which is the answer being asked for.
+    """
+    left = os.path.normcase(os.path.abspath(candidate))
+    right = os.path.normcase(os.path.abspath(other))
+    try:
+        shared = os.path.commonpath((left, right))
+    except ValueError:
+        return False
+    return shared in (left, right)
+
+
+def export_folder_setting_error(value: str) -> str | None:
+    """Why a typed export folder cannot be used, or None when it can.
+
+    The one implementation of the rules, so the Settings window's save and this
+    module's resolver cannot disagree about which paths are acceptable -- the
+    same reason the scheme fields validate through `compile_filename_scheme`
+    rather than a second copy of the grammar.
+
+    Three rules, in order, each a message written for a person:
+
+    1. absolute -- a relative path would resolve against whatever the working
+       directory happens to be when the export runs, which is not a folder
+       anybody chose
+    2. not `import/`, not inside it, and not containing it
+    3. not an existing file
+
+    A blank value is **not** an error: it is how the user asks for the default,
+    and `export_folder()` reads it that way.
+
+    Writability is deliberately not checked. `_validate_export_root` already
+    accepts a root that does not exist yet as long as its nearest existing
+    ancestor is a directory, and `shared/ffmpeg.py` creates the tree when it
+    writes -- so a chosen folder that has not been created yet is a normal
+    state, and probing it here would refuse something that works. A folder that
+    goes away *after* this returns is caught by `_validate_export_root`, which
+    names the path it could not use.
+    """
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    if not os.path.isabs(candidate):
+        return (
+            "The export folder has to be a full path, not a relative one:\n"
+            f"{candidate}"
+        )
+
+    candidate = os.path.abspath(candidate)
+    import_root = environment.import_folder()
+    if _overlaps(candidate, import_root):
+        return (
+            f"The export folder cannot be the import folder or share it:\n"
+            f"  export: {candidate}\n"
+            f"  import: {import_root}\n\n"
+            f"commcut moves and deletes finished clips out of the import "
+            f"folder, so an export root that overlaps it would write into the "
+            f"one folder the importer is allowed to empty."
+        )
+
+    if os.path.lexists(candidate) and not os.path.isdir(candidate):
+        return (
+            "That is a file, not a folder:\n"
+            f"{candidate}"
+        )
+
+    return None
 
 
 def export_folder() -> str:
@@ -60,19 +154,62 @@ def export_folder() -> str:
     `project_root`, but three spellings of one path is three places for the
     configurable version to be missed in.
 
+    The user's choice lives in `settings.json` under `EXPORT_FOLDER_KEY`. An
+    **absent** key, or one holding an empty string, is `default_export_folder()`.
+
+    **An unusable stored value raises rather than falling back.** Settings
+    refuses to save one, so this is only reachable by hand-editing a file the
+    readers explicitly support editing -- and silently exporting somewhere the
+    user did not choose is worse than refusing: the Importer reads the same
+    folder as its library, so a bad value would have it walking the wrong tree
+    too, with nothing on screen to say so. The message names the key and where
+    to fix it, which is all three of the windows that call this need.
+
+    A key present but not a string is refused rather than read as the default,
+    JSON `null` included: an absent key is how the default is spelled, and a
+    null is a different claim that no writer here ever makes. Reading it as
+    "unset" would make the same file mean two things.
+
+    Not cached. `settings.json` is a few hundred bytes and every caller asks
+    once per window, and a cached answer would go stale the moment the user
+    changed the setting in the window they are about to replace.
+
+    The `environment` module is imported rather than its three functions bound
+    individually, because all three read `install_root()` and a caller -- or a
+    test -- that redirected one binding but not the others would resolve the
+    default export folder against one root and the settings file against
+    another, which is the half-applied answer this function exists to prevent.
+
     `plan_export` still takes the root as an argument: a caller that wants to
-    plan a batch somewhere other than the default should say so. This is the
-    default they get when they do not.
+    plan a batch somewhere other than the configured one should say so. This is
+    the default they get when they do not.
     """
-    return os.path.join(install_root(), EXPORT_FOLDER_NAME)
+    path = environment.settings_path()
+    settings = _read_settings(path)
 
+    if EXPORT_FOLDER_KEY not in settings:
+        return default_export_folder()
 
-class ExportSettingsError(ValueError):
-    """Export settings are missing, malformed, or invalid."""
+    stored = settings[EXPORT_FOLDER_KEY]
+    if not isinstance(stored, str):
+        raise ExportSettingsError(
+            f"{EXPORT_FOLDER_KEY} must be a string, not "
+            f"{type(stored).__name__}.\n\n"
+            f"Open Settings and choose an export folder, or delete the "
+            f"{EXPORT_FOLDER_KEY} line from {path}."
+        )
 
+    error = export_folder_setting_error(stored)
+    if error is not None:
+        raise ExportSettingsError(
+            f"{error}\n\nThe {EXPORT_FOLDER_KEY} setting in "
+            f"{path} is not usable. Open Settings and choose an export "
+            f"folder, or delete that line to go back to the default."
+        )
 
-class ExportPlanError(ValueError):
-    """The requested batch cannot be exported safely."""
+    if not stored.strip():
+        return default_export_folder()
+    return os.path.abspath(stored.strip())
 
 
 @dataclass(frozen=True)
@@ -122,16 +259,23 @@ class ExportPlan:
 # Settings snapshot
 # ---------------------------------------------------------------------------
 
-def load_export_schemes(settings_path: str) -> ExportSchemes:
-    """Read and validate one immutable scheme snapshot for a complete export."""
+def _read_settings(settings_path: str) -> dict:
+    """Read settings.json into a dict, or {} when there is no file yet.
+
+    The one reader behind both `load_export_schemes` and `export_folder`, so the
+    two cannot disagree about what a file means -- and so making the export root
+    configurable does not add a *third* reader to a file that already has two
+    independent ones (the other is `SettingsWindow._read_settings`, which has
+    its own wording because its messages are logged and shown).
+
+    `utf-8-sig` for the same reason as that reader: a byte-order mark on a
+    hand-edited settings.json is not an error the user should be told about.
+    """
     try:
-        # utf-8-sig for the same reason as SettingsWindow._read_settings: a
-        # byte-order mark on a hand-edited settings.json is not an error the
-        # user should be told about, and both readers have to agree.
         with open(settings_path, encoding="utf-8-sig") as settings_file:
             settings = json.load(settings_file)
     except FileNotFoundError:
-        settings = {}
+        return {}
     except RecursionError as error:
         raise ExportSettingsError("Settings nesting is too deep") from error
     except (OSError, ValueError) as error:
@@ -139,6 +283,12 @@ def load_export_schemes(settings_path: str) -> ExportSchemes:
 
     if not isinstance(settings, dict):
         raise ExportSettingsError("settings.json must contain a JSON object")
+    return settings
+
+
+def load_export_schemes(settings_path: str) -> ExportSchemes:
+    """Read and validate one immutable scheme snapshot for a complete export."""
+    settings = _read_settings(settings_path)
 
     file_scheme = settings.get(FILE_NAMING_SCHEME_KEY, DEFAULT_FILE_NAMING_SCHEME)
     folder_scheme = settings.get(FOLDER_ORGANIZATION_SCHEME_KEY, DEFAULT_FOLDER_SCHEME)

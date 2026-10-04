@@ -2,16 +2,17 @@
 
 The file naming scheme, the folder organization scheme, the parser and
 sanitation policy behind both, the named-export pipeline that turns a staged
-segment into a file on disk, and the Settings window that edits the two
-schemes.
+segment into a file on disk, the export folder the pipeline writes to, and the
+Settings window that edits all three.
 
 Applies to: `shared/scheme.py`, `shared/naming.py`, `shared/paths.py`,
 `shared/exporting.py`, `shared/ffmpeg.py`, `shared/records.py`,
-`shared/catalog.py`, `shared/importing.py`, `settings/settings.py`,
-`settings/settingswindow.ui`.
+`shared/catalog.py`, `shared/importing.py`, `shared/environment.py`,
+`settings/settings.py`, `settings/settingswindow.ui`.
 
 Related: [segment-model.md](segment-model.md) (the tags and the required-field
-rule), [packaging.md](packaging.md) (the export root beside the exe).
+rule), [packaging.md](packaging.md) (the default export root beside the exe),
+[importing.md](importing.md) (why `import/` is fixed).
 
 ## File Naming Scheme
 
@@ -503,6 +504,8 @@ editor for folder schemes:
 
 - `file_naming_scheme` defaults to the README file template when absent.
 - `folder_organization_scheme` defaults to the folder template above.
+- `export_folder` defaults to `export/` beside the app when the key is absent;
+  an empty value means the same thing. See "Settings Scheme UI" below.
 - Both fields load independently; a malformed stored folder value disables
   only the folder editor and preserves the rest of the JSON object.
 - File and folder updates are written together through one `QSaveFile`, so a
@@ -534,14 +537,57 @@ editor for folder schemes:
   dropping a construct does. The window is intentionally compact (780x515), so
   the panels scroll; `test_help_panels_lay_out_and_can_scroll` guards that
   each panel lays out and can still reach text taller than itself.
-- Import/Export directory fields and Browse buttons are present in the UI but
-  **deliberately locked**: for this alpha both folders are fixed beside
-  `commcut.exe`, and `SettingsWindow._lock_folder_choices()` disables the four
-  widgets and marks the two labels "(coming soon)" rather than removing them,
-  so a tester can see they are not wired yet. A **source video** is not one of
-  these choices — the main menu's file dialog takes any video from any folder, so
-  there is nothing to configure. `import/` is where the Library Importer will
-  read from.
+- The **export folder** is a third field, `export_folder`, and it is
+  configurable: an editable `lineEditExport` plus a `fileBrowseExport` button
+  that opens a **native** `QFileDialog` in `Directory` mode with `ShowDirsOnly`
+  — for the same reasons as `mainwindow.choose_source_video`, and because a
+  folder picker is what stops a mistyped path from silently creating a new empty
+  folder at export time.
+- **An empty field means the default**, `export/` beside the app, and it is
+  stored as an **absent key** rather than an empty string, so the file reads the
+  same way to a hand editor as it does to this app. `shared/exporting.py:export_folder`
+  is the one owner of the resolution and is not cached; the window stores the
+  `os.path.abspath` of whatever is in the field, so one folder has one spelling
+  on disk.
+- The save refuses the whole set atomically when the folder is unusable, exactly
+  as it does for a scheme, and the rules live in
+  `shared/exporting.py:export_folder_setting_error` so the window and the
+  resolver cannot disagree. Three of them: the path must be absolute; it must not
+  be `import/`, inside it, or contain it; and it must not be an existing file.
+  The overlap check compares `os.path.normcase` on both sides, because
+  `C:\CommCut\Import` and `c:\commcut\import` are one folder on Windows.
+- Writability is **not** checked. `shared/exporting.py:_validate_export_root`
+  already accepts a root that does not exist yet as long as its nearest existing
+  ancestor is a directory, and `shared/ffmpeg.py` creates the tree when it
+  writes, so a chosen folder that has not been made yet is a normal state and
+  probing it here would refuse something that works. A folder that goes away
+  *after* the save is caught by `_validate_export_root`, which names the path.
+- **An unusable stored value raises rather than falling back.** Settings refuses
+  to save one, so it is only reachable by hand-editing a file the readers
+  explicitly support editing, and `export_folder()` reports it with the key and
+  the fix in the message. That is the editor refusing to start an export, the
+  Settings sync button reporting it, and `Shell.open_safely` reporting the three
+  importer windows — all four read the same message rather than rewording it.
+- An **unchanged** unusable value does not block a save, the same rule the
+  scheme fields follow: only a user-edited field blocks the write, and an
+  unchanged legacy value is preserved. Otherwise a folder left behind by a
+  stricter past would make the naming schemes unsavable, which for a user who
+  has never heard of this setting is the only way out of it.
+- A stored value that is **present but not a string** — including a JSON
+  `null` — disables both widgets and warns rather than being read as the
+  default, because there is nothing to put in a text box and an absent key is
+  already how the default is spelled. A present-but-invalid *string* is shown
+  in the field instead, so the user can fix a hand edit here.
+- The **import folder has no row at all.** It is not a locked row, a disabled
+  row, or a coming-soon row: `import/` is fixed beside the app because the
+  Library Importer *moves and deletes* from it, so the one folder this app
+  destroys stays inside the program root where a single mis-click cannot reach
+  it. A **source video** is not a folder choice either — the main menu's file
+  dialog takes any video from anywhere.
+  `tests/test_settings.py::test_the_import_folder_has_no_row_and_the_export_folder_does`
+  guards both halves, because the mistake is symmetric: a leftover disabled row
+  reads as "coming soon", and a re-enabled export row in the `.ui` alone would
+  imply a setting nothing saves.
 
 ## Coverage
 
@@ -552,8 +598,10 @@ it is published), `tests/test_catalog.py` (the library walk: what a clip is, wha
 reported, and the record-over-filename guard), `tests/test_importing.py` (the
 Library Importer's backend, including that an imported clip lands where an
 exported one would), `tests/test_settings.py` (the window, previews, atomic save,
-the help panels, and the vocabulary sync button), `tests/test_exporting.py`
+the help panels, the export folder, and the vocabulary sync button),
+`tests/test_exporting.py`
 (settings, planning, preflight, resume skips, the record's destination, and the
-export folder), `tests/test_ffmpeg.py` (plan execution, progress, cancel, partial
+export folder and its rules), `tests/test_ffmpeg.py` (plan execution, progress, cancel, partial
 failures, and the record beside each clip), and `tests/test_editor_export.py` (the
-worker, the progress dialog, cancel, resume, and closing mid-run).
+worker, the progress dialog, cancel, resume, closing mid-run, and that the batch
+goes to the configured export folder).

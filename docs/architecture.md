@@ -25,8 +25,9 @@ commcut/
 │                            # macOS and Linux resolve from the system instead.
 ├── assets/                  # commcut_banner.png on the loading splash, and the
 │                            # commcut_icon.{png,ico} every window inherits
-├── import/                  # Finished clips to import; not source videos
-├── export/                  # Named clips are written here
+├── import/                  # Finished clips to import; not source videos, and
+│                            # not configurable — the one folder commcut deletes from
+├── export/                  # The *default* export root; Settings can move it
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
 ├── commcut.log              # Written beside the exe (override with COMMCUT_LOG)
 ├── install_deps.sh          # Source-release installer: a .venv in the install
@@ -61,7 +62,7 @@ commcut/
 │   ├── mpv.py               # MpvBridge + its shutdown, create_mpv_player, scan_keyframes
 │   ├── timeline.py          # TimelineWidget (segments, zoom/scroll)
 │   ├── segments.py          # SegmentModel + .cmct persistence, probe_duration
-│   ├── sources.py           # what may be opened, and the import/ folder
+│   ├── sources.py           # what may be opened (a source can be anywhere)
 │   ├── tag_form.py          # the ten tag fields, shared by the editor and the queue
 │   ├── tagform.ui           # their layout, promoted into both windows
 │   ├── ffmpeg.py            # clip_to_temp, export_named_model, execute_export_plan
@@ -391,7 +392,11 @@ The shared modules are:
 
 - `shared/environment.py` — the two roots (`resource_root()` for bundled
   read-only data, `install_root()` for user data and `bin/<os>/`),
-  `resource_path(*parts)`, `setup_environment(script_path)` (sys.path + making
+  `resource_path(*parts)`, and the writable folders and files that hang off the
+  install root: `settings_path()`, `import_folder()` and `IMPORT_FOLDER_NAME`
+  (fixed, because the importer deletes from it), `APP_FOLDERS` /
+  `ensure_app_folders()`,
+  `setup_environment(script_path)` (sys.path + making
   the bundled binaries discoverable), `is_frozen()`, `bin_dir()` /
   `get_binary_path(name)` (per-platform resolution: `bin/<os>/` first, then the
   system prefixes on platforms that do not bundle),   `resolve_mpv_library()` / `load_mpv_library()` / `mpv_import_context()` (resolve
@@ -400,6 +405,14 @@ The shared modules are:
   `ensure_app_folders()`. This is the cross-platform binary resolution that
   used to live in `core.py`. It used to also own `launch_command()` and
   `WINDOW_NAMES`; both went with the process model.
+
+  `import_folder()` lives here rather than in `shared/sources.py` (which used to
+  carry a dead second copy) or `shared/importing.py` (which carried the live
+  one) because `shared/exporting.py` must compare the export root against it and
+  `shared/importing.py` imports *from* `shared/exporting.py` — either of those
+  would be a cycle. `settings_path()` is here for the same reason
+  `import_folder()` is: it is the one owner of a path under the install root,
+  and four modules used to spell it out themselves.
 - `shared/session.py` — the `Shell`: the one `QApplication`'s single visible
   window, the `_BUILDERS` registry mapping a window name to its module and
   builder, `OpenInstead` for a builder that declines, and `shell()` /
@@ -425,8 +438,8 @@ The shared modules are:
   zoom mode (`ZOOM_FIT` / `ZOOM_SEGMENT`) that survives a resize.
  - `shared/segments.py` — `SegmentModel` + `.cmct` persistence
    (`sidecar_path`, `probe_duration`). See [segment-model.md](segment-model.md).
- - `shared/sources.py` — which videos may be opened, above, plus `import_folder()`
-  for the Library Importer.
+ - `shared/sources.py` — which videos may be opened, above. It does **not**
+  answer where `import/` is; that is `shared/environment.py:import_folder`.
   - `shared/ffmpeg.py` — ffmpeg helpers: `clip_to_temp` (the scanner's preview),
     the named-export executor (`export_named_model`, `execute_export_plan`,
     `ExportExecutionResult`, `ExportClipFailure`, `ExportCancelled`), and the
@@ -449,14 +462,22 @@ The shared modules are:
    display-cased relative components; `format_folder_components()` is for
    previews. Portable component sanitation also lives here for reuse by
    filename export.
- - `shared/exporting.py` — non-Qt settings snapshot and pure named-export
-   planner. It validates the segment model and every destination, enforces the
-   four required tags, compiles both schemes, materializes session tag locks,
-   and rejects duplicate, existing, case-variant, reparse-point, traversal,
-   and byte-limit conflicts before ffmpeg starts. It also owns
-   **`export_folder()`**, the single place the export root is spelled out —
-   `plan_export` still takes the root as an argument, and that function is the
-   default for a caller that does not.
+- `shared/exporting.py` — non-Qt settings snapshot and pure named-export
+  planner. It validates the segment model and every destination, enforces the
+  four required tags, compiles both schemes, materializes session tag locks,
+  and rejects duplicate, existing, case-variant, reparse-point, traversal,
+  and byte-limit conflicts before ffmpeg starts. It also owns
+  **`export_folder()`**, the single place the export root is spelled out —
+  `plan_export` still takes the root as an argument, and that function is the
+  default for a caller that does not. That root is now a *setting*
+  (`EXPORT_FOLDER_KEY` in `settings.json`, defaulting to `export/` beside the
+  app), read through `shared/environment.py:settings_path()` and validated by
+  `export_folder_setting_error()`, which the Settings window calls too. It is
+  not cached: the file is tiny, every caller asks once per window, and a cached
+  answer would go stale the moment the user changed it in the window they are
+  about to replace. See
+  [naming-and-organization.md](naming-and-organization.md#settings-scheme-ui).
+
  - `shared/catalog.py` — the walk that reads the export library back:
    `build_catalog()` returns the clips it holds (a record with a sibling video),
    the records it could not read (each with a `reason` code, so a screen can group

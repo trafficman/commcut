@@ -160,9 +160,15 @@ the app rather than a wrapper holding it open.
 ### Where the app's data goes
 
 Into the extracted folder, because `install_root()` is the project root when
-unfrozen: `settings.json`, `vocabulary.json`, `import/`, `export/`, `temp/` and
-`commcut.log`. That folder must be writable, and it is the whole reason a source
-install works where a frozen `.app` would not — see the next section.
+unfrozen: `settings.json`, `vocabulary.json`, `import/`, the default `export/`,
+`temp/` and `commcut.log`. That folder must be writable, and it is the whole
+reason a source install works where a frozen `.app` would not — see the next
+section.
+
+`export/` is only the *default*: Settings has an **Export Folder** row that takes
+any folder on the machine, and leaving it empty goes back to the one beside the
+app. `import/` is fixed here, and is not a setting — see
+[naming-and-organization.md](naming-and-organization.md#settings-scheme-ui).
 
 ## What "not packaged" means here
 
@@ -398,24 +404,25 @@ ffmpeg -hide_banner -encoders | grep libx264
 
 ## Case-insensitive filesystems
 
-`shared/sources._is_inside` is the traversal defense on the import folder, and
-its containment comparison is a string comparison — which is case-sensitive,
-while NTFS and APFS are case-insensitive by default. The same command-line
-argument would therefore be accepted on Windows and refused on a Mac, for a file
-the OS would plainly open, and the error would tell the user to put the video
-somewhere it already is.
+APFS is case-insensitive by default and NTFS is too, so a case-sensitive string
+comparison is wrong on two of the three platforms this app runs on. There used to
+be a traversal defense on the import folder here, and it is gone with the
+containment rule: a source video can be picked from anywhere, so nothing about
+this app depends on a source sitting in a particular folder.
 
-The volume is asked directly (`os.path.samefile(folder, folder.casefold())`),
-and only when it says it is case-insensitive is the comparison retried folded.
-That direction is the one that could turn a consistency fix into a traversal
-hole — on a case-*sensitive* filesystem, folding unconditionally would accept
-paths that really are outside the folder — so on a volume that reports otherwise
-no fold happens at all.
+Two comparisons remain, and they differ on purpose:
 
-`shared/paths.py` needed nothing here: `normalized_validation_key` already
-applies `unicodedata.normalize("NFC", ...)` and then `casefold()`, so the
-case-insensitive APFS default and HFS+ NFD-vs-NFC do not affect export
-collision checks.
+- `shared/exporting.py:_overlaps` — whether the chosen export root overlaps
+  `import/`. It runs `os.path.normcase` on **both** paths before
+  `os.path.commonpath`, which is what makes `C:\CommCut\Import` and
+  `c:\commcut\import` one folder rather than two unrelated ones. This direction
+  is the safe one to fold: a case-*sensitive* filesystem would only refuse a
+  pair that a case-insensitive one considers the same folder, so the worst case
+  is a needless refusal rather than a hole.
+- `shared/paths.py` needed nothing here: `normalized_validation_key` already
+  applies `unicodedata.normalize("NFC", ...)` and then `casefold()`, so the
+  case-insensitive APFS default and HFS+ NFD-vs-NFC do not affect export
+  collision checks.
 
 ## What has not been verified
 

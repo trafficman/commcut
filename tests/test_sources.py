@@ -10,6 +10,10 @@ The folder-containment rule this file used to cover is gone with the picker, and
 its tests went with it rather than being converted: `tests/test_sources.py` used
 to pin a traversal defence, and with every path outside `import/` now legal there
 was no rule left for it to defend.
+
+`import/` itself moved out of here too. It used to be answered by a dead second
+copy of `shared/environment.py:import_folder`, which nothing but a test called;
+the roots it depends on are asserted in `tests/test_frozen_mode.py`.
 """
 
 import os
@@ -19,7 +23,6 @@ import pytest
 import shared.sources as sources
 from shared.sources import (
     VIDEO_EXTENSIONS,
-    import_folder,
     is_video_file,
     validate_source_video,
 )
@@ -50,12 +53,6 @@ def test_the_extension_list_is_generous_on_purpose():
     which container their compilation rip happens to be in."""
     for expected in (".mp4", ".mkv", ".mov", ".avi", ".m2ts", ".ts", ".vob"):
         assert expected in VIDEO_EXTENSIONS
-
-
-def test_import_folder_is_under_the_install_root():
-    """Still resolved, because the Library Importer reads it — even though
-    nothing opens a source video from there any more."""
-    assert import_folder().endswith(os.path.join("", "import"))
 
 
 # ---------------------------------------------------------------------------

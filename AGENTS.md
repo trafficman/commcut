@@ -73,12 +73,12 @@ commcut/
 number the two build scripts check a tag against), `diagnostics`
 (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, `MpvBridge.shutdown`),
 `timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources` (which
-videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
+videos may be opened), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
 (the `.cnfo`), `vocabulary`, `mesh`, `values`, `tag_form`, `splash`, `icons`,
-`ui_loader`.
-Per-module detail: [docs/architecture.md](docs/architecture.md).
+`ui_loader`. `environment` also owns `settings_path()` and the fixed
+`import_folder()`. Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
@@ -88,7 +88,7 @@ Per-module detail: [docs/architecture.md](docs/architecture.md).
 | [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, the application icon, diagnostics |
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
-| [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
+| [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI and the export folder |
 | [docs/importing.md](docs/importing.md) | the Library Importer: both meshes and the tag editor, reading somebody else's library, the occupied-destination rule, copy/link/move and what a move deletes, and why a path can only ever propose a tag |
 | [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, who records a confirmed tag, what the sync counts as "used" |
 | [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the two tag-driven release pipelines |
@@ -108,9 +108,10 @@ diagnose. The linked document has the full reasoning.
    → [docs/packaging.md](docs/packaging.md)
 2. **Frozen has two roots.** `resource_root()` is the read-only payload;
    `install_root()` is beside the exe and holds `bin/<os>/`, `settings.json`,
-   `import/`, `export/`, `temp/`, `commcut.log`. Nothing that must survive goes
-   in the payload. Unfrozen they are the same folder, so a source install on
-   macOS or Linux writes to the clone. → [docs/packaging.md](docs/packaging.md)
+   `import/`, the *default* `export/`, `temp/`, `commcut.log`. Nothing that must
+   survive goes in the payload. Unfrozen they are the same folder, so a source
+   install on macOS or Linux writes to the clone.
+   → [docs/packaging.md](docs/packaging.md)
 3. **The shell is the only way to open a window, the source path is a
    constructor argument, and exactly one window is visible at a time.**
    `shared/session.py:Shell.open(name, **kwargs)` builds a window through the
@@ -173,8 +174,16 @@ diagnose. The linked document has the full reasoning.
    else. → [docs/architecture.md](docs/architecture.md)
 9. **One owner per rule.** Required tags live in
    `shared/exporting.py:missing_required_tags`; the filename and folder
-   grammars live in `shared/naming.py` and `shared/paths.py`. Never add a second
-   implementation of a rule that already has one. →
+   grammars live in `shared/naming.py` and `shared/paths.py`; `settings.json`'s
+   own path is `shared/environment.py:settings_path`; the import folder is
+   `shared/environment.py:import_folder` and the export root is
+   `shared/exporting.py:export_folder`, whose *rules* are
+   `export_folder_setting_error`. Never add a second implementation of a rule
+   that already has one — and never a second spelling of a path.
+   `import/` is **fixed and not configurable**, because the importer moves and
+   deletes from it, so the one folder this app destroys stays inside the program
+   root; `export_folder_setting_error` therefore refuses an export root that is
+   `import/`, inside it, or contains it, and Settings refuses to save one. →
    [docs/naming-and-organization.md](docs/naming-and-organization.md)
 10. **Editing writes are all-or-nothing.** Stage and Export refuse rather than
     persist an incomplete record, and ignored segments are exempt from the

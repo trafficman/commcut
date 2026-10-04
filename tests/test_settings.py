@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QThread
 from PySide6.QtWidgets import QApplication
 
 import settings.settings as settings_module
+from shared import environment, exporting
 from shared.paths import DEFAULT_FOLDER_SCHEME
 from shared.records import ClipRecord, write_record
 from shared.vocabulary import (
@@ -43,17 +44,25 @@ def qapp():
 
 @pytest.fixture
 def window_factory(qapp, monkeypatch, tmp_path):
-    """Create isolated Settings windows backed by temporary settings files."""
+    """Create isolated Settings windows backed by temporary settings files.
+
+    Both readers of settings.json are pointed at one temporary file. The window
+    resolves it through its own `settings_path`, and `export_folder()` resolves
+    it through `environment.settings_path()`, which joins the same patched
+    `install_root` -- so redirecting that one root is enough, and there is no
+    way for the window to save to one file while the resolver reads another.
+    """
     windows = []
 
     def create(settings=None, encoding="utf-8"):
-        settings_path = tmp_path / "settings.json"
+        path = tmp_path / "settings.json"
         if settings is not None:
-            settings_path.write_text(
+            path.write_text(
                 json.dumps(settings, ensure_ascii=False),
                 encoding=encoding,
             )
-        monkeypatch.setattr(settings_module, "PROJECT_ROOT", str(tmp_path))
+        monkeypatch.setattr(environment, "install_root", lambda: str(tmp_path))
+        monkeypatch.setattr(settings_module, "settings_path", lambda: str(path))
         window = settings_module.SettingsWindow()
         windows.append(window)
         qapp.processEvents()
@@ -132,7 +141,7 @@ def test_fresh_install_loads_and_saves_both_defaults(window_factory, tmp_path):
 
     assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
     assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
-    assert window.save_schemes()
+    assert window.save_settings()
 
     saved = read_saved_settings(tmp_path)
     assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
@@ -280,14 +289,7 @@ def test_malformed_stored_folder_scheme_disables_only_folder_editor(
     window_factory,
     monkeypatch,
 ):
-    messages = []
-
-    class MessageBoxRecorder:
-        @staticmethod
-        def warning(parent, title, message):
-            messages.append((title, message))
-
-    monkeypatch.setattr(settings_module, "QMessageBox", MessageBoxRecorder)
+    messages = warning_recorder(monkeypatch)
     window = window_factory(base_settings(
         **{settings_module.FOLDER_ORGANIZATION_SCHEME_KEY: "{network}/{type}"}
     ))
@@ -305,7 +307,7 @@ def test_malformed_stored_folder_scheme_disables_only_folder_editor(
 def test_save_persists_default_folder_key_when_missing(window_factory, tmp_path):
     window = window_factory(base_settings())
 
-    assert window.save_schemes()
+    assert window.save_settings()
 
     saved = read_saved_settings(tmp_path)
     assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
@@ -323,7 +325,7 @@ def test_save_updates_both_schemes_and_preserves_unrelated_settings(
     window.ui.lineEditFileScheme.setText(custom_file_scheme)
     window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
 
-    assert window.save_schemes()
+    assert window.save_settings()
 
     saved = read_saved_settings(tmp_path)
     assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == custom_file_scheme
@@ -344,7 +346,7 @@ def test_unchanged_invalid_legacy_file_value_does_not_block_folder_save(
 
     window.ui.lineEditFolderScheme.setText(custom_folder_scheme)
 
-    assert window.save_schemes()
+    assert window.save_settings()
 
     saved = read_saved_settings(tmp_path)
     assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == stored_file_scheme
@@ -352,20 +354,13 @@ def test_unchanged_invalid_legacy_file_value_does_not_block_folder_save(
 
 
 def test_invalid_folder_scheme_blocks_the_atomic_save(window_factory, tmp_path, monkeypatch):
-    messages = []
-
-    class MessageBoxRecorder:
-        @staticmethod
-        def warning(parent, title, message):
-            messages.append((title, message))
-
-    monkeypatch.setattr(settings_module, "QMessageBox", MessageBoxRecorder)
+    messages = warning_recorder(monkeypatch)
     window = window_factory(base_settings())
 
     window.ui.lineEditFileScheme.setText("{title} changed")
     window.ui.lineEditFolderScheme.setText("{network}/{type}")
 
-    assert not window.save_schemes()
+    assert not window.save_settings()
 
     saved = read_saved_settings(tmp_path)
     assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
@@ -395,6 +390,342 @@ def test_window_manager_close_restores_unsaved_schemes(window_factory):
 
     assert window.ui.lineEditFileScheme.text() == VALID_FILE_SCHEME
     assert window.ui.lineEditFolderScheme.text() == DEFAULT_FOLDER_SCHEME
+
+
+# ---------------------------------------------------------------------------
+# The export folder
+# ---------------------------------------------------------------------------
+
+def warning_recorder(monkeypatch):
+    """Replace QMessageBox with one that records what the window shows.
+
+    Returns the list of `(title, message)` pairs. A class with a staticmethod
+    rather than an instance, because the window calls `QMessageBox.warning(...)`
+    on whatever the name refers to.
+    """
+    recorded = []
+
+    class Recorder:
+        @staticmethod
+        def warning(parent, title, message):
+            recorded.append((title, message))
+
+    monkeypatch.setattr(settings_module, "QMessageBox", Recorder)
+    return recorded
+
+
+def test_the_import_folder_has_no_row_and_the_export_folder_does(window_factory):
+    """The import folder is not configurable at all -- commcut moves and deletes
+    from it, so it stays inside the program root -- and the export folder is.
+
+    Both halves are asserted together because the mistake is symmetric: leaving
+    a disabled import row in place reads as "coming soon", and a re-enabled
+    export row in the .ui alone would imply a setting that nothing saves.
+    """
+    window = window_factory(base_settings())
+
+    for gone in ("lineEditImport", "fileBrowseImport", "labelImport"):
+        assert not hasattr(window.ui, gone), gone
+    assert window.ui.labelExport.text() == "Export Folder"
+    assert window.ui.lineEditExport.isEnabled()
+    assert not window.ui.lineEditExport.isReadOnly()
+    assert window.ui.fileBrowseExport.isEnabled()
+
+
+def test_the_picker_is_a_native_folder_dialog(qapp, monkeypatch, tmp_path):
+    """Native for the same reason as the source-video picker: the OS dialog is
+    better and it remembers the folder the user was last in. And a *folder*
+    picker -- `ShowDirsOnly` is what stops it offering files as answers, which
+    would then have to be refused by the save for no reason.
+
+    Recorded in `exec`, not `__init`: everything the caller configures happens
+    between the two, so reading it at construction would assert the defaults.
+    """
+    from PySide6.QtWidgets import QFileDialog
+
+    recorded = {}
+
+    class RecordingDialog(QFileDialog):
+        def exec(self):
+            recorded["options"] = self.options()
+            recorded["file_mode"] = self.fileMode()
+            return 0
+
+    monkeypatch.setattr(settings_module, "QFileDialog", RecordingDialog)
+
+    assert settings_module.choose_export_folder() is None
+    assert recorded["file_mode"] == QFileDialog.Directory
+    assert recorded["options"] & QFileDialog.ShowDirsOnly
+    assert not recorded["options"] & QFileDialog.DontUseNativeDialog
+
+
+def test_the_picker_opens_in_the_folder_already_chosen(qapp, monkeypatch, tmp_path):
+    """Not a global state store -- it is the value being edited, handed in by
+    the caller -- so opening where the user already is costs nothing.
+
+    Recorded as the call rather than read back off the widget: `setDirectory`
+    is the contract, and the resolved path a QFileDialog reports before it is
+    shown depends on the platform dialog behind it.
+    """
+    from PySide6.QtWidgets import QFileDialog
+
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    recorded = {}
+
+    class RecordingDialog(QFileDialog):
+        def setDirectory(self, path):
+            recorded["start_at"] = path
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(settings_module, "QFileDialog", RecordingDialog)
+
+    settings_module.choose_export_folder(start_at=str(chosen))
+
+    assert recorded["start_at"] == str(chosen)
+
+
+def test_a_start_folder_that_is_not_there_is_ignored(qapp, monkeypatch, tmp_path):
+    """The export folder may name a drive that is not mounted, or a folder the
+    user has since deleted. Passing that to the dialog would open it on the
+    wrong folder, which is worse than opening on the platform's own idea of
+    where it was."""
+    from PySide6.QtWidgets import QFileDialog
+
+    recorded = {}
+
+    class RecordingDialog(QFileDialog):
+        def setDirectory(self, path):
+            recorded["start_at"] = path
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(settings_module, "QFileDialog", RecordingDialog)
+
+    assert settings_module.choose_export_folder(
+        start_at=str(tmp_path / "unplugged")) is None
+    assert "start_at" not in recorded
+
+
+def test_a_cancelled_picker_changes_nothing(window_factory, monkeypatch, tmp_path):
+    window = window_factory(base_settings(export_folder=str(tmp_path / "clips")))
+    monkeypatch.setattr(
+        settings_module, "choose_export_folder", lambda *a, **k: None)
+
+    window.browse_for_export_folder()
+
+    assert window.ui.lineEditExport.text() == str(tmp_path / "clips")
+
+
+def test_browse_puts_the_chosen_folder_in_the_field(window_factory, monkeypatch,
+                                                    tmp_path):
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings())
+    monkeypatch.setattr(
+        settings_module, "choose_export_folder", lambda *a, **k: str(chosen))
+
+    window.browse_for_export_folder()
+
+    assert window.ui.lineEditExport.text() == str(chosen)
+
+
+def test_the_chosen_folder_is_saved_and_the_resolver_agrees(window_factory,
+                                                            tmp_path):
+    """The window's save and `export_folder()` are separate code paths reading
+    the same file, so the assertion is that they land on one answer rather than
+    that the window wrote something."""
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings())
+
+    window.ui.lineEditExport.setText(str(chosen))
+    assert window.save_settings()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.EXPORT_FOLDER_KEY] == str(chosen)
+    assert exporting.export_folder() == str(chosen)
+
+
+def test_the_stored_path_is_canonicalized_on_save(window_factory, tmp_path):
+    """One spelling in the file, so two settings files cannot claim different
+    things about the same folder."""
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings())
+
+    window.ui.lineEditExport.setText(str(chosen) + os.sep + "." + os.sep)
+    assert window.save_settings()
+
+    stored = read_saved_settings(tmp_path)[settings_module.EXPORT_FOLDER_KEY]
+    assert stored == str(chosen)
+
+
+def test_clearing_the_field_removes_the_key(window_factory, tmp_path):
+    """Stored as an absent key rather than an empty string, so the file reads
+    the same way to a hand editor as it does to this app: nothing set is the
+    default."""
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings(export_folder=str(chosen)))
+
+    window.ui.lineEditExport.setText("")
+    assert window.save_settings()
+
+    assert settings_module.EXPORT_FOLDER_KEY not in read_saved_settings(tmp_path)
+    assert exporting.export_folder() == exporting.default_export_folder()
+
+
+def test_an_absent_key_shows_as_an_empty_field(window_factory):
+    window = window_factory(base_settings())
+
+    assert window.ui.lineEditExport.text() == ""
+
+
+@pytest.mark.parametrize("stored", ["relative/clips", "clips"])
+def test_a_relative_path_blocks_the_atomic_save(window_factory, tmp_path,
+                                                monkeypatch, stored):
+    messages = warning_recorder(monkeypatch)
+    window = window_factory(base_settings())
+    window.ui.lineEditExport.setText(stored)
+    window.ui.lineEditFileScheme.setText("{title} changed")
+
+    assert not window.save_settings()
+
+    saved = read_saved_settings(tmp_path)
+    assert settings_module.EXPORT_FOLDER_KEY not in saved
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == VALID_FILE_SCHEME
+    assert messages[0][0] == "Invalid export folder"
+
+
+def test_the_export_folder_cannot_be_the_import_folder(window_factory, tmp_path,
+                                                       monkeypatch):
+    """The one rule that protects the user's files: commcut deletes from
+    `import/`, so an export root overlapping it would write into the one folder
+    the importer is allowed to empty."""
+    messages = warning_recorder(monkeypatch)
+    window = window_factory(base_settings())
+    window.ui.lineEditExport.setText(str(tmp_path / "import"))
+
+    assert not window.save_settings()
+    assert settings_module.EXPORT_FOLDER_KEY not in read_saved_settings(tmp_path)
+    assert "import folder" in messages[0][1]
+
+
+def test_a_hand_edited_bad_value_is_shown_rather_than_hidden(window_factory):
+    """The user has to be able to see what a hand edit did and fix it here,
+    rather than being told to go and open a text editor again."""
+    window = window_factory(base_settings(export_folder="clips"))
+
+    assert window.ui.lineEditExport.text() == "clips"
+    assert window.ui.lineEditExport.isEnabled()
+
+
+def test_an_untouched_bad_value_does_not_block_the_scheme_save(window_factory,
+                                                                tmp_path,
+                                                                monkeypatch):
+    """The rule the scheme fields already follow: only a *user-edited* field
+    blocks the save, and an unchanged value is preserved even when validation
+    would now reject it. A folder left over from a stricter past must not make
+    the naming schemes unsavable -- which is the only way out of it for a user
+    who has never heard of this setting."""
+    warning_recorder(monkeypatch)
+    window = window_factory(base_settings(export_folder="clips"))
+
+    window.ui.lineEditFileScheme.setText("{title} changed")
+    assert window.save_settings()
+
+    saved = read_saved_settings(tmp_path)
+    assert saved[settings_module.FILE_NAMING_SCHEME_KEY] == "{title} changed"
+    assert saved[settings_module.EXPORT_FOLDER_KEY] == "clips"
+
+
+def test_editing_away_from_a_bad_value_saves_it(window_factory, tmp_path,
+                                                monkeypatch):
+    """Once the field is touched, the invalid value is the user's problem to
+    fix rather than legacy to preserve -- which is what makes the previous test
+    a dead end rather than a trap."""
+    warning_recorder(monkeypatch)
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings(export_folder="clips"))
+
+    window.ui.lineEditExport.setText(str(chosen))
+    assert window.save_settings()
+
+    assert read_saved_settings(tmp_path)[
+        settings_module.EXPORT_FOLDER_KEY] == str(chosen)
+    assert exporting.export_folder() == str(chosen)
+
+
+def test_editing_a_bad_value_to_something_else_invalid_blocks_the_save(
+        window_factory, tmp_path, monkeypatch):
+    messages = warning_recorder(monkeypatch)
+    window = window_factory(base_settings(export_folder="clips"))
+
+    window.ui.lineEditExport.setText("somewhere/else")
+
+    assert not window.save_settings()
+    assert [title for title, _ in messages] == ["Invalid export folder"]
+    assert read_saved_settings(tmp_path)[
+        settings_module.EXPORT_FOLDER_KEY] == "clips"
+
+
+def test_a_value_that_is_not_a_string_disables_the_field(window_factory, tmp_path,
+                                                          monkeypatch):
+    """There is nothing to put in a text box, so this is the scheme fields'
+    treatment rather than the previous test's -- and the stored value is left
+    alone for the user to repair by hand."""
+    warnings = warning_recorder(monkeypatch)
+    window = window_factory(base_settings(export_folder=42))
+
+    assert not window.ui.lineEditExport.isEnabled()
+    assert not window.ui.fileBrowseExport.isEnabled()
+    assert warnings[0][1] == f"{settings_module.EXPORT_FOLDER_KEY} must be a string"
+    assert read_saved_settings(tmp_path)[settings_module.EXPORT_FOLDER_KEY] == 42
+
+
+def test_cancel_restores_the_export_folder(window_factory, tmp_path):
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings(export_folder=str(chosen)))
+
+    window.ui.lineEditExport.setText(str(tmp_path / "somewhere else"))
+    window.reject_changes()
+
+    assert window.ui.lineEditExport.text() == str(chosen)
+
+
+def test_window_manager_close_restores_the_export_folder(window_factory, tmp_path):
+    chosen = tmp_path / "clips"
+    chosen.mkdir()
+    window = window_factory(base_settings(export_folder=str(chosen)))
+
+    window.ui.lineEditExport.setText(str(tmp_path / "somewhere else"))
+    window.close()
+
+    assert window.ui.lineEditExport.text() == str(chosen)
+
+
+def test_an_unusable_export_folder_is_reported_rather_than_raised(window_factory,
+                                                                 monkeypatch):
+    """The sync button is a click handler with nothing above it catching, so a
+    hand-edited value that the editor refuses has to be reported here too rather
+    than taken into the event loop.
+
+    The window is built with the bad value already stored, which is also how it
+    happens in the wild -- and it means the field comes up disabled, so this is
+    asserting the button is independent of the field rather than of the window."""
+    warnings = warning_recorder(monkeypatch)
+    window = window_factory(base_settings(export_folder=42))
+
+    assert window.start_vocabulary_sync() is None
+    reported = [w for w in warnings if w[0] == "Export folder is not usable"]
+    assert len(reported) == 1
+    assert settings_module.EXPORT_FOLDER_KEY in reported[0][1]
 
 
 # ---------------------------------------------------------------------------

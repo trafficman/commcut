@@ -27,7 +27,21 @@ question.
 somebody is a person, and [the Untagged Library Mesh](#the-untagged-library-mesh)
 is how it happens.
 
-`import/` is the folder to read from, and `export/` is where the results land.
+`import/` is the folder to read from, and the export folder is where the results land.
+
+**`import/` is fixed and is not going to become a setting.** It is the one folder
+this app moves and deletes within — `move` takes the clip out of it once the
+destination is written, and the prune tidies the folders it emptied — so the
+folder it is allowed to destroy stays inside the program root, where a single
+mis-click cannot reach somebody's downloads folder. `shared/environment.py:import_folder`
+is the one owner; the export root may not be it, sit inside it, or contain it,
+which `export_folder_setting_error` refuses in both directions. Where clips go
+*instead* is a setting: see
+[naming-and-organization.md](naming-and-organization.md#settings-scheme-ui).
+
+A **source video** is not a folder choice either. The main menu's file dialog
+takes any video from anywhere, which is what freed `import/` for finished clips
+in the first place.
 
 ## The flow
 
@@ -51,7 +65,7 @@ flowchart TD
     Residue -->|yes| Queue
     Residue -->|no| Run
 
-    Run --> Library["export/"]
+    Run --> Library["the export folder"]
 ```
 
 The step that matters is the one in the middle. Untagged import **converges on**
@@ -285,8 +299,8 @@ decisions and imports nothing.
 ```mermaid
 flowchart TD
     Root["import/ (or a test root)"] --> Find["find_videos(root)"]
-    Lib["export/"] --> Sync["sync_vocabulary()"]
-    Lib --> Cat["build_catalog(export/): the evidence"]
+    Lib["the export folder"] --> Sync["sync_vocabulary()"]
+    Lib --> Cat["build_catalog(): the evidence"]
     Find --> Part{"has_record?"}
     Part -->|"untagged"| Sess["MeshSession(root, untagged, library, vocabulary)"]
     Cat --> Sess

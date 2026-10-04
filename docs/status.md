@@ -253,7 +253,8 @@ The full vision in `README.md` has three pieces; two are not started:
   it needs now exists — see "Next".
 - **Smart-cut export** does not exist — export re-encodes each whole segment
   instead. See "Next" below.
-- The import and export folders are fixed beside the executable (see "Next").
+- The import and export folders: the **export folder is configurable** from
+  Settings, `import/` is fixed beside the app on purpose (see "Next").
 - **Nothing displays the library.** The catalog and one button that reads it are
   built; there is no browser, and the file dialog has no tags.
 - **No recent sources.** A source video can be picked from anywhere, and a
@@ -274,18 +275,31 @@ The full vision in `README.md` has three pieces; two are not started:
   worker itself: `shared/ffmpeg.py:execute_export_plan` already takes
   `on_progress`/`should_cancel` and `editor/editor.py:ExportWorker` already runs
   it off the GUI thread behind a progress dialog.
-- **Choosing folders**: import/ and export/ are fixed beside the executable for
-  this alpha, and the Settings rows say so. A **source video** is not one of these
-  choices — the main menu's file dialog takes any video from any folder, which is
-  what freed `import/` for importing finished clips. When the two folders become
-  configurable, `shared/sources.py:import_folder()` and
-  `shared/exporting.py:export_folder()` are the places that resolve them. Both
-  are single functions on purpose: the export root was spelled out in three
-  places before `export_folder()` existed — `editor/editor.py` joined it onto
-  `PROJECT_ROOT`, and `shared/ffmpeg.py` kept a private `_export_dir()` — and a
-  fourth was about to appear for the library walk. They happened to agree, since
-  `setup_environment` returns `install_root()` as its `project_root`, but three
-  spellings of one path is three places for the configurable version to be missed.
+- **Choosing folders**: the **export folder is configurable** and `import/` is
+  fixed beside the app, deliberately and permanently.
+  `shared/environment.py:import_folder` is the one owner of the import folder,
+  beside `install_root()` — not in `shared/sources.py`, which used to carry a
+  dead second copy of it, and not in `shared/importing.py`, which used to carry
+  the live one. It lives in `shared/environment.py` because `shared/exporting.py`
+  has to compare the export root against it and `shared/importing.py` imports
+  *from* `shared/exporting.py`, so a definition in either of those is an import
+  cycle.
+
+  `import/` is not a setting because the Library Importer **moves and deletes
+  from it**: `move` removes the clip it has taken, and the prune tidies the
+  folders it emptied. The one folder this app destroys stays inside the program
+  root, where a single mis-click cannot reach somebody's downloads folder. A
+  **source video** is not a folder choice at all — the main menu's file dialog
+  takes any video from anywhere, which is what freed `import/` for finished
+  clips in the first place.
+
+  The export root is a `settings.json` key resolved by
+  `shared/exporting.py:export_folder()`, with the rules in
+  `export_folder_setting_error` so the Settings window and the resolver cannot
+  disagree. An unusable stored value **raises** rather than falling back to
+  `export/`, because the Importer reads the same folder as its library: a bad
+  value would have it walking the wrong tree with nothing on screen to say so.
+  Detail in [naming-and-organization.md](naming-and-organization.md#settings-scheme-ui).
 - **Reading the library back, and syncing the vocabulary.** Both are built.
   `shared/catalog.py:build_catalog` walks `export/` and applies the scan rule
   the writer is built around — **a record with a sibling video is a clip**,

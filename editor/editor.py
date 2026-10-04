@@ -7,7 +7,7 @@ from dataclasses import dataclass
 # before importing anything from shared.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.environment import resource_path, setup_environment
+from shared.environment import resource_path, settings_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from shared.diagnostics import log, log_exception
@@ -904,7 +904,7 @@ class MediaPlayer(QMainWindow):
             self._update_stage_button()
             return (
                 model_with_tag_locks(self.segment_model, self.tag_locks),
-                load_export_schemes(os.path.join(PROJECT_ROOT, "settings.json")),
+                load_export_schemes(settings_path()),
                 export_folder(),
             )
         except (OSError, ValueError) as error:

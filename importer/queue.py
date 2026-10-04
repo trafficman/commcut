@@ -59,7 +59,12 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.environment import resource_path, setup_environment
+from shared.environment import (
+    import_folder,
+    resource_path,
+    settings_path,
+    setup_environment,
+)
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -69,7 +74,7 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox
 from shared.catalog import build_catalog, sync_vocabulary
 from shared.diagnostics import log, log_exception
 from shared.exporting import export_folder, missing_required_tags
-from shared.importing import find_videos, import_folder
+from shared.importing import find_videos
 from shared.mesh import MeshSession
 from shared.mpv import MpvBridge, create_mpv_player
 from shared.records import (
@@ -760,8 +765,7 @@ class QueueWindow(QMainWindow):
         carry, which is the user's call to have skipped the value mesh.
         """
         self._close_video()
-        confirm_and_import(self, self.root, self.library_root,
-                           os.path.join(PROJECT_ROOT, "settings.json"))
+        confirm_and_import(self, self.root, self.library_root, settings_path())
 
     def on_back_to_menu(self):
         """Close this window, and let the shell bring the menu back.

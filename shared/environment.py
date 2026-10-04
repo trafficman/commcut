@@ -41,10 +41,16 @@ PyInstaller build of this app breaks:
   ``resource_root()``  read-only data bundled inside the executable's payload
                        (the four .ui files). Resolves to ``sys._MEIPASS``.
   ``install_root()``   writable user data that must survive a restart
-                       (settings.json, import/, export/, temp/) plus the
-                       bundled bin/<os>/ folder. Resolves to the folder holding
-                       the executable, never the extraction folder -- the
-                       latter is wiped when the process exits.
+                       (settings.json, import/, the default export/, temp/)
+                       plus the bundled bin/<os>/ folder. Resolves to the folder
+                       holding the executable, never the extraction folder --
+                       the latter is wiped when the process exits.
+
+``install_root()`` is also the one owner of the three writable folder *names*
+below it, which is why they are spelled here rather than in the modules that
+read them: ``import_folder()`` next to ``install_root()`` rather than in
+``shared/sources.py``, and the export root in ``shared/exporting.py``, which
+resolves a setting with this folder as its default.
 
 The PyInstaller spec pins ``contents_directory="."`` so that, in the shipped
 onedir layout, ``resource_root() == install_root()`` and the two collapse into
@@ -324,16 +330,59 @@ def resource_root():
 
 
 def install_root():
-    """Writable root for user data and for the bundled bin/<os> folder.
+    """Writable root for user data and for the bundled bin/<os>/ folder.
 
-    Holds settings.json, import/, export/, and temp/. When frozen this is the
-    folder containing the executable -- explicitly *not* the extraction
-    directory, which is deleted when the process exits, and not necessarily
-    writable (a build dropped in Program Files would fail every write).
+    Holds settings.json, import/, the default export/, and temp/. When frozen
+    this is the folder containing the executable -- explicitly *not* the
+    extraction directory, which is deleted when the process exits, and not
+    necessarily writable (a build dropped in Program Files would fail every
+    write).
     """
     if is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     return _source_root()
+
+
+#: The user-editable JSON file every setting lives in. Beside the executable,
+#: so two installed copies do not share it -- see docs/packaging.md.
+SETTINGS_FILENAME = "settings.json"
+
+#: Folder under the install root that the Library Importer reads from, and moves
+#: and deletes within. Fixed rather than configurable on purpose: the importer
+#: removes the clips it has taken, so the folder it is allowed to destroy has to
+#: be inside the program root rather than somewhere a single mis-click reaches.
+IMPORT_FOLDER_NAME = "import"
+
+
+def settings_path() -> str:
+    """Absolute path of ``settings.json``.
+
+    The one owner of that path. It was spelled out in four places before this
+    existed, and the fifth -- the configurable export root, which has to read
+    the same file -- would have been the one a change was missed in. Four
+    spellings of one path is four places to update and no test to say so.
+
+    Resolved through ``install_root()``, so it is beside the executable in a
+    packaged build and in the source tree when running from source.
+    """
+    return os.path.join(install_root(), SETTINGS_FILENAME)
+
+
+def import_folder() -> str:
+    """Absolute path of the folder the Library Importer reads from.
+
+    Not a source-video folder any more -- a compilation is picked with a file
+    dialog from anywhere, which is what freed this one for finished clips. Fixed
+    under the install root and not configurable: the importer moves and deletes
+    here, which is the reason. See :data:`IMPORT_FOLDER_NAME`.
+
+    Here rather than in ``shared/sources.py`` (which used to carry a dead second
+    copy) because ``shared/exporting.py`` must compare the export root against
+    it and ``shared/importing.py`` imports *from* ``shared/exporting.py``, so
+    either of those would be a cycle.
+    """
+    return os.path.join(install_root(), IMPORT_FOLDER_NAME)
+
 
 
 def resource_path(*parts):
@@ -652,9 +701,11 @@ def no_console_kwargs():
 #: Writable folders the app expects to exist next to the executable.
 #:
 #: export/ and temp/ are created lazily by shared.ffmpeg when something is
-#: actually written, so they only need to exist for discoverability. import/
-#: is never created by anything else, and an installed build has no source
-#: tree to inherit it from -- the user drops a source video in by hand.
+#: actually written, so they only need to exist for discoverability -- and
+#: export/ is here because it is the *default* export root, not because every
+#: install uses it. import/ is never created by anything else, and an installed
+#: build has no source tree to inherit it from -- the user drops a source video
+#: in by hand.
 APP_FOLDERS = ('import', 'export', 'temp')
 
 

@@ -5,7 +5,12 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.environment import resource_path, setup_environment
+from shared.environment import (
+    import_folder,
+    resource_path,
+    settings_path,
+    setup_environment,
+)
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -22,6 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -32,11 +38,12 @@ from PySide6.QtWidgets import (
 from shared.catalog import VocabularySync, sync_vocabulary
 from shared.diagnostics import log, log_exception
 from shared.exporting import (
+    EXPORT_FOLDER_KEY,
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
     export_folder,
+    export_folder_setting_error,
 )
-from shared.importing import import_folder
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
@@ -91,6 +98,35 @@ def folder_scheme_error(scheme: str) -> str | None:
     except FolderSchemeError as error:
         return str(error)
     return None
+
+
+def choose_export_folder(parent=None, start_at: str | None = None) -> str | None:
+    """Ask the user for an export folder. Returns its path, or None if cancelled.
+
+    A module-level function rather than a method so a test can stand in for the
+    one thing a native dialog cannot do: be answered. The validation that follows
+    an answer is not stubbed out with it — `export_folder_setting_error` runs on
+    whatever comes back, chosen or typed.
+
+    The dialog is an instance and left **native**, for the same reasons as
+    `mainwindow.choose_source_video`: the OS dialog is better than Qt's, and it
+    is what remembers the last folder the user was in. `start_at` is not a
+    global state store — it is the value currently being edited, passed in by
+    the caller — so opening in the folder already chosen costs nothing and
+    saves the walk back to it.
+
+    Cancelling returns None and the caller changes nothing at all.
+    """
+    dialog = QFileDialog(parent, "Choose an export folder")
+    dialog.setFileMode(QFileDialog.Directory)
+    dialog.setOption(QFileDialog.ShowDirsOnly, True)
+    dialog.setAcceptMode(QFileDialog.AcceptOpen)
+    if start_at and os.path.isdir(start_at):
+        dialog.setDirectory(start_at)
+    if not dialog.exec():
+        return None
+    chosen = dialog.selectedFiles()
+    return chosen[0] if chosen else None
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +310,13 @@ class VocabularySyncDialog(QDialog):
 class SettingsWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.settings_path = os.path.join(PROJECT_ROOT, "settings.json")
+        self.settings_path = settings_path()
         self._saved_file_scheme: str | None = None
         self._saved_folder_scheme: str | None = None
+        #: The export folder as last persisted. Empty means the default, which is
+        #: why this is a string rather than a path: the Settings window never
+        #: resolves the default, it only ever shows or omits the key.
+        self._saved_export_folder: str = ""
         self._pending_warning: tuple[str, str] | None = None
         #: The vocabulary sync's own state. `_sync_close_after` is how a close
         #: requested mid-run is deferred until the thread has actually stopped --
@@ -307,37 +347,67 @@ class SettingsWindow(QMainWindow):
         except (OSError, ValueError) as error:
             self.ui.lineEditFileScheme.setEnabled(False)
             self.ui.lineEditFolderScheme.setEnabled(False)
+            self._set_export_field_enabled(False)
             self.ui.lineEditPreview.clear()
             self.ui.lineEditFolderPreview.clear()
             self._queue_warning("Settings could not be loaded", str(error))
         else:
             self._load_scheme_fields(settings)
+            self._load_export_folder_field(settings)
 
         self.ui.buttonBox.accepted.connect(self.accept_changes)
         self.ui.buttonBox.rejected.connect(self.reject_changes)
         self.ui.lineEditFileScheme.textChanged.connect(self._update_file_preview)
         self.ui.lineEditFolderScheme.textChanged.connect(self._update_folder_preview)
+        self.ui.fileBrowseExport.clicked.connect(self.browse_for_export_folder)
         self.ui.buttonSyncVocabulary.clicked.connect(self.start_vocabulary_sync)
         self._update_file_preview()
         self._update_folder_preview()
-        self._lock_folder_choices()
 
-    def _lock_folder_choices(self) -> None:
-        """Keep the import/export folder rows visibly unwired.
+    def browse_for_export_folder(self):
+        """Put the folder the user picked in the field. Validation is the save's job.
 
-        The folders are fixed for this alpha — import/ and export/ beside the
-        executable, and a source video comes from a file dialog rather than
-        from import/ at all — so these
-        four widgets are shown but disabled, labelled "coming soon", rather
-        than removed. Disabling them here as well as in the .ui means a
-        re-enabled widget in the .ui cannot quietly imply they work.
+        Nothing is checked and nothing is written here: a folder the picker
+        returns still has to pass `export_folder_setting_error`, and the save
+        refuses the whole set atomically if it does not. Checking in two places
+        would be two answers to whether a path is acceptable.
         """
-        for name in ("lineEditImport", "lineEditExport",
-                     "fileBrowseImport", "fileBrowseExport"):
-            getattr(self.ui, name).setEnabled(False)
-        for name in ("labelImport", "labelExport"):
-            label = getattr(self.ui, name)
-            label.setText(f"{label.text().split(' (')[0]} (coming soon)")
+        chosen = choose_export_folder(self, self.ui.lineEditExport.text().strip())
+        if chosen:
+            self.ui.lineEditExport.setText(os.path.abspath(chosen))
+
+    def _load_export_folder_field(self, settings: dict) -> None:
+        """Load the export folder, which is absent-or-blank for the default.
+
+        A value that is present but unusable is *shown* rather than hidden, so
+        the user can see what is wrong with a hand-edited file and correct it
+        here instead of having to open a text editor again. The save refuses it
+        until then, which is the same path an invalid scheme takes.
+
+        A value that is not a string is the exception: there is nothing to put in
+        a text box, so both widgets are disabled and the stored value is left
+        alone — the same treatment a malformed scheme gets. An absent key is the
+        default and shows as an empty field; a JSON `null` is a *present* key
+        that is not a string, and is refused rather than read as the default,
+        which is the rule `export_folder` applies to the same file.
+        """
+        if EXPORT_FOLDER_KEY not in settings:
+            value = ""
+        elif not isinstance(settings[EXPORT_FOLDER_KEY], str):
+            self._set_export_field_enabled(False)
+            self._queue_warning(
+                "Settings could not be loaded",
+                f"{EXPORT_FOLDER_KEY} must be a string",
+            )
+            return
+        else:
+            value = settings[EXPORT_FOLDER_KEY]
+        self.ui.lineEditExport.setText(value)
+        self._saved_export_folder = value
+
+    def _set_export_field_enabled(self, enabled: bool) -> None:
+        for name in ("lineEditExport", "fileBrowseExport"):
+            getattr(self.ui, name).setEnabled(enabled)
 
     def _load_scheme_fields(self, settings: dict) -> None:
         """Load both schemes independently so one bad value cannot block the other."""
@@ -444,11 +514,12 @@ class SettingsWindow(QMainWindow):
         if not settings_file.commit():
             raise OSError(settings_file.errorString())
 
-    def save_schemes(self):
-        """Validate changed fields and atomically persist every scheme update."""
+    def save_settings(self):
+        """Validate changed fields and atomically persist every setting update."""
         file_enabled = self.ui.lineEditFileScheme.isEnabled()
         folder_enabled = self.ui.lineEditFolderScheme.isEnabled()
-        if not file_enabled and not folder_enabled:
+        export_enabled = self.ui.lineEditExport.isEnabled()
+        if not file_enabled and not folder_enabled and not export_enabled:
             return True
 
         try:
@@ -459,6 +530,7 @@ class SettingsWindow(QMainWindow):
 
         file_scheme = self.ui.lineEditFileScheme.text()
         folder_scheme = self.ui.lineEditFolderScheme.text()
+        export_folder_value = self.ui.lineEditExport.text().strip()
         save_file = (
             file_enabled
             and (
@@ -473,7 +545,11 @@ class SettingsWindow(QMainWindow):
                 or FOLDER_ORGANIZATION_SCHEME_KEY not in settings
             )
         )
-        if not save_file and not save_folder:
+        save_export = (
+            export_enabled
+            and export_folder_value != self._saved_export_folder
+        )
+        if not save_file and not save_folder and not save_export:
             return True
 
         # Unchanged legacy values are preserved even if stricter validation added
@@ -488,11 +564,24 @@ class SettingsWindow(QMainWindow):
             if error is not None:
                 QMessageBox.warning(self, "Invalid folder organization scheme", error)
                 return False
+        if save_export:
+            error = export_folder_setting_error(export_folder_value)
+            if error is not None:
+                QMessageBox.warning(self, "Invalid export folder", error)
+                return False
 
         if save_file:
             settings[FILE_NAMING_SCHEME_KEY] = file_scheme
         if save_folder:
             settings[FOLDER_ORGANIZATION_SCHEME_KEY] = folder_scheme
+        if save_export:
+            # Empty means "the default", and it is stored as an absent key rather
+            # than an empty string, so the file reads the same way for a hand
+            # editor: nothing set is the default.
+            if export_folder_value:
+                settings[EXPORT_FOLDER_KEY] = os.path.abspath(export_folder_value)
+            else:
+                settings.pop(EXPORT_FOLDER_KEY, None)
 
         try:
             self._write_settings(self.settings_path, settings)
@@ -512,6 +601,8 @@ class SettingsWindow(QMainWindow):
             self._saved_file_scheme = file_scheme
         if folder_enabled:
             self._saved_folder_scheme = folder_scheme
+        if export_enabled:
+            self._saved_export_folder = export_folder_value
         return True
 
     def _set_preview(self, preview, text: str, *, is_error: bool = False) -> None:
@@ -554,18 +645,20 @@ class SettingsWindow(QMainWindow):
             self._set_preview(preview, result)
 
     def accept_changes(self):
-        """Save unsaved scheme edits and close on success."""
-        if self.save_schemes():
+        """Save unsaved edits and close on success."""
+        if self.save_settings():
             self.close()
 
-    def _restore_schemes(self) -> None:
-        """Restore both editor values to their last persisted state."""
+    def _restore_fields(self) -> None:
+        """Restore every editor value to its last persisted state."""
         self.ui.lineEditFileScheme.setText(self._saved_file_scheme or "")
         self.ui.lineEditFolderScheme.setText(self._saved_folder_scheme or "")
+        if self.ui.lineEditExport.isEnabled():
+            self.ui.lineEditExport.setText(self._saved_export_folder)
 
     def reject_changes(self):
-        """Discard unsaved scheme edits and close."""
-        self._restore_schemes()
+        """Discard unsaved edits and close."""
+        self._restore_fields()
         self.close()
 
     # --- the tag vocabulary sync ---
@@ -577,12 +670,19 @@ class SettingsWindow(QMainWindow):
         `root` defaults to the export folder and is a parameter so a test can
         point the walk at a temporary library: `export_folder()` resolves
         through the install root, and the Settings tests redirect
-        `PROJECT_ROOT` rather than the install root.
+        `settings_path` rather than the install root.
 
         `pending_root` is the import folder, and the button leaves it unset so it
         resolves to `import_folder()`. It is a parameter for the same reason:
         without pointing it at a temporary folder, a test run would read the
         developer's real staged records.
+
+        Both resolutions are guarded because this is a button handler and
+        nothing above it catches: an export folder left unusable by a hand edit
+        would otherwise take the exception into the event loop with nothing on
+        screen. The editor and the three importer windows do not need this --
+        they either already catch `ValueError` or are reported by the shell that
+        tried to open them.
 
         The window is disabled for the duration rather than just the button,
         because the worker holds the live cached vocabulary instance and an edit
@@ -591,8 +691,13 @@ class SettingsWindow(QMainWindow):
         if self._sync_thread is not None:
             return None
 
-        library = root or export_folder()
-        pending = import_folder() if pending_root is None else pending_root
+        try:
+            library = root or export_folder()
+            pending = import_folder() if pending_root is None else pending_root
+        except ValueError as error:
+            log_exception("the vocabulary sync could not start", error)
+            QMessageBox.warning(self, "Export folder is not usable", str(error))
+            return None
         self._sync_cancel = threading.Event()
         self._sync_result = None
         self._sync_close_after = False
@@ -719,7 +824,7 @@ class SettingsWindow(QMainWindow):
             self._sync_close_after = True
             event.ignore()
             return
-        self._restore_schemes()
+        self._restore_fields()
         super().closeEvent(event)
 
 

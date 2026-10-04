@@ -8,6 +8,7 @@ the run). The one exception is `test_the_gui_thread_is_not_blocked_by_the_batch`
 which uses a real QThread, because that is the whole point of the change.
 """
 
+import json
 import os
 import threading
 import time
@@ -37,6 +38,7 @@ from editor_stub import (
     FakeThread,
     ensure_qapp,
 )
+from shared import environment
 from shared.exporting import (
     ExportPlan,
     ExportPlanError,
@@ -806,6 +808,82 @@ def test_a_completed_export_is_recorded_in_the_log(export_editor, monkeypatch):
 
     out_dir = seen["plans"][0][2]
     assert f"export to {out_dir}: 1 written, 0 failed, complete" in lines
+
+
+# ---------------------------------------------------------------------------
+# Where the export root comes from
+# ---------------------------------------------------------------------------
+
+def write_settings(tmp_path, **settings):
+    (tmp_path / "settings.json").write_text(
+        json.dumps(settings), encoding="utf-8")
+    return str(tmp_path / "settings.json")
+
+
+def point_at(tmp_path, monkeypatch):
+    """Aim both settings.json readers at this test's temporary install root.
+
+    The editor takes its path from `settings_path` and its export root from
+    `export_folder`, which resolves through the `environment` module's
+    `install_root`. Patching the root covers both, so the editor cannot end up
+    reading a different file than the one the test wrote.
+    """
+    monkeypatch.setattr(environment, "install_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        editor_module, "settings_path",
+        lambda: str(tmp_path / "settings.json"))
+
+
+def test_the_batch_goes_to_the_folder_the_user_chosen(export_editor, tmp_path,
+                                                      monkeypatch):
+    """The whole feature, end to end: a folder chosen in Settings is the
+    directory the planner and the executor are handed."""
+    editor, threads = export_editor
+    chosen = tmp_path / "filler clips"
+    chosen.mkdir()
+    write_settings(tmp_path, export_folder=str(chosen))
+    point_at(tmp_path, monkeypatch)
+    seen = install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert seen["plans"][0][2] == str(chosen)
+    assert editor.opened_folders == []
+
+
+def test_with_nothing_chosen_the_batch_still_goes_to_the_default(export_editor,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+    """The default is unchanged for the install that never opens Settings."""
+    editor, threads = export_editor
+    point_at(tmp_path, monkeypatch)
+    write_settings(tmp_path, file_naming_scheme="{title}")
+    seen = install_batch(monkeypatch)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert seen["plans"][0][2] == os.path.join(str(tmp_path), "export")
+
+
+def test_an_unusable_export_folder_refuses_the_export_by_name(export_editor,
+                                                               tmp_path,
+                                                               monkeypatch):
+    """A hand-edited value the Settings window would refuse still has to stop
+    the export here, and say enough to act on -- the editor is the first of the
+    four windows to ask, and it asks before doing any work."""
+    editor, threads = export_editor
+    write_settings(tmp_path, export_folder=42)
+    point_at(tmp_path, monkeypatch)
+    seen = install_batch(monkeypatch)
+
+    editor.on_export()
+
+    assert seen["plans"] == []
+    assert threads == []
+    assert FakeMessageBox.warnings_seen[0][0] == "Export could not start"
+    assert "export_folder" in FakeMessageBox.warnings_seen[0][1]
 
 
 def test_a_completed_run_names_how_many_clips_it_skipped(export_editor, monkeypatch):

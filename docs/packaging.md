@@ -25,8 +25,10 @@ same code unfrozen — one process, one visible window, diagnostics),
 commcut.exe   46 MB  self-extracting (Python + PySide6 + app + the payload files)
 bin/win/            ffmpeg.exe, ffprobe.exe, libmpv-2.dll -- NOT inside the exe
 import/             drop finished clips in here to import them; a source
-                    video is picked from anywhere with a file dialog
-export/             named clips are written here
+                    video is picked from anywhere with a file dialog. Fixed:
+                    this is the only folder commcut deletes from
+export/             the default place named clips are written; Settings can
+                    point commcut anywhere instead
 ```
 
 ~412 MB total. It is a **portable smoke-test build**, not a release: no
@@ -61,11 +63,15 @@ two, and conflating them is the most common way this app breaks in a build:
 | | Resolves to (frozen) | Holds |
 |---|---|---|
 | `resource_root()` | `sys._MEIPASS` | the read-only payload: the `.ui` files, the splash banner, the app icon |
-| `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, `export/`, `temp/`, `commcut.log` |
+| `install_root()` | `dirname(sys.executable)` | `bin/<os>/`, `settings.json`, `import/`, the *default* `export/`, `temp/`, `commcut.log` |
 
 The payload directory is **wiped on exit**, so it is never the place for
-anything that has to survive. `install_root()` is what `settings.json` and
-every export resolve against.
+anything that has to survive. `install_root()` is what `settings.json` and the
+default export root resolve against — but not where every export resolves
+against: `shared/exporting.py:export_folder()` reads the user's choice out of
+that same `settings.json`, so two installed copies export to two different
+folders without sharing anything. See
+[naming-and-organization.md](naming-and-organization.md#settings-scheme-ui).
 
 `_bin_dir()` used to derive from `__file__`, which frozen points into the
 payload — it now branches on `sys.frozen` and resolves against

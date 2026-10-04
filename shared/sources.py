@@ -19,8 +19,10 @@ it on every Stage.
 file dialog builds its filter from the same list, so a container added to one
 cannot be missing from the other.
 
-``import/`` still exists and still resolves through :func:`import_folder`, because
-the importer will read it; nothing here reads it any more.
+``import/`` is not answered here. It is the one owner in
+:mod:`shared.environment`, beside the install root it joins, and this module used
+to carry a dead second copy of it — which is the kind of duplication that lets two
+folders drift into being the same one.
 
 The sidecar rule comes from :mod:`shared.segments`, which knows the ``.cmct``
 format. The dependency runs one way only: this module answers *which file*,
@@ -29,14 +31,9 @@ segments answers *what is in it*, and segments never imports this module.
 
 import os
 
-from shared.environment import install_root
-
-
-#: Folder under the install root that the Library Importer reads from. Not a
-#: source-video folder: a compilation can be picked from anywhere.
-IMPORT_FOLDER_NAME = "import"
 
 #: Extensions offered in the file dialog and accepted by `is_video_file`.
+
 #: Deliberately generous: ffmpeg reads all of these, and an alpha tester should
 #: not have to care which container their compilation rip happens to be in.
 VIDEO_EXTENSIONS = frozenset({
@@ -44,15 +41,6 @@ VIDEO_EXTENSIONS = frozenset({
     ".mpg", ".mpeg", ".m2v", ".m2ts", ".ts", ".vob", ".ogv", ".3gp",
     ".divx", ".asf", ".rm", ".rmvb", ".mxf", ".f4v",
 })
-
-
-def import_folder():
-    """Absolute path of the folder the Library Importer reads from.
-
-    Not a source-video folder any more. A compilation can be picked from
-    anywhere, which is what freed this one for importing finished clips.
-    """
-    return os.path.join(install_root(), IMPORT_FOLDER_NAME)
 
 
 def is_video_file(path):

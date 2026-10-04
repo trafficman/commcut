@@ -36,7 +36,12 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.environment import resource_path, setup_environment
+from shared.environment import (
+    import_folder,
+    resource_path,
+    settings_path,
+    setup_environment,
+)
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -46,7 +51,6 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QProgressDialog
 from shared.catalog import build_catalog, problem_summary
 from shared.diagnostics import log_exception
 from shared.exporting import export_folder
-from shared.importing import import_folder
 from shared.session import shell
 from shared.ui_loader import UiLoader, adopt_title
 from shared.values import (
@@ -545,8 +549,7 @@ class ValuesWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
-        confirm_and_import(self, self.root, self.library_root,
-                           os.path.join(PROJECT_ROOT, "settings.json"))
+        confirm_and_import(self, self.root, self.library_root, settings_path())
 
     # -- closing ----------------------------------------------------------
 

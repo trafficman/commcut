@@ -19,14 +19,18 @@ import pytest
 import shared.environment as environment
 from shared.environment import (
     APP_FOLDERS,
+    IMPORT_FOLDER_NAME,
     MPV_VIDEO_OUTPUT,
+    SETTINGS_FILENAME,
     ensure_app_folders,
     get_binary_path,
+    import_folder,
     install_root,
     is_frozen,
     no_console_kwargs,
     resource_path,
     resource_root,
+    settings_path,
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -164,6 +168,41 @@ def test_resource_path_joins_against_the_resource_root(frozen, tmp_path):
 
     assert resource_path("settings", "settingswindow.ui") == os.path.join(
         str(tmp_path / "payload"), "settings", "settingswindow.ui")
+
+
+def test_the_user_data_folders_are_beside_the_executable(frozen, tmp_path):
+    """The three things that must survive a restart, and the two that resolve
+    from this root by name: `import/` is fixed under the install root and
+    `settings.json` is beside it.
+
+    Asserted against a frozen install rather than the source tree because that
+    is the case where the roots differ -- unfrozen they are the same folder, so a
+    test written there would pass whether or not the function consulted the
+    install root at all.
+    """
+    install_dir = frozen()
+
+    assert import_folder() == os.path.join(install_dir, IMPORT_FOLDER_NAME)
+    assert settings_path() == os.path.join(install_dir, SETTINGS_FILENAME)
+    assert IMPORT_FOLDER_NAME in APP_FOLDERS
+
+
+def test_the_import_folder_is_not_where_a_source_video_has_to_be(tmp_path):
+    """The property that freed `import/` for finished clips, and the reason the
+    export root may not overlap it. A source video can be picked from anywhere,
+    so nothing about this app depends on a source sitting in a particular
+    folder -- which is why the one folder it does delete from can be a fixed,
+    known path instead of a setting."""
+    from shared.sources import is_video_file, validate_source_video
+
+    elsewhere = tmp_path / "somewhere else"
+    elsewhere.mkdir()
+    a_video = elsewhere / "compilation.mp4"
+    a_video.write_bytes(b"video")
+
+    assert validate_source_video(str(a_video)) == str(a_video)
+    assert is_video_file(str(a_video))
+    assert not str(a_video).startswith(import_folder())
 
 
 # ---------------------------------------------------------------------------

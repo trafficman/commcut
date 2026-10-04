@@ -249,9 +249,14 @@ class MainWindow(QMainWindow):
         Library Mesh instead of being asked about folder names that are somebody
         install's rendered output.
 
-        It is opened with no arguments, so it takes `import/` for itself; there is
-        nothing to choose here, because the untagged wizard is what a bare Import
-        button has always meant.
+        It is opened with no arguments, and there is deliberately nothing to
+        choose here. `import/` is fixed beside the app because this importer
+        *moves and deletes* from it: the folder it is allowed to empty stays
+        inside the program root, where one mis-click cannot reach somebody's
+        downloads folder. Where the library itself lives is the export folder in
+        Settings, and that is configurable. See
+        `shared/environment.py:import_folder` and
+        [docs/importing.md](docs/importing.md).
         """
         shell().open_safely('mesh')
 

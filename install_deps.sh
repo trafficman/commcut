@@ -274,4 +274,7 @@ if [ "$PLATFORM" = "macos" ]; then
 fi
 say "Your settings, clips and log all live in this folder:"
 say "    settings.json  vocabulary.json  import/  export/  commcut.log"
+say ""
+say "import/ is fixed. export/ is only the default -- Settings has an"
+say "\"Export Folder\" row that takes any folder on this computer."
 exit 0

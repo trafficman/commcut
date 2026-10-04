@@ -6,16 +6,22 @@ import os
 
 import pytest
 
+from shared import environment
 from shared import exporting
+from shared.environment import IMPORT_FOLDER_NAME
 from shared.exporting import (
     DEFAULT_FILE_NAMING_SCHEME,
+    EXPORT_FOLDER_KEY,
     EXPORT_FOLDER_NAME,
     FILE_NAMING_SCHEME_KEY,
     FOLDER_ORGANIZATION_SCHEME_KEY,
     DestinationIndex,
     ExportPlanError,
     ExportSchemes,
+    ExportSettingsError,
+    default_export_folder,
     export_folder,
+    export_folder_setting_error,
     load_export_schemes,
     model_with_tag_locks,
     plan_clip_destination,
@@ -51,7 +57,29 @@ def schemes():
     )
 
 
-def test_the_export_folder_follows_the_install_root(tmp_path, monkeypatch):
+@pytest.fixture
+def install_root(tmp_path, monkeypatch):
+    """Point the one install root at a temporary folder.
+
+    `shared.exporting` reaches the root through the `environment` module rather
+    than through its own binding, so this single patch moves the default export
+    folder *and* the settings.json it is read from. Patching one without the
+    other would leave a test reading the developer's real settings.json and
+    failing for reasons that look like a product bug.
+    """
+    root = tmp_path / "install"
+    root.mkdir()
+    monkeypatch.setattr(environment, "install_root", lambda: str(root))
+    return root
+
+
+def write_settings(install_root, settings):
+    (install_root / "settings.json").write_text(
+        json.dumps(settings, ensure_ascii=False), encoding="utf-8")
+    return str(install_root / "settings.json")
+
+
+def test_the_export_folder_follows_the_install_root(install_root):
     """Not a project root derived from __file__: frozen, that is PyInstaller's
     extraction folder, which is deleted on exit along with every clip in it.
 
@@ -59,19 +87,160 @@ def test_the_export_folder_follows_the_install_root(tmp_path, monkeypatch):
     about to be a third copy in the library walk. It is one function now, and
     this is the guard on the property all three spellings had in common.
     """
-    monkeypatch.setattr("shared.exporting.install_root", lambda: str(tmp_path))
+    assert export_folder() == os.path.join(str(install_root), EXPORT_FOLDER_NAME)
+    assert default_export_folder() == os.path.join(str(install_root), EXPORT_FOLDER_NAME)
 
-    assert export_folder() == os.path.join(str(tmp_path), EXPORT_FOLDER_NAME)
 
-
-def test_the_export_folder_is_not_the_import_folders_neighbour_by_accident():
-    """The import folder is a source-video folder and this is a clip folder.
-    They sit side by side under the install root, and a mixed-up constant would
-    put a library walk's records into the folder the importer reads from."""
-    from shared.sources import IMPORT_FOLDER_NAME
-
+def test_the_export_folder_is_not_the_import_folders_neighbour_by_accident(
+        install_root):
+    """The import folder is where the importer reads and the export folder is
+    where the library is. They sit side by side under the install root, and a
+    mixed-up constant would put a library walk's records into the folder the
+    importer deletes from."""
     assert EXPORT_FOLDER_NAME != IMPORT_FOLDER_NAME
     assert export_folder().rsplit(os.sep, 1)[-1] == "export"
+
+
+def test_a_chosen_export_folder_is_used(install_root, tmp_path):
+    """The whole point: an arbitrary folder anywhere on the machine."""
+    chosen = tmp_path / "elsewhere" / "filler"
+    write_settings(install_root, {EXPORT_FOLDER_KEY: str(chosen)})
+
+    assert export_folder() == str(chosen)
+
+
+def test_an_empty_setting_means_the_default(install_root):
+    """Blank is how the user asks for the default, not an error.
+
+    The Settings window stores that as an absent key, so a blank string is only
+    reachable by hand -- and it has to mean the same thing there, or a hand edit
+    would break the next export with nothing on screen to explain it.
+    """
+    write_settings(install_root, {EXPORT_FOLDER_KEY: "   "})
+
+    assert export_folder() == os.path.join(str(install_root), EXPORT_FOLDER_NAME)
+
+
+def test_the_stored_path_is_normalized(install_root, tmp_path):
+    """One canonical spelling in settings.json, so a value with a trailing
+    separator or a `..` in it cannot make two settings files disagree about
+    whether they name the same folder."""
+    messy = str(tmp_path / "clips") + os.sep + ".." + os.sep + "clips" + os.sep
+    write_settings(install_root, {EXPORT_FOLDER_KEY: messy})
+
+    assert export_folder() == str(tmp_path / "clips")
+    assert export_folder() == os.path.normpath(export_folder())
+
+
+@pytest.mark.parametrize("stored", [42, None, ["C:/clips"], {"path": "C:/clips"}])
+def test_a_non_string_setting_is_refused(install_root, stored):
+    """Hand-edited files are supported, so the reader has to say no rather than
+    raise something the user cannot act on. `None` is the JSON null, which is
+    what a hand editor writes for "unset" -- and it is refused rather than read
+    as the default, because a null key and an absent key are different claims."""
+    write_settings(install_root, {EXPORT_FOLDER_KEY: stored})
+
+    with pytest.raises(ExportSettingsError) as raised:
+        export_folder()
+
+    assert EXPORT_FOLDER_KEY in str(raised.value)
+
+
+def test_a_relative_setting_is_refused(install_root):
+    """It would resolve against whatever the working directory happens to be
+    when the export runs, which is not a folder anybody chose."""
+    write_settings(install_root, {EXPORT_FOLDER_KEY: "clips"})
+
+    with pytest.raises(ExportSettingsError) as raised:
+        export_folder()
+
+    assert "full path" in str(raised.value)
+
+
+def test_a_settings_file_that_cannot_be_read_is_refused_not_ignored(install_root):
+    """A corrupt file already stops an export through `load_export_schemes`, so
+    resolving the root from a *different* answer -- the default -- would make
+    one broken file produce two different behaviours depending on which module
+    asked first."""
+    (install_root / "settings.json").write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ExportSettingsError):
+        export_folder()
+
+
+def test_the_export_folder_cannot_be_the_import_folder(install_root):
+    write_settings(install_root, {EXPORT_FOLDER_KEY: str(install_root / "import")})
+
+    with pytest.raises(ExportSettingsError) as raised:
+        export_folder()
+
+    assert "import folder" in str(raised.value)
+
+
+def test_the_export_folder_cannot_live_inside_the_import_folder(install_root):
+    write_settings(
+        install_root,
+        {EXPORT_FOLDER_KEY: str(install_root / "import" / "sorted")},
+    )
+
+    with pytest.raises(ExportSettingsError):
+        export_folder()
+
+
+def test_the_export_folder_cannot_contain_the_import_folder(install_root):
+    """The install root itself would make `build_catalog` walk `import/` and
+    `temp/` as if they were library members."""
+    write_settings(install_root, {EXPORT_FOLDER_KEY: str(install_root)})
+
+    with pytest.raises(ExportSettingsError):
+        export_folder()
+
+
+def test_the_overlap_check_compares_case_the_way_windows_does(install_root):
+    """Two spellings of one folder are one folder. Without `normcase` this
+    check is decoration on Windows and the only thing enforcing it is the
+    spelling the picker happened to hand back."""
+    stored = str(install_root / "IMPORT")
+
+    assert export_folder_setting_error(stored) is not None
+
+
+def test_a_file_is_not_a_folder(install_root):
+    a_file = install_root / "clips.mp4"
+    a_file.write_bytes(b"\0")
+
+    assert "not a folder" in export_folder_setting_error(str(a_file))
+    write_settings(install_root, {EXPORT_FOLDER_KEY: str(a_file)})
+    with pytest.raises(ExportSettingsError):
+        export_folder()
+
+
+def test_a_folder_that_does_not_exist_yet_is_fine(install_root, tmp_path):
+    """Not an error. `plan_export` already accepts a root that has not been
+    created as long as its nearest existing ancestor is a directory, and
+    `shared/ffmpeg.py` creates the tree when it writes -- so refusing here would
+    refuse something that works, and would refuse the folder a user just typed
+    before they had made it."""
+    chosen = tmp_path / "not" / "made" / "yet"
+    write_settings(install_root, {EXPORT_FOLDER_KEY: str(chosen)})
+
+    assert export_folder() == str(chosen)
+    assert export_folder_setting_error(str(chosen)) is None
+
+
+def test_the_refusal_says_where_to_fix_it(install_root):
+    """Three windows reach this and none of them rewords it: the editor shows it
+    as "Export could not start", and the shell reports the other two. So the key
+    and Settings both have to be in the message or nobody can act on it."""
+    write_settings(install_root, {EXPORT_FOLDER_KEY: "clips"})
+
+    with pytest.raises(ExportSettingsError) as raised:
+        export_folder()
+
+    message = str(raised.value)
+    assert EXPORT_FOLDER_KEY in message
+    assert "Settings" in message
+    assert str(install_root / "settings.json") in message
 
 
 def make_model(duration=10.0, tags_list=None):

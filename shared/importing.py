@@ -59,7 +59,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from shared.catalog import Catalog
-from shared.environment import install_root
 from shared.exporting import (
     DestinationIndex,
     ExportPlanError,
@@ -137,18 +136,6 @@ def candidates_from_catalog(catalog: Catalog) -> tuple[ImportCandidate, ...]:
         )
         for clip in catalog.clips
     )
-
-
-def import_folder() -> str:
-    """Where finished clips are put to be imported.
-
-    The importer's own folder, and deliberately not a source-video folder any more:
-    a source video is picked with a file dialog from anywhere, which is what freed
-    this one up. Resolved here rather than reaching into `shared/sources.py` so the
-    two names -- the app's `import/` and the caller's `--from` -- cannot be
-    confused at a call site.
-    """
-    return os.path.join(install_root(), "import")
 
 
 # ---------------------------------------------------------------------------

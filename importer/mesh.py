@@ -38,7 +38,7 @@ import threading
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from shared.environment import resource_path, setup_environment
+from shared.environment import import_folder, resource_path, setup_environment
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -48,7 +48,7 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox
 from shared.catalog import build_catalog, problem_summary, sync_vocabulary
 from shared.diagnostics import log, log_exception
 from shared.exporting import export_folder
-from shared.importing import find_videos, import_folder
+from shared.importing import find_videos
 from shared.mesh import COLOURS, MESHED, REJECTED, MeshSession, namespace_choices
 from shared.session import shell
 from shared.ui_loader import UiLoader, adopt_title
