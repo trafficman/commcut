@@ -232,6 +232,33 @@ the Editing Wizard — it detects clip boundaries and hands off to the editor it
 — so the dialog, scanner, and editor are one journey, not three menu items. The
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
+**The menu is also a drop target.** A video dragged onto it and released opens the
+scanner exactly as the button does, because both entry points call one method,
+`MainWindow.open_source` — the dialog is an input, not the rule. The window calls
+`setAcceptDrops(True)` and implements `dragEnterEvent` and `dropEvent`; nothing
+inside it needs `acceptDrops`, because Qt hands a drag to the widget under the
+cursor and, if it will not take it, up to its parent.
+
+Three decisions in there are the whole of it:
+
+- **The drag-enter answers "is this a file?", not "is this a video?"** — the real
+  check needs a filesystem probe of the folder for the `.cmct`, and the drag-enter
+  runs on every drag over the window. It is also deliberately not the extension,
+  because a drag refused there produces no drop and therefore no message: a
+  mistyped container would be answered by nothing happening. Accepting it there and
+  refusing it in `open_source` names the file and lists what is supported.
+- **A drop may carry many files and the wizard works on one source**, so
+  `dropped_source` takes the **first video** and ignores the rest, logging how
+  many videos came in. Dragging a folder's worth of rips out of a file manager is
+  the case that makes this necessary.
+- **A drop with no video in it still yields its first file**, which
+  `validate_source_video` then refuses by name — the same refusal the dialog gives
+  for the same file. Non-local URLs (a link dragged out of a browser) are not paths
+  this app can open and are dropped rather than refused.
+
+The drop needs no modal dialog, which is what makes it the quicker of the two, and
+it is confined to the menu — the only window on screen when nobody else is up.
+
 **"Import" opens the Untagged Library Mesh** over `import/`, which asks what each
 folder name in the untagged half of it means. That window is also the **router** for
 the whole importer: its worker already walks `import/`, so it is the one place that
@@ -241,8 +268,9 @@ somebody install's *rendered* output. See
 [importing.md](importing.md#the-flow).
 
 The file dialog is modal, which puts it outside the shell: only the **Settings**
-and **Import** buttons call `shell().open_safely(name)` directly, and **Editor**
-calls it with `source=...` once the user has answered. `shell().open_safely(name)`
+and **Import** buttons call `shell().open_safely(name)` directly, while **Editor**
+and a drop both call `open_source`, which calls `open_safely('scanner',
+source=...)` once the video is known. `shell().open_safely(name)`
 is still the only way a window is opened anywhere in the app. The menu is the one
 window the shell reuses: it is
 hidden while anything else is up and shown again when that window closes, so
@@ -252,16 +280,18 @@ the app, which the shell watches for through an event filter rather than
 
 `setup_environment` resolves the project root as `install_root()`: the source
 tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
-covers the file dialog, the two buttons, and the project-root resolution from
-every entry point; `tests/test_session.py` covers the navigation.
+covers the file dialog, both ways into the wizard (button and drop), the three
+buttons, and the project-root resolution from every entry point;
+`tests/test_session.py` covers the navigation.
 
 ## The source video is picked from anywhere
 
-A source video can be any video file on any writable path. The main menu's
-**Editor** button asks for one with a native `QFileDialog` and hands the answer
-to the scanner. There is no folder a source has to be in, which is what freed
-`import/` to be the Library Importer's staging folder instead of a source-video
-drop.
+A source video can be any video file on any writable path, and there are two ways
+to name one. The main menu's **Editor** button asks with a native `QFileDialog`,
+and a video dropped on the menu arrives the same way: both hand a path to
+`MainWindow.open_source`, which validates it and opens the scanner. There is no
+folder a source has to be in, which is what freed `import/` to be the Library
+Importer's staging folder instead of a source-video drop.
 
 Two things about that dialog:
 

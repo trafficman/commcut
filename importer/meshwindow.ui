@@ -25,18 +25,18 @@
    </property>
    <item>
     <widget class="QLabel" name="labelTitle">
-     <property name="text">
-      <string>Untagged Library Mesh</string>
-     </property>
      <property name="styleSheet">
       <string notr="true">font-weight: bold;</string>
+     </property>
+     <property name="text">
+      <string>Untagged Library Mesh</string>
      </property>
     </widget>
    </item>
    <item>
     <widget class="QLabel" name="labelIntro">
      <property name="text">
-      <string>Each folder name in the import folder is a likely tag. Tie it to a namespace and a tag, or say it is not a tag at all. Clips that already have a record beside them are skipped here — their tags are already known.</string>
+      <string>Each folder name in the import folder is a likely tag. Tie it to a namespace and a tag, or say it is not a tag at all. Clips that already have a record beside them are skipped here, as their tags are already known.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -45,17 +45,17 @@
    </item>
    <item>
     <widget class="QLabel" name="labelPathBar">
+     <property name="frameShape">
+      <enum>QFrame::Shape::StyledPanel</enum>
+     </property>
      <property name="text">
       <string/>
-     </property>
-     <property name="wordWrap">
-      <bool>true</bool>
      </property>
      <property name="textFormat">
       <enum>Qt::TextFormat::RichText</enum>
      </property>
-     <property name="frameShape">
-      <enum>QFrame::Shape::StyledPanel</enum>
+     <property name="wordWrap">
+      <bool>true</bool>
      </property>
      <property name="margin">
       <number>6</number>
@@ -76,14 +76,14 @@
     <layout class="QGridLayout" name="gridQuestions">
      <item row="0" column="0">
       <widget class="QLabel" name="labelNamespacePrompt">
-       <property name="text">
-        <string>Namespace:</string>
-       </property>
        <property name="minimumSize">
         <size>
          <width>300</width>
          <height>0</height>
         </size>
+       </property>
+       <property name="text">
+        <string>Namespace:</string>
        </property>
       </widget>
      </item>
@@ -99,14 +99,14 @@
      </item>
      <item row="1" column="1">
       <widget class="QComboBox" name="comboValue">
+       <property name="toolTip">
+        <string>Pick a tag your library already uses, or type one of your own. A folder name does not have to mean what your other clips call it.</string>
+       </property>
        <property name="editable">
         <bool>true</bool>
        </property>
        <property name="insertPolicy">
         <enum>QComboBox::InsertPolicy::NoInsert</enum>
-       </property>
-       <property name="toolTip">
-        <string>Pick a tag your library already uses, or type one of your own. A folder name does not have to mean what your other clips call it.</string>
        </property>
       </widget>
      </item>
@@ -168,11 +168,11 @@
    </item>
    <item>
     <widget class="QPlainTextEdit" name="textReport">
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
      <property name="visible">
       <bool>false</bool>
+     </property>
+     <property name="readOnly">
+      <bool>true</bool>
      </property>
     </widget>
    </item>

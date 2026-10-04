@@ -66,8 +66,8 @@ If a `.cmct` sidecar already exists next to the source video, the scanner
 builds no window at all and raises `shared/session.py:OpenInstead` naming the
 editor, so an existing project is never overwritten. The rule is the scanner's;
 the routing is the shell's, because there is no scanner window to show. The
-source there is the one the main menu's file dialog handed this window, not a
-re-resolved default (`_editor_to_launch` is that decision).
+source there is the one the main menu handed this window — by its file dialog or
+by a drop — not a re-resolved default (`_editor_to_launch` is that decision).
 
 That shortcut used to be **visible**: the picker listed everything in `import/`
 and labelled a rip that had been scanned *"(already scanned — opens in the

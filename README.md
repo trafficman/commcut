@@ -18,9 +18,8 @@ COMING SOON
 
 ### Main Menu
 
-- Pre-check: deposit source video(s) into `import` folder
-- Click "Editor" and select desired source video from list
-- This will, eventually, open the Segment Scanner window
+- Click "Editor" and pick the source video from the file browser, or just **drag the video file onto the main menu** and drop it
+- Either way the Segment Scanner window opens on that video, scanning it for clip boundaries before the editor proper
 
 ### Segment Scanner
 

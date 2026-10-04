@@ -85,9 +85,11 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
 
 ### Windows and settings
 
-- Main menu and source-video policy (`shared/sources.py`): the native file dialog
-  the **Editor** button opens, what a window will accept, the writable-folder rule
-  the `.cmct` sidecar requires, and the messages for a refused path.
+- Main menu and source-video policy (`shared/sources.py`): the two ways into the
+  wizard — the native file dialog the **Editor** button opens, and a video dropped
+  on the menu, which opens the same scanner through the same validation — what a
+  window will accept, the writable-folder rule the `.cmct` sidecar requires, and
+  the messages for a refused path.
 - Settings (`settings/settings.py`): independent file/folder scheme defaults,
   validation, production-resolver previews, atomic `QSaveFile` persistence,
   cancel/window-close restoration, and the **Sync from Export Library** button

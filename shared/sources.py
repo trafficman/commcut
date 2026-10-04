@@ -1,17 +1,19 @@
 """Which videos this app can open, and what it insists about them.
 
-The main menu's **Editor** button asks for a source video with a native file
-dialog, so a compilation can live anywhere on disk. There is no folder it has to
-be in, which is what freed ``import/`` to be the Library Importer's staging
-folder instead of a source-video drop.
+A source video is named in two ways: the main menu's **Editor** button asks for
+one with a native file dialog, and one can be dropped on the main menu itself.
+Neither is where the source lives — there is no folder it has to be in, which is
+what freed ``import/`` to be the Library Importer's staging folder instead of a
+source-video drop.
 
 What survives that is validation rather than containment.
 :func:`validate_source_video` is the one supported way to turn a selection into a
-source path, and the scanner and the editor both call it, so the two cannot
-disagree about what may be opened. It checks that the path is a real video file
-and — the rule that only became reachable once sources could come from anywhere —
-that its folder can be written, because the ``.cmct`` sidecar is written *beside*
-the video and the editor rewrites it on every Stage.
+source path, and the menu, the scanner and the editor all call it, so none of them
+can disagree about what may be opened — including which of two entry points does.
+It checks that the path is a real video file and — the rule that only became
+reachable once sources could come from anywhere — that its folder can be written,
+because the ``.cmct`` sidecar is written *beside* the video and the editor rewrites
+it on every Stage.
 
 :func:`is_video_file` is the one definition of "a video this app can open". The
 file dialog builds its filter from the same list, so a container added to one

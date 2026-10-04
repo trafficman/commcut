@@ -65,7 +65,7 @@
      <item>
       <widget class="QPushButton" name="editorButton">
        <property name="toolTip">
-        <string>Scan a source video for clip boundaries, then edit and tag the resulting segments</string>
+        <string>Scan a source video for clip boundaries, then edit and tag the resulting segments. A video can also be dropped on this window.</string>
        </property>
        <property name="text">
         <string>Editor</string>
@@ -75,7 +75,7 @@
      <item>
       <widget class="QLabel" name="labelEditorHint">
        <property name="text">
-        <string>Scans for clip boundaries, then tags and exports the clips</string>
+        <string>Choose a video, or drop one here, to begin editing</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -112,7 +112,7 @@
      <item>
       <widget class="QLabel" name="labelImportHint">
        <property name="text">
-        <string>Import individual filler clips into your library</string>
+        <string>Import existing filler clips into your library</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignmentFlag::AlignCenter</set>

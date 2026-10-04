@@ -1,14 +1,18 @@
 """Tests for the main menu window and the paths it launches.
 
-The menu is the app's entry point, so the three things worth guarding are that it
+The menu is the app's entry point, so the four things worth guarding are that it
 resolves the right scripts, that **Editor** asks for a source video and hands the
-chosen one to the scanner, and that a failure to launch surfaces as a dialog
-rather than a crash.
+chosen one to the scanner, that a video **dropped on the menu** reaches the same
+place the dialog does, and that a failure to launch surfaces as a dialog rather
+than a crash.
 """
 
 import os
 
 import pytest
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtWidgets import QApplication
 
 from editor_stub import ensure_qapp
 from shared.environment import setup_environment
@@ -64,7 +68,8 @@ def menu(qapp, monkeypatch, tmp_path):
 
     Everything downstream of the answer is real: `validate_source_video` runs, so
     a folder that cannot take the sidecar is refused by the shipped rule rather
-    than by a mock.
+    than by a mock. That is what lets the drop tests below assert against the same
+    behaviour without any drop-specific stub.
     """
     import mainwindow
 
@@ -209,6 +214,172 @@ def test_the_dialog_reports_one_selected_file(qapp, monkeypatch, tmp_path):
 
     assert reported
     assert validate_source_video(reported) == str(chosen)
+
+
+# ---------------------------------------------------------------------------
+# Dragging a video in
+# ---------------------------------------------------------------------------
+
+def _mime(entries):
+    """A drag's mime data, carrying `entries` as file URLs.
+
+    An entry that is already a `QUrl` is passed through, which is how the
+    not-a-file-on-this-machine case is built.
+
+    The caller has to hold on to the result until the event has been *sent*. Qt
+    keeps a bare pointer to it, so a mime data built inline as a constructor
+    argument is destroyed before the event is delivered and the window is handed
+    a freed one — which arrives as a `QObject` with no `urls`, and fails in a way
+    that looks like a PySide bug rather than a harness one.
+    """
+    data = QMimeData()
+    data.setUrls([
+        entry if isinstance(entry, QUrl) else QUrl.fromLocalFile(str(entry))
+        for entry in entries
+    ])
+    return data
+
+
+def _drag(widget, *entries):
+    """The drag-enter a real drag produces over `widget`.
+
+    Started unaccepted, because a drag is not taken until a widget says so: an
+    assertion about `isAccepted()` is only evidence if it could have been false.
+    """
+    mime = _mime(entries)
+    event = QDragEnterEvent(
+        QPoint(5, 5), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    event.ignore()
+    QApplication.sendEvent(widget, event)
+    return event
+
+
+def _drop(widget, *entries):
+    """A whole drag over `widget`: enter, then release.
+
+    Both halves, in that order, because Qt discards a drop that arrives without a
+    drag-enter before it — a drop has no target widget without one — so sending a
+    drop alone tests nothing about a real drag. The same reason means a drag the
+    window refused never gets here, and this returns the *drag* event in that case
+    so a test can say which half of the pair was refused.
+    """
+    entered = _drag(widget, *entries)
+    if not entered.isAccepted():
+        return entered
+    mime = _mime(entries)
+    event = QDropEvent(
+        QPointF(5, 5), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    event.ignore()
+    QApplication.sendEvent(widget, event)
+    return event
+
+
+def test_the_menu_is_a_drop_target(menu):
+    """Only the window has to accept drops. Qt hands a drag to the widget under
+    the cursor and, if that widget will not take it, up to its parent -- so the
+    buttons and labels inside need nothing, and a drop works anywhere on the
+    menu rather than only over the Editor button."""
+    assert menu.acceptDrops()
+    assert not menu.ui.editorButton.acceptDrops()
+
+
+def test_the_editor_hint_advertises_the_drop(menu):
+    """Discoverability is the whole difficulty of a second entry point. The
+    behaviour is in the code whether or not the hint says so."""
+    hint = menu.ui.labelEditorHint.text().lower()
+    assert "drop" in hint
+    assert "scan" in hint
+
+
+def test_a_drag_is_offered_for_a_file_and_refused_for_anything_else(menu, tmp_path):
+    """The cursor is the only answer a drag gives before it is released, and it
+    cannot explain itself — so it says yes to anything that is a file here and
+    lets the release be refused by name, and no only to what is not a path at
+    all. Judging the extension here instead would answer a mistyped container
+    with nothing happening."""
+    video = tmp_path / "compilation.mp4"
+    video.write_bytes(b"video")
+    text = tmp_path / "notes.txt"
+    text.write_text("not a video", encoding="utf-8")
+
+    assert _drag(menu, video).isAccepted()
+    assert _drag(menu, text).isAccepted()
+    assert not _drag(menu, QUrl("https://example.com/clip.mp4")).isAccepted()
+
+
+def test_dropping_a_video_opens_the_scanner_on_it(menu):
+    """The same call the dialog makes, so a drop cannot reach a window the
+    button would have refused."""
+    event = _drop(menu, menu.source)
+
+    assert event.isAccepted()
+    assert menu.opened == [("scanner", {"source": str(menu.source)})]
+
+
+def test_a_drop_of_several_files_opens_the_first_video(menu, tmp_path):
+    """A drop can carry a folder's worth of rips and the wizard works on one
+    source, so the first video wins. A file that is not a video is stepped over
+    rather than chosen, since one is exactly what the drop has to be able to
+    carry alongside the rest."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a video", encoding="utf-8")
+    first = tmp_path / "first.mkv"
+    first.write_bytes(b"video")
+    second = tmp_path / "second.mp4"
+    second.write_bytes(b"video")
+
+    _drop(menu, notes, first, second)
+
+    assert menu.opened == [("scanner", {"source": str(first)})]
+
+
+def test_a_dropped_file_that_is_not_a_video_is_refused_by_name(menu, tmp_path):
+    """Through the shipped rule, not by ignoring the drop: a gesture that visibly
+    does nothing cannot be told from a bug, and this is the same file the dialog
+    would have refused."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a video", encoding="utf-8")
+
+    _drop(menu, notes)
+
+    assert menu.opened == []
+    assert menu.refusals and "notes.txt" in menu.refusals[0]
+
+
+def test_a_drop_that_is_not_a_file_on_this_machine_is_ignored(menu):
+    """A link dragged out of a browser is not a path this app can open, and
+    there is nothing to refuse it by. The drag is refused outright, so no drop
+    follows it."""
+    assert not _drop(menu, QUrl("https://example.com/compilation.mp4")).isAccepted()
+    assert menu.opened == []
+    assert menu.refusals == []
+
+
+def test_a_dropped_video_in_a_folder_that_cannot_be_written_is_refused(menu, monkeypatch):
+    """The writable-folder rule reaches the drop route because both routes
+    validate in one method, so a drop is not a way around it."""
+    import shared.sources as sources_module
+
+    monkeypatch.setattr(
+        sources_module, "_writability_problem",
+        lambda _folder: "[Errno 13] Permission denied")
+
+    _drop(menu, menu.source)
+
+    assert menu.opened == []
+    assert menu.refusals and str(menu.source.parent) in menu.refusals[0]
+
+
+def test_a_refused_drop_leaves_the_menu_up_to_try_again(menu, tmp_path):
+    """The refusal is a message, not a dead end: the menu is still there and a
+    second drop opens normally."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a video", encoding="utf-8")
+
+    _drop(menu, notes)
+    _drop(menu, menu.source)
+
+    assert menu.opened == [("scanner", {"source": str(menu.source)})]
 
 
 # ---------------------------------------------------------------------------

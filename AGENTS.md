@@ -22,9 +22,9 @@ vision, described in [README.md](README.md), has three pieces:
 
 The tree holds the Editing Wizard (`editor/`), its Segment Scanner pre-process
 (`scanner/`), the Settings window, and the `shared/` library they build on. The
-main menu asks for a source video with a native file dialog, so a compilation can
-live anywhere. [docs/status.md](docs/status.md) says exactly what exists today
-and what is next — read it before building something that may already exist.
+main menu names a source video with a file dialog, or takes one dropped on it,
+so a compilation can live anywhere. [docs/status.md](docs/status.md) says exactly
+what exists today and what is next — read it before building what may already exist.
 
 ## Commands
 

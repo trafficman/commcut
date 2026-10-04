@@ -92,7 +92,7 @@ state.
 | `test_timeline_zoom.py` | zoom state surviving a resize, and the editor toggle agreeing with the widget |
 | `test_sources.py` | which videos may be opened: a real video from any folder is accepted, a missing file / a folder / a non-video is refused in words, and the writable-folder rule behind the `.cmct` written beside the source — including the probe itself |
 | `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off, and both builders requiring it |
-| `test_main_window.py` | the main menu, the native file dialog (filter, native-ness, cancel), the launcher, and the failure paths |
+| `test_main_window.py` | the main menu: the native file dialog (filter, native-ness, cancel), the drop target (what a drag accepts, which file in a multi-file drop wins, the refusals, and the not-a-local-file case), the launcher, and the failure paths |
 | `test_frozen_mode.py` | frozen roots, per-platform binary and libmpv resolution, table completeness, mpv `vo`, child-window argv, spec/`resource_path` agreement for every read-only payload file (the `.ui` files and the splash banner), and the sweep that every spawn site carries `no_console_kwargs()` |
 | `test_splash.py` | the loading splash: that the banner is painted at all, that it is scaled to fit rather than stretched in both directions of the aspect ratio, that nothing is painted in the band the caption goes in, that an unreadable banner leaves a plain splash and a log line rather than stopping a window opening, and that `show_splash` pumps the loop before the synchronous scan |
 | `test_ui_contrast.py` | the sweep that no shipped `.ui` names a palette **swatch** (`Mid`, `Base`, `Button`, …) as a text colour — `palette(mid)` put an evidence line at a 1.7:1 contrast ratio on the light scheme and 2.0:1 on the dark one, and a QSS rule that resolves to a bad colour is not an error, so nothing else would have noticed |
@@ -215,6 +215,13 @@ state.
   Asserting `video_output() == MPV_VIDEO_OUTPUT[platform.system()]` instead
   indexes the same dict with the same key and cannot fail on any host, which is
   why it is not the test.
+- **A drag test has to send a drag-enter before the drop.** Qt discards a
+  `QDropEvent` that arrives without one, because a drop has no target widget
+  without it — `sendEvent` with a drop alone reaches nothing and asserts nothing.
+  A synthetic mime data has to be *held* while the event is delivered too: Qt keeps
+  a bare pointer to it, so one built inline as a constructor argument is destroyed
+  first and the window is handed a freed object, which arrives as a `QObject` with
+  no `urls` and fails like a PySide bug.
 - **Where a stdlib behavior differs by platform, spy instead of provoking.**
   `ntpath.commonpath` folds case and `posixpath.commonpath` does not, so
   `test_sources.py`'s case-sensitivity tests assert which comparisons
