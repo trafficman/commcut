@@ -158,6 +158,33 @@ class StubProbeWorker(queue_module.ProbeWorker):
         pass
 
 
+def teaching_dialog(teach):
+    """A stand-in `RulesDialog` that returns instead of blocking, and teaches on
+    the way out.
+
+    The real one is a modal `exec()`, which no test can get past, so this
+    replaces the whole interaction rather than the parts of it worth asserting
+    on: what the queue does *after* the dialog closes, which is where the tag
+    values come from. `teach` is handed the session, so it can assign a folder
+    name as well as learn a rule -- a folder is already in the table, so
+    `learn_rule` refuses it.
+    """
+
+    class TeachingDialog:
+        def __init__(self, session, filename="", parent=None):
+            self.session = session
+            self.filename = filename
+
+        def exec(self):
+            teach(self.session)
+            return 0
+
+        def deleteLater(self):
+            pass
+
+    return TeachingDialog
+
+
 class Recorder:
     """A `QMessageBox` that records instead of blocking."""
 
@@ -384,6 +411,49 @@ def test_a_rule_cannot_fill_the_title(harness):
 
     try:
         assert window.ui.tagForm.read_tags()["title"] == ""
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_rules_dialog_cannot_wipe_a_tag_the_user_typed(harness, monkeypatch):
+    """Closing Manage Autofill Rules re-resolves the clip, which is how a rule
+    taught on clip twenty reaches the one in front of you. That reload used to
+    write the answers over the whole form, so a title typed by hand simply
+    vanished when the dialog closed — work lost with nothing on screen saying so.
+
+    A value the user put in is not an answer a rule may replace. The fields still
+    empty are the ones a rule is *for*, and those still fill.
+    """
+    from shared.tag_form import set_field_text
+
+    open_queue, root, _ = harness
+    relative = "Rips/Toonami - 30 Sec.mkv"
+    session = MeshSession(str(root), [FakeVideo(relative)], vocabulary=None)
+    window = open_queue(relative, session=session)
+
+    try:
+        set_field_text(window.ui.tagForm.field("title"), "Worlds Finest")
+        set_field_text(window.ui.tagForm.field("network"), "Cartoon Network")
+
+        def teach(session):
+            session.assign("Rips", "block", "Toonami")
+            session.learn_rule("30 Sec", "length", "30 Sec")
+            session.learn_rule("Toonami", "network", "Toonami USA")
+
+        monkeypatch.setattr(queue_module, "RulesDialog", teaching_dialog(teach))
+
+        window.on_manage_rules()
+
+        tags = window.ui.tagForm.read_tags()
+        assert tags["title"] == "Worlds Finest", (
+            "a rule cannot set a title, so nothing the rules said could have "
+            "competed with this one — and it is gone anyway")
+        assert tags["network"] == "Cartoon Network", (
+            "the user typed this after the clip loaded, so the reload must not "
+            "answer for them")
+        assert tags["block"] == "Toonami", "an empty field still takes the answer"
+        assert tags["length"] == "30 Sec", "and so does the next one"
     finally:
         window.close()
         window.deleteLater()

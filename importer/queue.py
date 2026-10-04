@@ -17,7 +17,7 @@ missing a tag it needs, because a required tag was removed — come back here, a
 `is_already_done` picks up exactly them. So this window is reached from either
 mesh, and `docs/importing.md` says which endings each offers.
 
-Four decisions shape it:
+Five decisions shape it:
 
 - **A settled clip's `.cnfo` is written to `import/` immediately.** The tagged
   import then takes over unchanged — `build_catalog`, `candidates_from_catalog`,
@@ -40,6 +40,12 @@ Four decisions shape it:
   library: anything in it is a copy from somewhere else or expendable. So there
   is a destructive option, labelled as one, confirmed with the file's name, kept
   off `Next`'s side of the button row, and never a default button.
+- **A rule never overwrites a value the user typed.** Closing the rules modal
+  re-resolves the clip, which is how a newly taught rule reaches the clip in
+  front of you. The reload therefore keeps what the form already holds and lets
+  the rules fill only the gaps — otherwise opening the modal to look at it and
+  closing it again silently discarded the title, which is the one tag no rule
+  can fill and so the one with nowhere else to come from.
 
 `scan_keyframes` is deliberately not called: it is an ffprobe pass over every
 frame, for a window that has no segments to mark and clips that are thirty
@@ -293,10 +299,25 @@ class QueueWindow(QMainWindow):
     def _remaining(self) -> int:
         return max(0, len(self.clips) - self.position)
 
-    def _load_current(self):
+    def _load_current(self, keep_entered=False):
+        """Show the clip at this position, autofilled from the record or the rules.
+
+        `keep_entered` is for the re-resolve that follows the rules dialog. A rule
+        taught there has to reach the clip in front of the user, but a value
+        *they* put in is not an answer a rule may replace — so the fresh
+        resolution is written first and only the fields still empty take from it.
+        Everywhere else the form is written whole, because advancing a clip must
+        not carry the last clip's typing into the next one.
+        """
         if self.position >= len(self.clips):
             self._show_report()
             return
+
+        entered = {}
+        if keep_entered:
+            entered = {key: value
+                       for key, value in self.ui.tagForm.read_tags().items()
+                       if value.strip()}
 
         clip = self.clips[self.position]
         self._stop_probe()
@@ -323,7 +344,10 @@ class QueueWindow(QMainWindow):
         # settled at all.
         settled = clip.existing_tags()
         resolved = self.session.tags_for_clip(clip.relative_path)
-        self.ui.tagForm.write_tags(settled or resolved.tags)
+        # Entered values last, so they win over both. They are the only tags
+        # nothing but the user has an opinion about, and the rules were consulted
+        # to fill gaps rather than to settle arguments.
+        self.ui.tagForm.write_tags({**(settled or resolved.tags), **entered})
         self._describe_conflicts(resolved)
         self._open_video(clip.path)
         self._refresh_add_title()
@@ -475,8 +499,11 @@ class QueueWindow(QMainWindow):
         dialog.deleteLater()
         # The new rules apply from here on, so the clip in front of the user is
         # re-resolved -- a rule taught on clip 20 should visibly work here.
+        # Closing the dialog without teaching anything still reloads, which is
+        # harmless because `keep_entered` means the only thing a reload can change
+        # is a field that was empty.
         if clip is not None:
-            self._load_current()
+            self._load_current(keep_entered=True)
 
     # -- answering --------------------------------------------------------
 

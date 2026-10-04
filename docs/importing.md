@@ -532,6 +532,18 @@ sees the other's contributions, so a caller merging two resolved dicts would
 silently pick a winner. One `accumulate` over both, so the answer is the same as
 if they had been collected together.
 
+**Closing the rules modal re-resolves the clip, and a typed value outranks it.**
+The reload is what makes a rule taught on clip twenty visible on the clip in
+front of you, and it writes the whole form — so the reload passes
+`keep_entered=True` and anything the user has typed is written *over* the fresh
+answers rather than under them. Otherwise opening the modal to look at it and
+closing it again silently discarded the title they had just typed, which is the
+one tag no rule can ever fill in and therefore the one with nowhere else to come
+from. Only fields still empty take an answer, since filling a gap is what a rule
+is for. Every other caller of `_load_current` — advancing a clip, skipping one,
+reopening the run — writes the form whole, because carrying the last clip's
+typing into the next one would be worse than losing it.
+
 ### Settling a clip never touches `vocabulary.json`
 
 This is a deliberate omission and it used to be the opposite. The Tag Editor used to
