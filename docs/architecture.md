@@ -599,23 +599,25 @@ same shape as `adopt_title()` in `shared/ui_loader.py` — one property, owned
 once, rather than restated by everything that needs it.
 
 `app_icon()` picks between two files and cannot pick wrong: it takes
-`assets/commcut_icon.ico` where Qt can decode it (Windows — the ICO image plugin
-is Windows-only) and falls back to `assets/commcut_icon.png`, which is what
-macOS and Linux read. Asking `QIcon.isNull()` rather than `os.path.exists()` is
-what makes a truncated or mislabelled file fall back instead of silently
-producing an empty icon.
+`assets/commcut_icon.ico` where this build of Qt can decode it and falls back to
+`assets/commcut_icon.png`. The `.ico` is the better source — Qt serves the frame
+matching the size it was asked for instead of scaling one image — and the PNG is
+the fallback. Asking `QIcon.isNull()` rather than `os.path.exists()` is what
+makes a truncated or mislabelled file fall back instead of silently producing an
+empty icon.
 
-**Neither file exists yet**, and that is a supported state rather than a bug. The
-module returns a null `QIcon` and logs the two absolute paths it looked in,
-following the rule the splash already states for the banner: decoration must not
-become a dependency. A window with no icon is not an error, so the icon is an
-*optional* payload file on both release paths — bundled if it is on disk, not
-claimed if it is not, and refused by the build if the two disagree. See
-[packaging.md](packaging.md#the-app-icon-is-payload-data-that-does-not-exist-yet)
+**Both files are in `assets/`, and the code does not depend on that.** A build
+made without them is a complete build, not a broken one: the module returns a
+null `QIcon` and logs the two absolute paths it looked in, following the rule the
+splash already states for the banner — decoration must not become a dependency.
+That is also why they are *optional* payload files on both release paths —
+bundled if they are on disk, not claimed if they are not, and refused by the
+build if the two disagree. See
+[packaging.md](packaging.md#the-app-icon-is-payload-data-that-is-optional)
 for that mechanism and `source-install.md` for what each platform shows.
-`tests/test_icons.py` drives the choice and the fallbacks; the assertion that the
-call is in `main.py` and in the right place lives there too, because nothing else
-would notice its removal.
+`tests/test_icons.py` drives the choice, the fallbacks, and the artwork itself;
+the assertion that the call is in `main.py` and in the right place lives there
+too, because nothing else would notice its removal.
 
 ## No console: diagnostics
 

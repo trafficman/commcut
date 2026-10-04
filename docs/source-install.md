@@ -205,23 +205,25 @@ has run this app yet, and this is the first thing on that list to check. The
 `commcut.command` icon is a separate matter and is not fixable here: Finder opens
 a `.command` file by launching Terminal, so the icon belongs to Terminal.
 
-**What the artwork has to be.** Two files in `assets/`, and neither is optional in
-its own right — Qt's ICO reader is Windows-only, so macOS and Linux read the PNG,
-while PyInstaller's `icon=` on Windows accepts only `.ico`/`.exe` and there is no
-Pillow in `requirements.txt` to convert anything else:
+**What the artwork has to be.** Two files in `assets/`, and neither is optional
+in its own right. PyInstaller's `icon=` accepts only `.ico`/`.exe` and there is no
+Pillow in `requirements.txt` to convert anything else, so the executable's icon
+has to be built from the `.ico`. Qt reads `.ico` on all three platforms — an
+earlier version of this document claimed otherwise, and the macOS and Linux CI
+legs disproved it — so the multi-frame `.ico` is also what the windows show,
+which is the better outcome: Qt serves the frame matching the size it is asked
+for instead of scaling one image.
 
 - `assets/commcut_icon.png` — square, at least 256px (512 is worth having for the
-  Dock tile), with a real alpha channel.
-- `assets/commcut_icon.ico` — square, multi-frame
-  (16/24/32/48/64/128/256), from the same artwork.
+  Dock tile), with a real alpha channel. The fallback, and the only one of the
+  two whose dimensions describe the source artwork.
+- `assets/commcut_icon.ico` — square, with a frame at each of
+  16/24/32/48/64/128/256. An `.ico` exported as a single frame carries every size
+  but the first, and looks fine in a file browser.
 
-Neither file is in the repository yet, and that is supported rather than broken:
-`app_icon()` returns a null icon and logs the two paths it looked in, and the
-archive simply ships `assets/` without them. Dropping the files into `assets/` is
-the whole procedure — `assets` is already a walked entry in
-`SOURCE_ENTRIES`, so a source release picks them up with no manifest edit, and
-`tests/test_icons.py` checks the real files for squareness, size and an alpha
-channel the day they appear.
+Both files are in the repository, and the archive ships `assets/` as it stands.
+`tests/test_icons.py` checks the real files for squareness, size, alpha and frame
+coverage.
 
 ## Where the binaries come from
 

@@ -62,7 +62,8 @@ and says so out loud when it drops something.
 Dropped entries are reported rather than passed over in silence, for the reason
 ``build.py``'s pre-flight checks exist: a build that installs cleanly and then
 shows the Qt default icon is not something anybody notices until a user has
-already installed it.
+already installed it. Nothing is dropped today; the report is for the day
+somebody checks out without the artwork.
 """
 
 import os
@@ -97,9 +98,9 @@ ONEFILE = os.environ.get('COMMCUT_ONEFILE', '1') != '0'
 # in a packaged build it cannot find the file at all.
 #
 # assets/commcut_icon.png and assets/commcut_icon.ico are the application icon
-# (shared/icons.py), the second one read only on Windows. They are the *optional*
-# entries: the artwork does not exist yet, and the filter below drops an absent
-# one rather than letting PyInstaller raise on a datas source it cannot find.
+# (shared/icons.py). They are the *optional* entries: a checkout without the
+# artwork must still build, and the filter below drops an absent one rather than
+# letting PyInstaller raise on a datas source it cannot find.
 UI_DATAS = [
     ('mainwindow.ui', '.'),
     ('editor/editorwindow.ui', 'editor'),

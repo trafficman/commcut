@@ -205,10 +205,9 @@ needs to be a real installer, the options are Inno Setup (handles
 built from **`7zSD.sfx`** — note that the plain `7z.sfx` in the standard 7-Zip
 install ignores the whole config and prompts for a folder on every run.
 
-The exe does carry an icon, from `assets/commcut_icon.ico` — that artwork is not
-in the repository yet, so a build made today keeps PyInstaller's default. The
-pre-flight says which of the two you are getting, because nothing at run time can
-tell you afterwards.
+The exe does carry an icon, from `assets/commcut_icon.ico`. The pre-flight says
+so, and says the opposite just as clearly on a checkout that does not have the
+artwork, because nothing at run time can tell you afterwards.
 
 Not being signed means every release warns: Windows SmartScreen says "Windows
 protected your PC" and the run is *More info → Run anyway*. That is expected,

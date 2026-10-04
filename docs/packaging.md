@@ -104,17 +104,22 @@ separate list does buy is the guarantee that everything the app resolves through
 same list after the build, so a missing banner is caught by the build rather than
 by a user looking at a blank splash.
 
-### The app icon is payload data that does not exist yet
+### The app icon is payload data that is optional
 
 `assets/commcut_icon.png` and `assets/commcut_icon.ico` are read-only resources of
 exactly the same kind — resolved by `shared/icons.py` through
 `resource_path("assets", ...)` and listed in the spec's `UI_DATAS` — with one
-difference: **the artwork has not been made**, so they are in
-`build.py:OPTIONAL_PAYLOAD_FILES` rather than `PAYLOAD_FILES`, and the claim is
-two-directional. A file that is on disk must be in the payload; a file that is not
-must not be claimed to be. `_verify_payload` enforces both, and
-`tests/test_release_build.py` drives it with two synthetic roots so the absent
-case is tested rather than skipped.
+difference: they are in `build.py:OPTIONAL_PAYLOAD_FILES` rather than
+`PAYLOAD_FILES`, and the claim is two-directional. A file that is on disk must be
+in the payload; a file that is not must not be claimed to be. `_verify_payload`
+enforces both, and `tests/test_release_build.py` drives it with two synthetic
+roots so the absent case is tested rather than skipped.
+
+Both files are in `assets/`, so today they are the "on disk" half of that pair.
+**Optional is the permanent shape, not the temporary one:** a person who wants a
+different icon, or a build made from a checkout that has not got one, must still
+get a working commcut, and the check that enforces the "in the payload" half is
+the one that has teeth either way.
 
 One-directional would have been worse than useless: "the icon is optional" reads
 like a claim that it is bundled when present, and the first half of that alone
@@ -139,13 +144,20 @@ default. `build.py:check_icon` says which of the two you are getting at pre-flig
 because an exe with the wrong icon ships unnoticed: nothing at run time can tell
 you it was forgotten.
 
-**Both files are needed and neither is redundant.** Qt's ICO image plugin is
-Windows-only, so the PNG is what macOS and Linux can read; and PyInstaller's
-`icon=` on Windows accepts only `.ico`/`.exe`, and `requirements.txt` has no
-Pillow to convert anything else. The artwork's own requirements — square, at
-least 256px, with a real alpha channel — are in `shared/icons.py`, and
-`tests/test_icons.py` checks the shipped files against them, skipping while they
-are absent.
+**Both files are needed and neither is redundant.** The `.ico` is the only thing
+PyInstaller's `icon=` will accept for the exe, and `requirements.txt` has no
+Pillow to convert anything else, so Explorer's icon has to be built from it. Qt
+reads `.ico` on all three platforms — this document previously said the format
+was Windows-only, and the macOS and Linux CI legs disproved it — and a
+multi-frame `.ico` is the *better* runtime source, since Qt serves the frame
+matching the size it was asked for instead of scaling one image. The PNG is the
+fallback when the `.ico` is missing or undecodable, and the only one of the two
+whose dimensions describe the source artwork: an `.ico`'s first frame is always
+its smallest, so measuring one with `QImage` reports 16x16 for a file carrying a
+256px frame. The artwork's own requirements — square, at least 256px, a real
+alpha channel, and a frame at each of 16/24/32/48/64/128/256 in the `.ico` — are
+in `shared/icons.py`, and `tests/test_icons.py` checks the shipped files against
+them, walking every `.ico` frame rather than loading one.
 
 **Do not use `SCRIPT_DIR` for a resource.** It is
 `dirname(os.path.abspath(__file__))`, which is only meaningful unfrozen; frozen

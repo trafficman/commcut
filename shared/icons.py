@@ -15,32 +15,45 @@ and the dialogs would be the seven-and-eighth copy nobody remembered.
 
 **Why the icon has two files.** `assets/commcut_icon.png` is the cross-platform
 image; `assets/commcut_icon.ico` carries the per-size frames Windows wants in a
-16px title bar. They are not redundant, and neither is optional in its own
-right:
+16px title bar. Neither is redundant, and they are not interchangeable:
 
-- Qt's ICO image plugin is **Windows-only**, so on macOS and Linux an icon built
-  from the `.ico` alone is empty. The PNG is what those platforms show.
-- PyInstaller's ``icon=`` on Windows accepts only ``.ico``/``.exe``, and
-  `requirements.txt` has no Pillow to convert anything else. So the `.ico` is
-  what Explorer's icon for ``commcut.exe`` is made of.
+- **The `.ico` is the only thing PyInstaller will accept** for the executable's
+  own icon on Windows -- ``.ico``/``.exe``, no conversion, and `requirements.txt`
+  has no Pillow to convert anything else. So Explorer's icon for ``commcut.exe``
+  has to be built from this file and not from the PNG.
+- **The `.ico` is what the windows actually show, on all three platforms.** An
+  earlier draft of this module claimed Qt's ICO reader was Windows-only, and it
+  was wrong: the macOS and Linux CI legs both decoded it, and
+  `tests/test_icons.py` walks every frame with `QImageReader` on each. A
+  multi-frame `.ico` is a *better* source than a single 512px PNG, because Qt
+  picks the frame matching the size it was asked for rather than scaling one.
+- **The PNG is the fallback**, used when the `.ico` is missing or cannot be
+  decoded, and it is the only one of the two whose size says anything about the
+  source artwork: an `.ico`'s first frame is always its *smallest*, so measuring
+  one with `QImage` reports 16x16 for a file that carries a 256px frame.
 
-`app_icon()` therefore asks for the `.ico`, takes it when this platform can
+`app_icon()` therefore asks for the `.ico`, takes it when this build of Qt can
 decode it, and falls back to the PNG. On Windows the `.ico` wins, because its
 frames are sharper than a 512px PNG downscaled to a title bar.
 
-**A missing icon is a null icon and one log line, never an error.** The art does
-not exist in the repository yet, and the rule is the one
-``shared/splash.py`` already states for the banner: decoration must never become
-a dependency. The alternative is a commcut that will not start because a PNG is
-not in the payload. The same shape is why the icon files are listed as *optional*
-payload files rather than required ones -- see `packaging/build.py`.
+**A missing icon is a null icon and one log line, never an error.** The rule is
+the one ``shared/splash.py`` already states for the banner: decoration must never
+become a dependency. The alternative is a commcut that will not start because a
+PNG is not in the payload. Both files are in ``assets/``, and the same shape is
+why they are listed as *optional* payload files rather than required ones -- a
+build made without them is a complete build. See `packaging/build.py`.
 
 **The artwork's contract**, since it is a file a person prepares by hand:
 
 - square, because ``QIcon.pixmap(size)`` scales to a square rect without keeping
   the aspect ratio -- a 300x200 source is distorted, not letterboxed;
 - at least 256px, and 512 is worth having for the macOS Dock tile;
-- a real alpha channel, or it renders as a hard rectangle on a title bar.
+- a real alpha channel, or it renders as a hard rectangle on a title bar;
+- and, in the ``.ico``, a frame at each of 16/24/32/48/64/128/256 -- Windows asks
+  for those, Qt serves whichever frame matches the size it is given, and an
+  ``.ico`` exported as a single frame has every size but the first.
+
+``tests/test_icons.py`` checks the shipped files against all of it.
 
 **Requires a `QApplication`.** `QIcon` builds a `QPixmap`, so `app_icon()`
 cannot be called before the application exists. `main.py` calls it after, and

@@ -16,7 +16,7 @@ import os
 import struct
 
 import pytest
-from PySide6.QtGui import QColor, QIcon, QImage
+from PySide6.QtGui import QColor, QIcon, QImage, QImageReader
 
 from editor_stub import ensure_qapp
 from shared import icons as icons_module
@@ -96,18 +96,18 @@ def _sizes(icon):
 def test_app_icon_prefers_the_ico_where_qt_can_read_one(art):
     """Windows gets the multi-frame `.ico`, and the sizes say so.
 
-    Skipped where Qt cannot decode ICO at all, which is macOS and Linux — the
-    ICO image plugin is Windows-only, and that is the reason the PNG is shipped
-    beside it rather than instead of it. A test that asserted the `.ico` wins
-    everywhere would be asserting the thing that is false on two of three
-    platforms.
+    Skipped where this build of Qt cannot decode ICO at all. That is not the
+    normal case — the macOS and Linux legs both read the shipped `.ico`, which
+    is what corrected an earlier claim here that the format was Windows-only —
+    but a Qt built without the handler must still land on the PNG rather than on
+    an empty icon, and that is what the skip exists to allow.
     """
     png, ico = art
     _ico(ico, size=32)
     _png(png, size=64)
 
     if QIcon(str(ico)).isNull():
-        pytest.skip("this Qt build has no ICO reader; the PNG is what it uses")
+        pytest.skip("this Qt build has no ICO reader; the PNG is the fallback")
 
     assert _sizes(icons_module.app_icon()) == {(32, 32)}
 
@@ -255,24 +255,60 @@ def test_main_installs_the_icon_before_it_builds_the_menu():
 # The artwork, once there is some
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("constant", ["ICON_PNG", "ICON_ICO"])
-def test_the_real_icon_art_is_square_and_carries_an_alpha_channel(constant):
-    """What the two files in `assets/` have to be, checked the day they land.
+#: The frame sizes Windows asks an executable icon for, and so the frames an
+#: `.ico` has to carry. A subset rather than the whole set: the shipped file also
+#: carries 96x96, and demanding an exact list would fail on a file that is merely
+#: *different* from the one these were written against rather than on a wrong
+#: one. What this catches is the realistic mistake — an `.ico` exported as a
+#: single frame, which has every size but the first.
+REQUIRED_ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
-    Skips while the artwork is absent, from inside the test rather than through
-    a module-level `skipif`, so the answer is read at run time: dropping a file
-    into `assets/` makes this start asserting without anything being edited.
 
-    The three properties are not style. Non-square art is *distorted* rather
-    than letterboxed, because `QIcon.pixmap(size)` scales to a square rect; no
-    alpha means a hard rectangle on a title bar and on the Dock tile; and below
-    256 there is nothing to scale *down* from for a Retina display.
+def _ico_frames(path):
+    """Every frame in an `.ico` as `(width, height, has_alpha)`.
+
+    **`QImage(path)` is not this.** It loads the first frame and discards the
+    rest, and an `.ico`'s first frame is always its smallest — so measuring one
+    with `QImage` reports 16x16 for a file that carries a 256px frame, and fails
+    an icon that has every size in it. That is not a hypothetical: it is what
+    this file asserted when the artwork first landed, on all three platforms.
+    `QImageReader.jumpToNextImage()` is the walk.
+    """
+    reader = QImageReader(str(path))
+    frames = []
+    while True:
+        image = QImage(reader.read())
+        if image.isNull():
+            break
+        frames.append((image.width(), image.height(), image.hasAlphaChannel()))
+        if not reader.jumpToNextImage():
+            break
+    return frames
+
+
+def _artwork_path(constant):
+    """`resource_path()` for one of the icon constants, skipping if it is absent.
+
+    Skipped from inside the test rather than through a module-level `skipif`, so
+    the answer is read at run time: dropping a file into `assets/` makes this
+    start asserting without anything being edited.
     """
     parts = getattr(icons_module, constant)
     path = resource_path(*parts)
-
     if not os.path.isfile(path):
         pytest.skip(f"{'/'.join(parts)} is not in the tree yet")
+    return parts, path
+
+
+def test_the_shipped_png_is_square_large_and_carries_an_alpha_channel(qapp):
+    """The cross-platform image, measured as a single image.
+
+    All three properties are load-bearing. Non-square art is *distorted* rather
+    than letterboxed, because `QIcon.pixmap(size)` scales to a square rect; no
+    alpha means a hard rectangle on a title bar and on the Dock tile; and below
+    256 there is nothing to scale *down* from on a high-DPI display.
+    """
+    parts, path = _artwork_path("ICON_PNG")
 
     image = QImage(path)
 
@@ -287,3 +323,45 @@ def test_the_real_icon_art_is_square_and_carries_an_alpha_channel(constant):
     assert image.hasAlphaChannel(), (
         f"{'/'.join(parts)} has no alpha channel, so it renders as a hard "
         f"rectangle against a title bar")
+
+
+def test_the_shipped_ico_carries_every_frame_size_windows_asks_for(qapp):
+    """The executable icon, measured frame by frame rather than as one image.
+
+    Two claims, and the second is the one that matters operationally. Every frame
+    is square and has alpha, because a single non-conforming frame is a size at
+    which the window draws a rectangle. And every required size is *offered* by
+    the `QIcon` the app installs: `availableSizes()` is what Qt picks from when
+    something asks for a particular size, so a file whose frames the icon cannot
+    see is an `.ico` that silently loses its sharp sizes.
+    """
+    parts, path = _artwork_path("ICON_ICO")
+
+    frames = _ico_frames(path)
+
+    assert frames, f"{'/'.join(parts)} has no readable frames"
+
+    for width, height, alpha in frames:
+        assert width == height, (
+            f"{'/'.join(parts)} has a {width}x{height} frame; a non-square frame "
+            f"is distorted rather than letterboxed")
+        assert alpha, (
+            f"{'/'.join(parts)} has a {width}x{width} frame with no alpha "
+            f"channel, which renders as a hard rectangle against a title bar")
+
+    present = {width for width, _, _ in frames}
+    missing = [size for size in REQUIRED_ICO_SIZES if size not in present]
+    assert not missing, (
+        f"{'/'.join(parts)} is {sorted(present)}; it has no "
+        f"{', '.join(str(size) for size in missing)} frame. A single-frame "
+        f"export carries every size but the first and looks fine in a file "
+        f"browser. Rebuild it with every size in it:\n\n"
+        f"  magick assets/commcut_icon.png "
+        f"-define icon:auto-resize={','.join(str(s) for s in REQUIRED_ICO_SIZES)} "
+        f"assets/commcut_icon.ico")
+
+    offered = {size.width() for size in QIcon(str(path)).availableSizes()}
+    missing = [size for size in REQUIRED_ICO_SIZES if size not in offered]
+    assert not missing, (
+        f"the QIcon built from {'/'.join(parts)} offers {sorted(offered)}; "
+        f"{missing} are in the file but not in the icon")

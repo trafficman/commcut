@@ -98,13 +98,13 @@ PAYLOAD_FILES = (
     'assets/commcut_banner.png',
 )
 
-# The application icon (shared/icons.py), which does not exist yet and is not
-# required to. The claim is the two-directional one and nothing weaker: a file
-# that is on disk *must* be in the payload, and a file that is not must not be
-# claimed to be. Asserting only the first half would pass forever with the icon
-# wired up and never bundled -- which is a build that runs perfectly from source
-# and shows Qt's default icon in every packaged window, the failure mode the
-# banner above exists to prevent.
+# The application icon (shared/icons.py), which is optional rather than
+# required: a build made without the artwork is a complete build. The claim is
+# the two-directional one and nothing weaker: a file that is on disk *must* be in
+# the payload, and a file that is not must not be claimed to be. Asserting only
+# the first half would pass forever on a build with the icon wired up and never
+# bundled -- which runs perfectly from source and shows Qt's default icon in
+# every packaged window, the failure mode the banner above exists to prevent.
 #
 # The same optionality is reached three other ways, none of them a shared list:
 # the spec filters the comprehension that becomes PyInstaller's `datas` (not
@@ -343,9 +343,9 @@ def _verify_payload(root):
             raise BuildError(
                 f"{relative} is {'' if in_source else 'not '}in the source tree "
                 f"but {'' if in_payload else 'not '}in the build, and it has to "
-                f"be both or neither. The icon is optional because the artwork "
-                f"has not been made yet, not because a file can be quietly "
-                f"left out of the payload."
+                f"be both or neither. The icon is optional because a build "
+                f"without artwork is a complete build, not because a file can "
+                f"be quietly left out of the payload."
             )
 
 
