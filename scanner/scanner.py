@@ -20,7 +20,7 @@ from shared.segments import (
 from scanner.marker_timeline import MarkerTimelineWidget
 from shared.session import OpenInstead, shell
 from shared.sources import validate_source_video
-from shared.ui_loader import UiLoader
+from shared.ui_loader import UiLoader, adopt_title
 
 from PySide6.QtWidgets import QMainWindow, QStyle, QSplashScreen
 from PySide6.QtCore import Qt, QFile
@@ -106,6 +106,7 @@ class ScannerWindow(QMainWindow):
         loader = UiLoader()
         loader.register_widget(MarkerTimelineWidget)
         self.ui = loader.load(ui_file, self)
+        adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
 
         # Create the embedded mpv player in the video frame

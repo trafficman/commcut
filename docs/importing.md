@@ -2,11 +2,8 @@
 
 Applies to: `shared/importing.py`, `shared/exporting.py`, `shared/catalog.py`,
 `shared/records.py`, `shared/sources.py`, `shared/paths.py`, `shared/mesh.py`,
-`importer/mesh.py`, `importer/meshwindow.ui`.
-
-This document covers the importer's **backend**. There is no window yet: nothing
-displays a catalog, a proposal, or an import result. What is here is every
-function a window will need, and the four decisions that shape them.
+`shared/values.py`, `importer/mesh.py`, `importer/meshwindow.ui`,
+`importer/queue.py`, `importer/values.py`, `importer/importrun.py`.
 
 ## The shape of it
 
@@ -22,13 +19,46 @@ Two modes, and the difference is only where the tags came from.
 `candidates_from_catalog(...)` turns them into `ImportCandidate`s;
 `plan_import(...)` resolves them to destinations; `execute_import(...)` writes
 them. No ffmpeg runs at any point: `ClipRecord` carries `duration`, so the new
-record is rendered from the old one and there is nothing to probe.
+record is rendered from the old one and there is nothing to probe. What a *foreign*
+record's values should become is [the Tagged Library Mesh](#the-tagged-library-mesh)'s
+question.
 
 **Untagged.** There is no record, so somebody has to supply the tags. That
-somebody is a person, and [the Mesh Wizard](#the-library-mesh-wizard) is how it
-happens.
+somebody is a person, and [the Untagged Library Mesh](#the-untagged-library-mesh)
+is how it happens.
 
 `import/` is the folder to read from, and `export/` is where the results land.
+
+## The flow
+
+```mermaid
+flowchart TD
+    Menu["main menu: Import"] --> Untagged["Untagged Library Mesh<br/>(importer/mesh.py)"]
+
+    Untagged -->|"worker partitions find_videos() by has_record"| Scan{"any clip<br/>without a .cnfo?"}
+    Scan -->|yes| Names["ask once per folder name<br/>(shared/mesh.py)"]
+    Names --> Queue["Library Mesh Tag Editor<br/>(importer/queue.py)"]
+    Queue -->|"writes a .cnfo per clip"| Fork
+
+    Scan -->|"no — every clip is tagged"| Values["Tagged Library Mesh<br/>(importer/values.py)"]
+
+    Queue --> Fork{"the queue's report"}
+    Fork -->|"Import Now"| Run["importer/importrun.py<br/>confirm_and_import()"]
+    Fork -->|"Review Tag Values"| Values
+
+    Values -->|"one question per distinct value"| Apply["rewrites records only"]
+    Apply --> Residue{"any clip missing<br/>a required tag?"}
+    Residue -->|yes| Queue
+    Residue -->|no| Run
+
+    Run --> Library["export/"]
+```
+
+The step that matters is the one in the middle. Untagged import **converges on**
+tagged import rather than forking into a second pipeline: the Tag Editor writes each
+settled clip's record into `import/`, and from that point every clip in the folder is
+a tagged clip handled by exactly the code a library exported from another commcut
+would take. Nothing downstream of the fork knows which half the folder started as.
 
 ## The four decisions
 
@@ -187,7 +217,12 @@ useless.
 
 Videos that *do* have a sibling record are still listed, with `has_record=True`, so
 a caller can hand them to the tagged path rather than making the user decide which
-half they are in.
+half they are in. **The Untagged Library Mesh's worker is that caller** — it is the
+one place the partition happens, and it happens on the worker because `import/` is a
+network share as often as it is a local folder. A folder where every clip has a
+record is never asked about folder names at all: those names are that install's
+*rendered* output, so asking what each one means would produce answers about a
+rendering rather than about the clips.
 
 ## Proposals, and why they are gone
 
@@ -195,11 +230,11 @@ This document used to describe `shared/importing.py:propose_tags_from_path`, whi
 read folder names, ` - ` separators and parenthetical groups out of a path and
 offered them as `TagProposal`s with a confidence level.
 
-**It has been removed.** The Wizard does not need it — its inputs are folder names,
-which are already extracted, and a folder is called what it is called — so the
-function had no caller. Filename parsing was the part that would have *inferred*
-rather than asked, and `docs/naming-and-organization.md` refuses that outright: a
-scheme renders lossily, so a name cannot be read back into tags.
+**It has been removed.** The Untagged Library Mesh does not need it — its inputs are
+folder names, which are already extracted, and a folder is called what it is called —
+so the function had no caller. Filename parsing was the part that would have
+*inferred* rather than asked, and `docs/naming-and-organization.md` refuses that
+outright: a scheme renders lossily, so a name cannot be read back into tags.
 
 Leaving unused code "for later" would have been the wrong call. If filename parsing
 is ever wanted it belongs in a separate pass, written with real examples in hand,
@@ -208,8 +243,8 @@ and stronger: **a folder name becomes a tag only through
 `MeshSession.assign`**, and the type boundary is what stops that happening by
 accident.
 
-`match_value` did survive, because the Wizard's value question needs its ranked,
-counted evidence — see below.
+`match_value` did survive, because both value questions need its ranked, counted
+evidence — see below.
 
 ## Evidence for the value question
 
@@ -218,10 +253,16 @@ rather than choosing one. Showing "block (14 clips), special (2)" makes a namesp
 choice a click; choosing silently is how a library ends up with fourteen clips under
 `block` and one under `special`.
 
-The Wizard sets its suggested namespace from this **only when there is exactly one
-match** — "if Toonami is only present in the block namespace, assume it is a block"
-— and with two candidates it suggests neither, because picking either is the guess
-the Wizard exists to prevent.
+The Untagged Library Mesh sets its suggested namespace from this **only when there is
+exactly one match** — "if Toonami is only present in the block namespace, assume it is
+a block" — and with two candidates it suggests neither, because picking either is the
+guess the window exists to prevent.
+
+The Tagged Library Mesh asks the same question with a different answer type. Its tag
+is already settled and only the *spelling* is in question, so it filters `match_value`
+to `m.namespace == namespace` and treats an empty result as "new here, you have to
+say". A `block` called `Promo` says nothing about what a `filler_type` called `Promo`
+should become.
 
 `in_library` and `in_vocabulary` are separate columns because they are different
 kinds of knowing: the library is what the user has, and `vocabulary.json` is a hint
@@ -231,28 +272,30 @@ and drifts. A hit only in the file is weaker evidence and is marked as such.
 An empty result is **not** permission to guess. It means the value is new here, and
 the caller has to ask.
 
-## The Library Mesh Wizard
+## The Untagged Library Mesh
 
 An untagged library tells you almost nothing about its clips, and the one thing it
 does tell you is the folder names. `Cartoon Network/2000s/Promo/` says a network, a
 period and a kind; that is three tags' worth of information and it is *exactly*
-three tags' worth. The Wizard (`shared/mesh.py` over `importer/meshwindow.ui`) is
-how a person turns them into tags, one question at a time. Reached from the main
-menu's **Import** button, and standalone: it produces a table of decisions and
-imports nothing.
+three tags' worth. The Untagged Library Mesh (`shared/mesh.py` over
+`importer/meshwindow.ui`) is how a person turns them into tags, one question at a
+time. Reached from the main menu's **Import** button; it produces a table of
+decisions and imports nothing.
 
 ```mermaid
 flowchart TD
     Root["import/ (or a test root)"] --> Find["find_videos(root)"]
     Lib["export/"] --> Sync["sync_vocabulary()"]
     Lib --> Cat["build_catalog(export/): the evidence"]
-    Find --> Sess["MeshSession(root, videos, library, vocabulary)"]
+    Find --> Part{"has_record?"}
+    Part -->|"untagged"| Sess["MeshSession(root, untagged, library, vocabulary)"]
     Cat --> Sess
     Sync --> Sess
     Sess --> Prompt["next_prompt(): one question"]
     Prompt --> Assign["assign() / reject()"]
     Assign -->|"unmeshed remain"| Prompt
     Assign -->|"none left"| Report["report()"]
+    Part -->|"all tagged"| Values["offer the Tagged Library Mesh"]
 ```
 
 ### The safety property, and how it is enforced
@@ -348,36 +391,51 @@ it reaches, so one mistyped folder name is a sentence rather than a scrollback.
 
 `REJECTED` means "this folder name is not a tag". Its videos still import; they
 simply contribute nothing from that segment. It is a distinct state from
-`unmeshed` because it is a *decision*, and distinct from the Manual Edit queue
-because that is not built — the state exists so adding it is not a redesign.
+`unmeshed` because it is a *decision*, and distinct from the Tag Editor's skip
+because that is a different question — this one is about a *name*, not a clip.
 
 ### The vocabulary sync runs on open, and says so
 
 `sync_vocabulary` **prunes** values no clip uses, so it cannot happen invisibly in
-a constructor — the user opens a wizard to look around and must not lose a tag they
-typed without being told. It runs when the window opens, and its summary is shown
-while the user answers, together with any library records that could not be read,
-**grouped by reason**: a friend exporting with a tag this build does not know is a
-different problem from a corrupt file.
+a constructor — the user opens a window to look around and must not lose a tag they
+typed without being told. It runs when the Untagged Library Mesh opens, and its
+summary is shown while the user answers, together with any library records that
+could not be read, **grouped by reason**: a friend exporting with a tag this build
+does not know is a different problem from a corrupt file.
 
 All of it — the sync, the import-folder walk and the library walk — is one worker,
-because the library is a network share as often as it is a local folder.
+because the library is a network share as often as it is a local folder. The Tagged
+Library Mesh has a worker for the same two walks but **no sync**: it has nothing to
+add to the file, because nothing it holds has been confirmed yet, and it must not
+prune, because a second prune would delete a value the user typed that no library
+clip uses yet.
 
 ### The table, and why it is in memory
 
 `AliasTable` is the session's output: every decision, meshed or rejected, with a
 `to_dict`/`from_dict` and a schema version. Nothing writes it yet, so re-running
 asks the same questions again — which is the honest state while the design is still
-settling, and the shape is settled so persistence is a later additive change.
+settling, and the shape is settled so persistence is a later additive change. (The
+two tables want *opposite* answers here: a folder name is a statement about a
+throwaway staging folder, while a value translation is a statement about the user's
+own vocabulary and would apply to the next library too.)
 
 `AliasEntry.paths` — how many videos a decision affected — is deliberately **not**
 serialized. It is recomputed from the tree every run, so persisting it would freeze
 a number that goes stale the moment a folder moves.
 
+`AliasEntry.learned` **is** serialized, and it has to be. It is what distinguishes a
+folder name from a learned rule, and `remove_rule` refuses a folder name — so an
+entry written out without its provenance comes back as a folder name and becomes a
+saved rule the user can no longer delete. An unrecognised `learned` reads as a folder
+name, which is the safe direction: it costs the ability to forget, not the ability to
+file.
+
 ### The Library Mesh Tag Editor
 
-The queue, reached from the Wizard's report with **Tag the Titles Next**. It is
-the whole of untagged import's back half.
+The queue, reached from the Untagged Library Mesh's report with **Tag the Titles
+Next**. It is the whole of untagged import's back half, and it also serves the
+tagged path — see [the residue](#the-residue-is-the-queue-again) below.
 
 **Why every clip is visited.** A title is not *underivable* — the filename is
 perfectly good title material. It is a **region** of a string that also contains
@@ -436,8 +494,8 @@ and still come off afterwards. See
 ### The rules, and why the title is what is left
 
 An autofill rule teaches commcut that a piece of a file name means a tag. Rules
-live in the Wizard's own table keyed by the literal string, which is the reason
-the modal looks the way it does:
+live in the Untagged Library Mesh's own table keyed by the literal string, which is
+the reason the modal looks the way it does:
 
 - **A literal already in the table is refused**, and the existing entry comes back
   so the modal can offer to edit it. One literal, one meaning, always. Without
@@ -446,8 +504,8 @@ the modal looks the way it does:
 - **Every match contributes**, not just the first: `Toonami - 30 Sec` with rules
   for both is two tags, and stopping at the first would make the rules an ordered
   list rather than a set.
-- **The namespace and value pickers are the Wizard's**, pre-selected from
-  `match_value` — so typing `Toonami` offers `block (14 clips)` with the
+- **The namespace and value pickers are the Untagged Library Mesh's**, pre-selected
+  from `match_value` — so typing `Toonami` offers `block (14 clips)` with the
   evidence attached. One table means one vocabulary.
 - **A rule may not target `title`**, and the modal's namespace list does not even
   offer it. A rule is a standing instruction; a title is unique per clip. This
@@ -461,11 +519,149 @@ sees the other's contributions, so a caller merging two resolved dicts would
 silently pick a winner. One `accumulate` over both, so the answer is the same as
 if they had been collected together.
 
+### Settling a clip never touches `vocabulary.json`
+
+This is a deliberate omission and it used to be the opposite. The Tag Editor used to
+call `record_use` on every settled clip, which wrote an imported library's values —
+**and its titles**, since it passed the whole tag dict where the editor filters to
+`SUGGESTED_TAG_FIELDS` first — into the user's tag history. Two things were wrong with
+that:
+
+- `sync_vocabulary` prunes against `export/` only, so those values were written on
+  one run and **deleted on the next open**, taking any value the user genuinely typed
+  along with them.
+- `match_value` ranks `in_vocabulary` hits as real evidence. During a value translation
+  run the file would have been full of exactly the values being decided about, so the
+  pass would have been ranking its own input as prior belief.
+
+Values reach the file the one way they should: read back out of `export/` by
+`sync_vocabulary`, once the user has actually imported them. Until then they are
+somebody else's words and settling a clip confirms nothing.
+
+### The record is authoritative once it exists
+
+`_load_current` writes `clip.existing_tags()` into the form and, only when there is
+no record, falls back to the folder mesh's answer. It used to layer them the other way
+round — folder answers underneath the record — which resurrected a tag the Tagged
+Library Mesh had just removed from every clip, whenever the queue was reopened carrying
+a live `MeshSession`. The residue pass was undoing the pass that preceded it. A clip's
+tags live in its record (invariant 12); the folder answers have something to add only
+on a clip that has never been settled at all.
+
+### The residue is the queue again
+
+After the Tagged Library Mesh writes its records, the clips it left unfinished — one
+missing a tag it needs, usually because the user removed a *required* tag — go back
+through this window. Nothing has to be passed but the folder: `is_already_done()`
+asks `missing_required_tags`, so re-opening the queue picks up exactly the residue and
+none of the clips the value mesh finished. The folder is where the truth lives, so the
+folder is what the hand-off carries.
+
 ### The tag form is one widget
 
-`shared/tag_form.py` and `shared/tagform.ui` hold the ten fields, and both
-windows host that widget. Two tag forms would be two dropdown configurations,
+`shared/tag_form.py` and `shared/tagform.ui` hold the ten fields, and both windows
+host that widget. Two tag forms would be two dropdown configurations,
 and `docs/tag-vocabulary.md` records why each setting there is load-bearing: the
 insert policy, the completer's case sensitivity, its filter mode, its completion
 mode. The queue hides the lock buttons rather than omitting them — a lock carries
 a value to the next segment, and a queue has no next segment.
+
+## The Tagged Library Mesh
+
+A library that arrived with records already has its **tags** right — the Untagged
+Library Mesh decided that, or the other commcut that exported it did. What it does not
+have right is the **values**: `network: CN` is correct in the vocabulary it came from
+and is not the word this library uses. `shared/values.py` over
+`importer/valueswindow.ui` asks, once per distinct value, what each one should become.
+
+**One question per value, not per clip.** That is the whole design, and it is the same
+asymmetry the untagged path turns on: a title is a *region* of a string and has to be
+asked per clip, while a value is a whole token shared by however many clips carry it.
+`CN` on 214 clips is one question. So this is a table where the Tag Editor is a queue,
+and the residue is handed back to that queue rather than given a second per-clip pass
+here.
+
+**A value becomes another value, or stops existing. Nothing else.** There is no
+namespace parameter on `translate`, `delete_tag` or `keep`: the namespace is the
+entry's, so there is no call that can move a tag between namespaces and nothing
+downstream has to check. A foreign library routinely carries a tag this one has no
+word for, which is why "remove this tag" is a first-class answer rather than a special
+case of translating to nothing — and a mistyped empty box is refused rather than
+accepted as one.
+
+**Nothing is inferred.** A session starts with every entry `untranslated` and only the
+three answers change that. A value that matches the library exactly is a *suggestion*
+the screen pre-fills; the user still presses a button. The direct analogue of
+`tests/test_mesh.py::test_a_fresh_session_is_empty_even_when_every_name_matches_exactly`
+is required here too, and it is the first test in `tests/test_values.py`.
+
+**Answers are collected, then written once.** `plan_translation` resolves every clip's
+record and renders it to check it; `execute_translation` replaces those records. A
+half-answered session is **refused** rather than planned, because an unanswered value
+resolves to itself and a partial run would write the folder's own vocabulary straight
+back into its records. Clips nothing would change are not in the plan at all, so
+answering "keep" to forty values writes nothing rather than rewriting forty identical
+records.
+
+**Only records are touched.** No video is opened, moved or rewritten, and a record is
+only ever *replaced*, through `write_record`, which publishes atomically in the
+record's own directory. Invariant 12 holds throughout: `video present` implies
+`record present`, with no instant in between where either could be observed alone. A
+cancelled run keeps everything it committed, like the export and the import.
+
+**Translate before importing, never after.** Changing a value changes the rendered
+destination, so a clip already imported under the old value is not matched against the
+library by `plan_import` — it would be imported a **second time** under a new name.
+The flow puts the fork before the import for that reason.
+
+### Why not `MeshSession`
+
+It is tempting to run the existing window again in a "tagged" mode. That would be
+wrong, and not for want of shared machinery but because the collision rule is
+actively the wrong rule:
+
+- `accumulate` resolves *two claims on one namespace* by taking **neither** value and
+  flagging the clip, and `_shares_a_path` decides when that can happen.
+- For a value rename, two *different* values resolving to one namespace is the
+  **normal** case — `CN` → `Cartoon Network` and `CN2` → `Cartoon Network Two` — and
+  no clip ever sees both, because a record holds one value per namespace.
+
+The first version of the folder window warned on every second `filler_type` folder,
+which fires on the ordinary shape of any real library and is therefore dismissed
+reflexively. A warning that fires on the normal case is worse than no warning for the
+one case that matters. Reusing `accumulate` here would refuse to translate `CN` at
+all.
+
+The two tables are also keyed differently, and deliberately: `AliasEntry` is keyed by
+one string because a folder name is exactly itself, while an entry here is keyed by
+`(namespace, value)`. A folder named `Promo` meshed to `filler_type:Promo` and a
+record holding `filler_type:Promo` are **not** the same answer and must not be made to
+be one — different phases over different data, the folder pass happening before any
+record exists and this one after. Folding them into a single table would be the bug,
+not the safety.
+
+What *is* shared is the evidence: `match_value` is the same ranked, counted answer to
+"where do I already say this?", and invariant 9 wants one owner of it.
+
+### Merges are reported, not refused
+
+Two distinct values ending up as one is legal and often exactly what is wanted —
+`Promo` and `Advertisement` are frequently the same thing. It is also the one outcome
+that makes two clips indistinguishable afterwards, so `ValueSession.merges()` computes
+it from the answers and the plan reports it *before* anything is written. The second
+consequence shows up later and is caught by `plan_import`'s `DestinationIndex` as
+`REASON_DUPLICATE`, which skips by name rather than failing silently.
+
+## One import screen, two callers
+
+The Tag Editor and the Tagged Library Mesh both end at the same place — every clip in
+`import/` has a record, and the user can import them — so the progress dialog and the
+summary live in `importer/importrun.py:confirm_and_import` and both windows call it.
+Two copies of that screen would drift. It is only presentation; every rule about what
+an import does belongs to `shared/importing.py`, which holds no Qt type.
+
+That summary separates the three ways a clip can be left out, because lumping them is
+how a refusal reads as a failure: **already in the library** with the same tags is a
+no-op and the run worked; **refused** because that destination holds something
+different is a decision the user may want to revisit; **failed** is a problem. All of
+them are named.

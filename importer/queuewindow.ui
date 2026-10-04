@@ -252,6 +252,19 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="buttonValues">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Ask, once per tag value, what it should be called in your library. A value is shared by every clip that carries it, so 200 clips saying the same thing is one question.</string>
+       </property>
+       <property name="text">
+        <string>Review Tag Values</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="finishSpacer">
        <property name="orientation">
         <enum>Qt::Orientation::Horizontal</enum>
@@ -268,6 +281,9 @@
       <widget class="QPushButton" name="buttonImport">
        <property name="visible">
         <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Import every tagged clip in the folder as it stands, without reviewing its tag values.</string>
        </property>
        <property name="text">
         <string>Import Now</string>

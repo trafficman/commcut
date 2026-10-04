@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QProgressDialog, QPushButton, QStyle, QSplashScreen,
     QVBoxLayout, QComboBox, QCompleter,
 )
-from shared.ui_loader import UiLoader
+from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 from shared.tag_form import (
     EMPTY_VOCABULARY_HINT,
@@ -345,6 +345,7 @@ class MediaPlayer(QMainWindow):
         loader.register_widget(TimelineWidget)
         loader.register_widget(TagForm)
         self.ui = loader.load(ui_file, self)
+        adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
 
         video_frame = self.ui.videoContainer

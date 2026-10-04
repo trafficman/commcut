@@ -98,27 +98,45 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
 - Library Importer **backend** (`shared/importing.py`): planning, execution, the
   occupied-destination rule, the transfer modes, untagged discovery, and the
-  evidence-ranked matching the Wizard reads. →
+  evidence-ranked matching both value questions read. →
   [importing.md](importing.md)
-- **Library Mesh Wizard** (`shared/mesh.py`, `importer/mesh.py`): reachable from
-  the main menu's **Import** button, it walks `import/` and asks, once per folder
-  name, what that folder means — a namespace and a tag, or "not a tag". It syncs
-  the vocabulary first and shows what that did, because the sync prunes. A folder
-  name becomes a tag **only** through an explicit `assign`; there is no path that
-  infers one, which is the one thing it exists to guarantee. A folder path that
-  would hand one clip two values for one tag is refused rather than guessed: the
-  namespace goes unassigned and the clip is flagged. It ends at a report. →
-  [importing.md](importing.md#the-library-mesh-wizard)
+- **Untagged Library Mesh** (`shared/mesh.py`, `importer/mesh.py`): reachable from
+  the main menu's **Import** button, it walks `import/`, splits the folder on
+  `has_record`, and asks, once per folder name in the untagged half, what that folder
+  means — a namespace and a tag, or "not a tag". It syncs the vocabulary first and
+  shows what that did, because the sync prunes. A folder name becomes a tag **only**
+  through an explicit `assign`; there is no path that infers one, which is the one
+  thing it exists to guarantee. A folder path that would hand one clip two values for
+  one tag is refused rather than guessed: the namespace goes unassigned and the clip
+  is flagged. A folder where every clip is already tagged is offered straight to the
+  Tagged Library Mesh instead, because those folder names are somebody's *rendering*.
+  It ends at a report. →
+  [importing.md](importing.md#the-untagged-library-mesh)
 - **Library Mesh Tag Editor** (`importer/queue.py`, `importer/rules.py`): the
-  Wizard's hand-off. Each clip in `import/` in turn, with the folder answers
-  applied, a video to pick the title out of, the tag form, and **Manage Autofill
-  Rules** for teaching it that a piece of a file name means a tag. A settled
+  hand-off from the folder names. Each clip in `import/` in turn, with the folder
+  answers applied, a video to pick the title out of, the tag form, and **Manage
+  Autofill Rules** for teaching it that a piece of a file name means a tag. A settled
   clip's `.cnfo` is written immediately, so a long session has a save point per
   clip and the tagged import takes over afterwards unchanged. Every clip is
   visited, because a title is a *region* of a file name rather than a whole
   token, and regions are the one thing that cannot be tokenised — which is also
   why the "auto import and fix up the rest" options are retired rather than
-  merely unused. → [importing.md](importing.md#the-library-mesh-tag-editor)
+  merely unused. Settling a clip does **not** touch `vocabulary.json`: those values
+  are somebody else's until they are read back out of `export/`. → [importing.md](importing.md#the-library-mesh-tag-editor)
+- **Tagged Library Mesh** (`shared/values.py`, `importer/values.py`): the other
+  half of import. One question per distinct tag **value**, however many clips carry
+  it, answered by making it another value in the same namespace, keeping it, or
+  removing the tag entirely — never by moving it between tags, and never inferred
+  from the evidence being a good match. Answers are collected and then written
+  **once**, through `write_record`, so no video is ever opened and no record is ever
+  left half-written; a session with questions still open is refused rather than
+  planned. Merging two values into one is permitted and reported. The clips it
+  leaves unfinished go back through the Tag Editor, which is why that window serves
+  both paths. → [importing.md](importing.md#the-tagged-library-mesh)
+- **One import screen** (`importer/importrun.py`): the progress dialog and the
+  summary, called by both windows that end at the import. Refusals, already-present
+  clips and failures are three separate lists, because lumping them is how a refusal
+  reads as a failure.
 - **The shared tag form** (`shared/tag_form.py`, `shared/tagform.ui`): one
   widget, promoted into both the editor and the queue, so there is one set of
   dropdown rules in the app rather than two that drift. →
@@ -243,24 +261,30 @@ The full vision in `README.md` has three pieces; two are not started:
   and deliberately are not cached. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
   [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
-- **The Library Importer's import window.** The backend, the Wizard and the
-  queue are built and the queue's **Import Now** already runs the import, so the
-  window that would join them is convenience rather than capability. What is
-  genuinely missing is a **library browser** — nothing shows a user what is in
-  `export/`.
+- **The Library Importer's import window.** The backend, both meshes, the queue and
+  the shared import screen are built, and **Import Now** runs the import from either
+  ending, so a window that would join them is convenience rather than capability.
+  What is genuinely missing is a **library browser** — nothing shows a user what is
+  in `export/`.
 - **Routing the unresolved clips to a person.** A clip whose folder path claims
-  one tag twice is flagged `needs_manual_edit`, but there is nowhere for it to
-  go yet: the queue offers to reopen at the first unfinished clip instead. The
-  Manual Edit queue is the answer, and it would replace that offer rather than
-  add to it.
-- **Persisting the learned rules.** Session-scoped behind `AliasTable`'s existing
-  `to_dict`/`from_dict`. A rule is a statement about the file names in
-  `import/`, which are throwaway once imported — but persisting them would make
-  the next import of somebody else's library much cheaper, and it is one flag.
-  → [importing.md](importing.md)
-- **Tagging an untagged library without the Wizard.** It reads folder names only.
-  Filenames are not parsed, by decision — see
+  one tag twice is flagged `needs_manual_edit`, and the queue still has no dedicated
+  screen for those — it offers to reopen at the first unfinished clip instead. A
+  dedicated unresolved-clip queue would replace that offer rather than add to it.
+- **Persisting the learned rules, and the value map.** Both shapes exist —
+  `AliasTable.to_dict` and `ValueTable.to_dict`, each with a version and a refusal
+  for a newer one — and **neither is written**. The two want opposite answers, which
+  is why they are separate items and not one flag: a folder rule is a statement about
+  a throwaway staging folder and probably should not persist at all, while a value
+  translation is a statement about the user's own vocabulary and would apply to the
+  next library too, so it plausibly is worth the overhead. Neither is written until
+  someone decides that. → [importing.md](importing.md)
+- **Tagging an untagged library without the Untagged Library Mesh.** It reads folder
+  names only. Filenames are not parsed, by decision — see
   [importing.md](importing.md#proposals-and-why-they-are-gone).
+- **Choosing a transfer mode.** `plan_import` supports copy, link and move and there
+  is still no screen for the choice: **Import Now** uses the schemes' configured
+  default. Adding the radio buttons means editing `importer/importrun.py` in one
+  place rather than two windows.
 
 ## Known gaps and traps
 
@@ -320,11 +344,12 @@ The full vision in `README.md` has three pieces; two are not started:
   (the editor's export progress and summary) are owned by their window and are not
   part of this. →
   [architecture.md](architecture.md#one-process-one-event-loop-one-visible-window)
-- **The Mesh Wizard's and the tag editor's worker threads never terminated.** Both
+- **The Untagged Library Mesh's and the tag editor's worker threads never
+  terminated.** Both
   windows used `thread.started.connect(worker.run)`, and a slot returning does not
   leave the thread's `exec()` loop — so nothing but `worker.finished →
   thread.quit` ended the thread, `thread.finished` never fired, and everything hung
-  off it silently never ran. The Wizard's `closeEvent` refuses to close while
+  off it silently never ran. That window's `closeEvent` refuses to close while
   `self._thread` is set, so it became *permanently* un-closable; the shell
   discarded that refusal and put the tag editor on top of it, and the two windows'
   threads were destroyed by Qt on the way out — `QThread: Destroyed while thread
@@ -338,7 +363,8 @@ The full vision in `README.md` has three pieces; two are not started:
   exactly as the editor does, which works. → [architecture.md](architecture.md#ending-a-worker-thread)
 - **A stubbed thread cannot catch a thread that never stops.** `FakeThread` emits
   `started` and `finished` by hand and `deleteLater()` sets a flag, so the mesh and
-  queue suites could not see that bug at all — and they didn't. Both files now
+  queue suites could not see that bug at all — and they didn't. All three importer
+  files now
   also carry a `real_thread_*` fixture on a real `QThread` and the real event loop.
   → [testing.md](testing.md)
 - **A window with an mpv player must shut it down before it is destroyed, and

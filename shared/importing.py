@@ -26,7 +26,7 @@ Two modes, and the difference is where the tags came from:
   Filename parsing was built here and then removed rather than left unused: it was
   the one place that would have *inferred* a tag from a name, which
   `docs/naming-and-organization.md` refuses outright. A folder name reaches the
-  Wizard already extracted, and the Wizard asks about it.
+  this mesh already extracted, and this mesh asks about it.
 
 Three rules that are decisions rather than mechanics:
 
@@ -823,7 +823,7 @@ def _suggestible_namespaces() -> tuple[str, ...]:
     """Namespaces a proposal may name: the canonical ones that are not `title`.
 
     The same nine the vocabulary file keeps. A proposal cannot invent a namespace,
-    because `canonical_tag_name` would refuse it and the mesh wizard would have
+    because `canonical_tag_name` would refuse it and the mesh would have
     nothing to map it onto.
     """
     return tuple(sorted(name for name in CANONICAL_TAG_KEYS if name != "title"))

@@ -17,7 +17,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string>Library Mesh Wizard</string>
+   <string>Untagged Library Mesh</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
@@ -26,7 +26,7 @@
    <item>
     <widget class="QLabel" name="labelTitle">
      <property name="text">
-      <string>Library Mesh Wizard</string>
+      <string>Untagged Library Mesh</string>
      </property>
      <property name="styleSheet">
       <string notr="true">font-weight: bold;</string>
@@ -36,7 +36,7 @@
    <item>
     <widget class="QLabel" name="labelIntro">
      <property name="text">
-      <string>Each folder name in the import folder is a likely tag. Tie it to a namespace and a tag, or say it is not a tag at all.</string>
+      <string>Each folder name in the import folder is a likely tag. Tie it to a namespace and a tag, or say it is not a tag at all. Clips that already have a record beside them are skipped here — their tags are already known.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -181,6 +181,19 @@
    </item>
    <item>
     <layout class="QHBoxLayout" name="finishButtons">
+     <item>
+      <widget class="QPushButton" name="buttonValues">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="toolTip">
+        <string>Skip the folder names. Ask, once per tag value, what each one should be called in your library — which is the only question left when every clip here already has a record.</string>
+       </property>
+       <property name="text">
+        <string>Review Tag Values</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QPushButton" name="buttonQueue">
        <property name="visible">

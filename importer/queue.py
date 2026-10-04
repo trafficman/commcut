@@ -1,16 +1,23 @@
 """The Library Mesh Tag Editor: one clip at a time, until the library is done.
 
 Applies to: `importer/queue.py`, `importer/queuewindow.ui`, `importer/rules.py`,
-`shared/mesh.py`, `shared/importing.py`, `shared/tag_form.py`.
+`importer/importrun.py`, `importer/values.py`, `shared/mesh.py`,
+`shared/importing.py`, `shared/values.py`, `shared/tag_form.py`.
 
-The Mesh Wizard has already said what every **folder name** in `import/` means.
-What is left is what it cannot say: a **title**, which is a *region* of a file
-name rather than a whole token, and so the one tag per clip that has to come from
-a person. This window is that per-clip pass, and it is the whole of untagged
+The Untagged Library Mesh has already said what every **folder name** in `import/`
+means. What is left is what it cannot say: a **title**, which is a *region* of a
+file name rather than a whole token, and so the one tag per clip that has to come
+from a person. This window is that per-clip pass, and it is the whole of untagged
 import — the "auto import and fix up the rest" options are retired, because no
 clip can be finished without a title.
 
-Three decisions shape it:
+It also serves the **tagged** path. `shared/values.py` answers one question per
+distinct tag value and rewrites the records; the clips it leaves unfinished — one
+missing a tag it needs, because a required tag was removed — come back here, and
+`is_already_done` picks up exactly them. So this window is reached from either
+mesh, and `docs/importing.md` says which endings each offers.
+
+Four decisions shape it:
 
 - **A settled clip's `.cnfo` is written to `import/` immediately.** The tagged
   import then takes over unchanged — `build_catalog`, `candidates_from_catalog`,
@@ -18,6 +25,13 @@ Three decisions shape it:
   one rather than forking it. It also means an eight-hundred-clip session has a
   save point per clip. Resume asks `missing_required_tags(record)`, *not* "is
   there a record", because a half-tagged record exists and is not finished.
+- **Settling a clip does not touch `vocabulary.json`.** The values in an imported
+  library are somebody else's, and this window is where the user finds that out,
+  not where they are confirmed. They enter the file when `sync_vocabulary` reads
+  them back out of `export/`, which is the one owner of that file's contents and
+  the only source they have any business coming from. Recording them here wrote
+  foreign spellings into the user's tag history and then deleted them on the next
+  open, because the prune only ever counts the library.
 - **The rules are learned from file names and can never set a title.** A rule is
   a standing instruction; a title is per clip. That distinction is the reason the
   title is the only thing still asked for here, and it is enforced in
@@ -43,23 +57,12 @@ from shared.environment import resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QFile, QObject, QThread, Signal, Slot
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QProgressDialog
+from PySide6.QtWidgets import QMainWindow, QMessageBox
 
 from shared.catalog import build_catalog, sync_vocabulary
 from shared.diagnostics import log, log_exception
-from shared.exporting import (
-    ExportSchemes,
-    export_folder,
-    load_export_schemes,
-    missing_required_tags,
-)
-from shared.importing import (
-    candidates_from_catalog,
-    execute_import,
-    find_videos,
-    import_folder,
-    plan_import,
-)
+from shared.exporting import export_folder, missing_required_tags
+from shared.importing import find_videos, import_folder
 from shared.mesh import MeshSession
 from shared.mpv import MpvBridge, create_mpv_player
 from shared.records import (
@@ -69,10 +72,13 @@ from shared.records import (
     write_record,
 )
 from shared.segments import probe_duration
+from shared.session import shell
 from shared.tag_form import TAG_FIELDS, TagForm, field_change_signal
-from shared.ui_loader import UiLoader
-from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
+from shared.ui_loader import UiLoader, adopt_title
+from shared.values import TITLE_TAG, ValueSession
+from shared.vocabulary import get_vocabulary, vocabulary_path
 
+from importer.importrun import confirm_and_import
 from importer.rules import RulesDialog
 
 
@@ -198,7 +204,8 @@ class ProbeWorker(QObject):
 # ---------------------------------------------------------------------------
 
 class QueueWindow(QMainWindow):
-    """Every clip in `import/`, one at a time, with the wizard's answers applied."""
+    """Every clip in `import/` that is not finished yet, one at a time, with the
+    folder answers applied when there is nothing in the record."""
 
     def __init__(self, session: MeshSession = None, root: str | None = None,
                  parent=None):
@@ -207,6 +214,7 @@ class QueueWindow(QMainWindow):
         loader.register_widget(TagForm)
         self.ui = loader.load(
             QFile(resource_path("importer", "queuewindow.ui")), self)
+        adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
 
         self.root = root or import_folder()
@@ -217,6 +225,8 @@ class QueueWindow(QMainWindow):
         self.done = 0
         self.deleted: list[str] = []
         self.unprobeable: list[tuple[str, str]] = []
+        #: Distinct tag values in the records, for the report's offer to review them.
+        self._pending_values = 0
 
         self._thread: QThread | None = None
         self._worker: ProbeWorker | None = None
@@ -230,6 +240,8 @@ class QueueWindow(QMainWindow):
         self.ui.buttonAddTitle.clicked.connect(self.on_add_title)
         self.ui.buttonManageRules.clicked.connect(self.on_manage_rules)
         self.ui.buttonPlay.clicked.connect(self.on_play_pause)
+        self.ui.buttonValues.clicked.connect(self.on_review_values)
+        self.ui.buttonImport.clicked.connect(self.on_import_now)
         # `cursorPositionChanged` rather than a "selection changed" signal,
         # because QPlainTextEdit has none: a selection is a cursor range, and
         # moving either end moves the position. Together with `textChanged` it
@@ -252,7 +264,8 @@ class QueueWindow(QMainWindow):
     # -- input ------------------------------------------------------------
 
     def _build_session(self) -> MeshSession:
-        """Read the library and the import folder the way the Wizard did."""
+        """Read the library and the import folder the way the Untagged Library Mesh
+        did."""
         vocabulary = get_vocabulary(vocabulary_path())
         sync_vocabulary(self.library_root, vocabulary)
         return MeshSession(self.root, find_videos(self.root),
@@ -300,10 +313,15 @@ class QueueWindow(QMainWindow):
             + (f"  ·  {self.done} already done" if self.done else ""))
 
         self.ui.labelConflicts.setText("")
+        # **The record is authoritative when there is one.** It was not always: the
+        # folder answers used to sit underneath it, which resurrected a tag the Tagged
+        # Library Mesh had just removed, whenever this window was reopened carrying a
+        # live `MeshSession`. A clip's tags live in its record — invariant 12 — and
+        # the folder answers only have something to add on a clip that has never been
+        # settled at all.
+        settled = clip.existing_tags()
         resolved = self.session.tags_for_clip(clip.relative_path)
-        form_tags = resolved.tags
-        form_tags.update(clip.existing_tags())
-        self.ui.tagForm.write_tags(form_tags)
+        self.ui.tagForm.write_tags(settled or resolved.tags)
         self.ui.tagForm.refresh_required_fields()
         self._describe_conflicts(resolved)
         self._open_video(clip.path)
@@ -488,7 +506,6 @@ class QueueWindow(QMainWindow):
                 self, "That clip could not be saved",
                 f"{clip.filename} could not be recorded:\n\n{error}")
             return
-        record_use(tags, self.ui.tagForm.vocabulary_path)
         self.done += 1
         self.position += 1
         self._load_current()
@@ -531,11 +548,30 @@ class QueueWindow(QMainWindow):
         self.ui.textFileName.setPlainText("")
         self.ui.labelProgress.setText("Every clip in the import folder has been "
                                       "dealt with.")
+        # **Before** the report is written. The report quotes the count, so building
+        # it first would mean two walks and — worse — a button and a sentence that
+        # could disagree, which is the one thing they exist to prevent.
+        has_values = self._has_values_to_review()
         self.ui.textReport.setPlainText(self._report_text())
         self.ui.textReport.setVisible(True)
+        self.ui.buttonValues.setVisible(has_values)
         self.ui.buttonImport.setVisible(True)
         self.ui.buttonReopen.setVisible(bool(self.deleted or self.unprobeable))
         self._refresh_import_button()
+
+    def _has_values_to_review(self) -> bool:
+        """Whether the Tagged Library Mesh has anything to ask about.
+
+        One walk and one session, built here and shared by the button's visibility
+        and the report's closing line, so the screen cannot offer a window that has
+        nothing to do and then say otherwise three lines lower. Counting the session's
+        entries rather than the tags is what makes the number mean something: two
+        hundred clips that all say `network: CN` is one question, not two hundred.
+        """
+        catalog = build_catalog(self.root)
+        self._pending_values = (
+            len(ValueSession(self.root, catalog).entries()) if catalog.clips else 0)
+        return bool(self._pending_values)
 
     def _report_text(self) -> str:
         lines = [f"Read {len(self.clips) + self.done} clip(s) from {self.root}",
@@ -553,7 +589,15 @@ class QueueWindow(QMainWindow):
             lines.extend(f"  - {name}: {why}" for name, why in self.unprobeable)
         lines.append("")
         lines.append("The tags for every clip you settled are written beside "
-                     "their videos. Import Now hands them to the importer.")
+                     "their videos. Import Now hands them to the importer as they "
+                     "are.")
+        if self._pending_values:
+            lines.append("")
+            lines.append(
+                f"There are {self._pending_values} tag value(s) in those records "
+                f"that came from somebody else's library. Review Tag Values asks "
+                f"about each one, once, however many clips carry it — which is what "
+                f"turns their words into yours before they are filed.")
         return "\n".join(lines)
 
     def _refresh_import_button(self):
@@ -569,6 +613,7 @@ class QueueWindow(QMainWindow):
         self._set_editing(True)
         self.ui.textReport.setVisible(False)
         self.ui.buttonImport.setVisible(False)
+        self.ui.buttonValues.setVisible(False)
         self.ui.buttonReopen.setVisible(False)
         self.position = 0
         self._load_current()
@@ -579,53 +624,30 @@ class QueueWindow(QMainWindow):
                        self.ui.tagForm):
             widget.setVisible(editing)
 
-    # -- the import -------------------------------------------------------
+    # -- onward -----------------------------------------------------------
+
+    def on_review_values(self):
+        """Ask about the tag values in the records before anything is imported.
+
+        The other half of the fork this report offers. A value is a *whole token*
+        shared by however many clips carry it, so it is asked once here rather than
+        per clip — which is the mirror image of why the title was asked per clip,
+        and why the two are two windows rather than one with two modes.
+        """
+        self._close_video()
+        shell().open_safely('values', root=self.root)
 
     def on_import_now(self):
         """Hand the tagged library to the importer, unchanged.
 
         This is the whole of untagged import's back half: every settled clip has a
         `.cnfo` beside it, so the tagged path takes over exactly as it would for a
-        library exported from another commcut.
+        library exported from another commcut — with whatever values those records
+        carry, which is the user's call to have skipped the value mesh.
         """
         self._close_video()
-        catalog = build_catalog(self.root)
-        if not catalog.clips:
-            QMessageBox.information(
-                self, "Nothing to import",
-                "No clip in the import folder has a readable record yet.")
-            return
-
-        progress = QProgressDialog("Importing...", None, 0, 0, self)
-        progress.setWindowTitle("Import")
-        progress.setParent(None)
-        progress.setModal(False)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        try:
-            result = execute_import(
-                plan_import(candidates_from_catalog(catalog),
-                            _schemes(), self.library_root,
-                            existing=build_catalog(self.library_root)),
-                on_progress=lambda done, path: progress.setLabelText(
-                    f"Imported {done} clip(s)\n{path}"),
-            )
-        finally:
-            progress.deleteLater()
-
-        body = [
-            f"Imported {len(result.written)} clip(s) into {self.library_root}.",
-        ]
-        if result.already_present:
-            body.append(f"{len(result.already_present)} were already there.")
-        if result.failed:
-            body.append(f"{len(result.failed)} failed:")
-            body.extend(f"  - {skip}" for skip in result.failed)
-        if result.cancelled:
-            body.append("The run was cancelled. Everything it had already "
-                        "written was kept; running it again finishes the rest.")
-        QMessageBox.information(self, "Import finished", "\n".join(body))
+        confirm_and_import(self, self.root, self.library_root,
+                           os.path.join(PROJECT_ROOT, "settings.json"))
 
     # -- closing ----------------------------------------------------------
 
@@ -673,21 +695,14 @@ def _format_seconds(value: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-def _schemes() -> ExportSchemes:
-    """The user's export schemes, for the import to render destinations with.
-
-    The same snapshot the editor exports through, so a clip that lands in the
-    library from `import/` and one exported from a compilation are named and
-    filed by identical rules.
-    """
-    return load_export_schemes(os.path.join(PROJECT_ROOT, "settings.json"))
-
-
 def create(app, session: MeshSession = None, root: str | None = None):
     """Build the queue. Returns the window, unscaled; the shell shows it.
 
-    `session` is the Mesh Wizard's, carried across by the shell so the folder
-    answers are not asked twice. Omitted, it is rebuilt — which re-reads the
-    library and re-syncs the vocabulary, and is what a direct launch does.
+    `session` is the Untagged Library Mesh's, carried across by the shell so the
+    folder answers are not asked twice. Omitted, it is rebuilt — which re-reads the
+    library and re-syncs the vocabulary, and is what both a direct launch and the
+    Tagged Library Mesh's residue hand-off do. Carrying no clip list across is
+    deliberate: `is_already_done` re-derives the residue from the folder, which is
+    where the truth lives.
     """
     return QueueWindow(session=session, root=root)

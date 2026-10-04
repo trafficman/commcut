@@ -117,7 +117,7 @@ def _is_shipped_default(namespace: str, dedup: str) -> bool:
     theirs alongside it. So an entry whose key matches a default *is* that
     default, whatever casing it happens to be filed under.
     """
-    return any(_dedup_key(value) == dedup
+    return any(value_dedup_key(value) == dedup
                for value in DEFAULT_VALUES.get(namespace, ()))
 
 
@@ -142,12 +142,18 @@ def _normalize_value(value: str) -> str:
     return value.strip()
 
 
-def _dedup_key(value: str) -> str:
-    """The key two values must share to be the same vocabulary entry.
+def value_dedup_key(value: str) -> str:
+    """The key two values must share to be the same entry.
 
     Normalizes to NFC, drops format and control characters, and casefolds, then
     runs the value through the same sanitation a rendered path component gets.
     That last step is what keeps ``A & B`` and ``A-B`` out of the list twice.
+
+    **Public, and one owner.** It is the app's identity rule for a tag value, not a
+    detail of this file: `shared/importing.py:match_value` ranks a foreign value
+    against the library in this key space, and `shared/values.py` keys one entry per
+    distinct value for the same reason. A second normalization in either of those
+    would drift from the one that decides what renders to the same path.
     """
     return normalized_validation_key(sanitize_path_component(value))
 
@@ -226,7 +232,7 @@ class Vocabulary:
         if not normalized:
             return False
         entries = self._values.setdefault(namespace, {})
-        dedup = _dedup_key(normalized)
+        dedup = value_dedup_key(normalized)
         if dedup in entries:
             return False
         entries[dedup] = normalized
@@ -243,7 +249,7 @@ class Vocabulary:
         The opposite of `record`, and the only place a value ever leaves this
         module. Three choices make it the safe operation it has to be:
 
-        - `in_use` holds **raw values**, run through `_dedup_key` here rather
+        - `in_use` holds **raw values**, run through `value_dedup_key` here rather
           than by the caller. Removal happens in the same key space `record()`
           dedupes in, so `Cartoon/Network` and `cartoon network` cannot survive
           a prune that was given `Cartoon Network`.
@@ -276,7 +282,7 @@ class Vocabulary:
             if canonical not in self._values:
                 continue
             keep = {
-                _dedup_key(_normalize_value(value))
+                value_dedup_key(_normalize_value(value))
                 for value in values
                 if isinstance(value, str) and _normalize_value(value)
             }

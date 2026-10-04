@@ -1,4 +1,4 @@
-"""Turning folder names into tags: the Library Mesh Wizard's model.
+"""Turning folder names into tags: the Untagged Library Mesh's model.
 
 Applies to: `shared/mesh.py`, `shared/importing.py` (`match_value`,
 `ValueMatch`, `find_videos`), `shared/catalog.py`, `shared/vocabulary.py`.
@@ -49,8 +49,8 @@ from shared.vocabulary import Vocabulary
 
 #: A folder name's state. `rejected` is distinct from `unmeshed` because Reject is
 #: a *decision* -- "this folder's name is not a tag" -- while unmeshed is the
-#: absence of one. The Manual Edit queue, when it exists, is a third destination
-#: and needs no change here.
+#: absence of one. The tag editor's queue, when it takes over, is a third
+    #: destination and needs no change here.
 UNMESHED = "unmeshed"
 MESHED = "meshed"
 REJECTED = "rejected"
@@ -184,7 +184,7 @@ class MeshPrompt:
     #: Pre-selected in the namespace dropdown, or None. Set only when there is
     #: exactly one match: "if Toonami is only present in the block namespace,
     #: assume it is a block", and with two candidates assuming either one is the
-    #: guess the wizard is supposed to prevent.
+    #: guess this window is supposed to prevent.
     suggested_namespace: str | None
     #: Ranked existing values, most evidence first. The pre-selection.
     suggested_values: tuple[ValueMatch, ...]
@@ -198,7 +198,7 @@ class MeshPrompt:
 class AliasTable:
     """The session's output: every decision, in one serialisable value.
 
-    In-memory for now, because the wizard is still being designed -- but the shape
+    In-memory for now, because the mesh design is still settling -- but the shape
     is settled here so persistence is a later additive change rather than a
     redesign. `to_dict` is what a `folder-aliases.json` would hold; `from_dict` is
     what a future run would read.
@@ -225,7 +225,7 @@ class AliasTable:
             "version": ALIAS_TABLE_VERSION,
             "entries": [
                 {"name": e.name, "namespace": e.namespace, "value": e.value,
-                 "state": e.state}
+                 "state": e.state, "learned": e.learned}
                 for e in self.entries
             ],
         }
@@ -238,6 +238,13 @@ class AliasTable:
         raising: a file written by a newer build should cost the user their saved
         decisions for that name, not the whole table. Everything else is refused,
         because a half-read alias table is how a tag gets applied wrongly.
+
+        `learned` round-trips, and it has to. It is what distinguishes a folder name
+        from a learned rule, and `remove_rule` refuses a folder name — so an entry
+        that came back as `LEARNED_FOLDER` because the field was not written would
+        report a saved rule as un-removable. A `learned` this build does not
+        recognise reads as a folder name, which is the safe direction: the entry is
+        then still meshable, just not forgettable.
         """
         version = data.get("version")
         if version != ALIAS_TABLE_VERSION:
@@ -248,11 +255,13 @@ class AliasTable:
         entries = []
         for raw in data.get("entries", []):
             state = raw.get("state")
+            learned = raw.get("learned")
             entries.append(AliasEntry(
                 name=raw["name"],
                 state=state if state in (MESHED, REJECTED) else UNMESHED,
                 namespace=raw.get("namespace"),
                 value=raw.get("value"),
+                learned=learned if learned == LEARNED_RULE else LEARNED_FOLDER,
             ))
         return cls(entries=tuple(entries))
 
@@ -283,8 +292,8 @@ class ResolvedTags:
     namespace was claimed twice on this path and **the tags are incomplete**: the
     contested namespace is deliberately absent rather than filled in with whichever
     folder happened to come first, because a guess written to a `.cnfo` is the
-    "silently wrong forever" failure the wizard exists to prevent. Those clips go to
-    a person.
+    "silently wrong forever" failure this window exists to prevent. Those clips go
+    to a person.
 
     The determinate tags are still here on purpose: an edit screen can prefill
     everything that *is* decided and ask about only the one that is not.
@@ -376,12 +385,14 @@ def _validate_namespace(namespace: str) -> str:
 
 
 class MeshSession:
-    """One run of the wizard over one folder tree.
+    """One run of this mesh over one folder tree.
 
     `videos` is what `shared.importing.find_videos` returns, or any iterable of
-    things with a `relative_path`. `library` is the destination library's
-    `Catalog` and `vocabulary` a `Vocabulary`, both optional and both only ever
-    read — the wizard changes neither.
+    things with a `relative_path` — and the Untagged Library Mesh passes **only the
+    clips with no record**, because a clip whose tags are already known contributes
+    nothing here and its folder names are that install's rendering rather than an
+    answer. `library` is the destination library's `Catalog` and `vocabulary` a
+    `Vocabulary`, both optional and both only ever read — this mesh changes neither.
     """
 
     def __init__(
@@ -580,8 +591,8 @@ class MeshSession:
         """Decide that `name` is not a tag at all.
 
         Its videos still import; they simply contribute nothing from that folder
-        name. Distinct from leaving it unmeshed, and it is the state the Manual Edit
-        queue will later take over.
+        name. Distinct from leaving it unmeshed, and it is the state the tag editor
+        queue already takes over.
         """
         entry = self._check_unmeshed(name)
         self._entries[name] = replace(entry, state=REJECTED)
@@ -612,7 +623,7 @@ class MeshSession:
     def next_prompt(self) -> MeshPrompt | None:
         """The next question, or None when every name has been dealt with.
 
-        The whole of the wizard's decision-making. The window asks for this, shows
+        The whole of this mesh's decision-making. The window asks for this, shows
         it, and calls `assign` or `reject` with the answer.
         """
         chosen = self._best_chain()

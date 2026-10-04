@@ -6,7 +6,7 @@ Applies to: `importer/rules.py`, `importer/queue.py`, `shared/mesh.py`
 Where the user teaches commcut that a piece of a file name means a tag, so it
 fills that tag in for them from then on.
 
-The rules live in the Mesh Wizard's own table rather than in a list of their own,
+The rules live in the Untagged Library Mesh's own table rather than in a list of their own,
 which is the reason this dialog looks the way it does: **a literal already in the
 table is not added, it is shown and offered for editing.** A folder named `30 Sec`
 and a rule for `30 Sec` are one answer to one question, and if two systems held
@@ -14,9 +14,10 @@ them separately they would drift without either noticing. So Add reports a
 duplicate rather than quietly overwriting, and the dialog's whole job becomes
 "what does this string already mean?" and "change it?".
 
-The namespace and value pickers are the same ones the Wizard offers, and the value
+The namespace and value pickers are the same ones that mesh offers, and the value
 list is pre-selected from `match_value` — so typing `Toonami` can propose
-`block`, with the evidence attached, exactly as it does in the Wizard. A user
+`block`, with the evidence attached, exactly as it does in the folder mesh. A
+user
 should not have to learn two vocabularies for one table.
 
 Built in code rather than from a `.ui`, like the editor's export summary dialog:
@@ -172,7 +173,7 @@ class RulesDialog(QDialog):
     def _on_literal_changed(self, literal: str):
         """Show what this literal already means, if anything.
 
-        The evidence line is the same ranked, counted information the Wizard
+        The evidence line is the same ranked, counted information that mesh
         offers, so "which namespace" is answered with `block (14 clips)` rather
         than a guess.
         """
@@ -187,7 +188,7 @@ class RulesDialog(QDialog):
             else:
                 self.labelEvidence.setText(
                     f"That is a folder name in this library, not a rule. A folder "
-                    f"name is meshed in the Mesh Wizard; this dialog is for "
+                    f"name is meshed in the Untagged Library Mesh; this dialog is for "
                     f"strings found inside file names.")
                 self._select_pair("", "")
             return
@@ -226,7 +227,7 @@ class RulesDialog(QDialog):
 
         The refusal is the point: one literal, one meaning, always. A duplicate is
         reported with the existing meaning shown, and a second press edits it —
-        which is the answer the Wizard's modal needs and the reason `learn_rule`
+        which is the answer that modal needs and the reason `learn_rule`
         returns the entry rather than raising.
         """
         literal = self.editLiteral.currentText().strip()

@@ -60,6 +60,7 @@ UI_FILES = (
     ("importer", "meshwindow.ui"),
     ("shared", "tagform.ui"),
     ("importer", "queuewindow.ui"),
+    ("importer", "valueswindow.ui"),
 )
 
 

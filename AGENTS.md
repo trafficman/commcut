@@ -73,9 +73,9 @@ number `packaging/build.py` checks a tag against), `diagnostics`
 `.cmct`), `sources` (which videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back),
-`mesh` (the Mesh Wizard's model), `tag_form` (the tag fields both windows
-show), `ui_loader` (promoted widgets). Per-module detail:
-[docs/architecture.md](docs/architecture.md).
+`mesh` (the Untagged Library Mesh), `values` (the Tagged Library Mesh),
+`tag_form` (the tag fields both windows show), `ui_loader` (promoted widgets).
+Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 

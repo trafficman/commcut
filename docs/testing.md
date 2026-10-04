@@ -42,7 +42,7 @@ Six test files bind the real `MediaPlayer` through `EditorStub`:
 imported more widely (`test_main_window.py`).
 
 **A modal dialog reached from a test has to be answered, not shown.** The menu's
-Editor button opens a `QFileDialog`; the mesh wizard asks a `QMessageBox` before
+Editor button opens a `QFileDialog`; the Untagged Library Mesh asks a `QMessageBox` before
 committing a conflicting tag; the Settings close handler can raise one while a sync
 is running. A real one under `QT_QPA_PLATFORM=offscreen` blocks on nobody and hangs
 the run rather than failing. Each is stubbed in its own fixture — the dialog through
@@ -75,12 +75,14 @@ state.
 | `test_records.py` | the clip record: the XML format, its reader, and the atomic publish |
 | `test_vocabulary.py` | `vocabulary.json`: the shipped defaults, the unusable-file fallbacks, the dedup rule, the atomic write, and `prune_to` |
 | `test_catalog.py` | the library walk: what counts as a clip, what is ignored, what is reported (by code as well as by sentence), progress, cancel, and the record-over-filename guard. Also the vocabulary sync: union, prune, the empty-library and cancelled-write rules, and idempotence |
-| `test_mesh.py` | the Mesh Wizard's model: that a fresh session is empty even when every folder name matches exactly, one answer per folder name, the most-open-path-first sequencing, conflicts, derived tags, the alias table, the report, and the learned rules — including that a literal already in the table is refused and that a rule may not target `title` |
-| `test_mesh_window.py` | the wizard window: the coloured path bar, both questions, Assign disabled until both are filled, the conflict asked before it is committed, the vocabulary sync summarised on screen, the hand-off to the queue, and the close guard |
-| `test_queue.py` | the Library Mesh Tag Editor: resume (including that a partial record is not "done"), the folder answers and the learned rules reaching the form, Add Title, Next writing a record `build_catalog` reads back, Skip - Delete, the report's three cases, and the player |
+| `test_mesh.py` | the Untagged Library Mesh's model: that a fresh session is empty even when every folder name matches exactly, one answer per folder name, the most-open-path-first sequencing, conflicts, derived tags, the alias table (including that `learned` survives the round trip), the report, and the learned rules — including that a literal already in the table is refused and that a rule may not target `title` |
+| `test_mesh_window.py` | that window: the coloured path bar, both questions, Assign disabled until both are filled, the conflict asked before it is committed, the vocabulary sync summarised on screen, routing an all-tagged folder to the Tagged Library Mesh and meshing only the untagged half of a mixed one, the hand-off to the queue, and the close guard |
+| `test_queue.py` | the Library Mesh Tag Editor: resume (including that a partial record is not "done"), the folder answers and the learned rules reaching the form, that an existing record is authoritative over the folder answers, that settling never touches the vocabulary, Add Title, Next writing a record `build_catalog` reads back, Skip - Delete, the report's three cases and its two endings, and the player |
+| `test_values.py` | the Tagged Library Mesh's model: that a fresh session asks about every value even when the library uses it exactly, one entry per distinct value however many clips carry it, most-affected-first sequencing, that no call can move a value between tags, that a half-answered session is refused rather than planned, that only the records an answer changed are written, merges, and the value table |
+| `test_values_window.py` | that window: the three answers, the library's spellings offered as suggestions rather than decisions, a refused value being a label rather than a crash, nothing written until every value is answered, the residue button appearing only when a clip is still missing a required tag, and the close guard |
 | `test_importing.py` | the importer backend: records becoming candidates, an imported clip landing where export would put it, per-clip skipping, skip-if-identical against a library built by really importing, the three transfer modes, the space preflight, cancel and resume, untagged discovery, and `match_value` |
+| `test_import_flow.py` | the whole importer end to end on real files, with no Qt: a mixed folder through the folder-name pass, the per-clip pass, the value pass and the import, plus what a translation is not allowed to change about a record |
 | `test_tag_form.py` | the shared tag form: what the fields read back, the dropdown ordering, the empty-list placeholder, the required-field outline, and that the editor's `.ui` does not draw its own grid |
-| `test_queue.py` | the Library Mesh Tag Editor: resume (including that a partial record is not "done"), the folder answers and the learned rules reaching the form, Add Title, Next writing a record `build_catalog` reads back, Skip - Delete, the report's three cases, and the player |
 | `test_editor_vocabulary.py` | the tag dropdowns: what they offer, the most-recently-used ordering, what counts as "used", and that a refresh cannot eat a value being typed |
 | `test_editor_locks.py` | tag-lock display, pinned-value semantics, locked-only segment carry-over |
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |

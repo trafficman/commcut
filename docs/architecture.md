@@ -65,11 +65,14 @@ commcut/
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
-│   ├── mesh.py              # MeshSession: the wizard's model, and the alias table
+│   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
+│   ├── values.py            # ValueSession: the tag-value model, and the value table
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── importer/                # The Library Importer's windows
-│   ├── mesh.py              # The Mesh Wizard
+│   ├── mesh.py              # The Untagged Library Mesh
 │   ├── queue.py             # The Library Mesh Tag Editor
+│   ├── values.py            # The Tagged Library Mesh
+│   ├── importrun.py         # The progress dialog and summary both endings share
 │   ├── rules.py             # The Manage Autofill Rules dialog
 ├── tests/                   # pytest suite (see testing.md)
 └── prototypes/              # Earlier exploration / alternatives
@@ -180,9 +183,10 @@ player that has already gone.
 ## Ending a worker thread
 
 `create_mpv_player` is not the only thing a window owns that must not outlive it.
-Four windows run a `QThread`: the editor's export, the Settings window's
-vocabulary sync, the Mesh Wizard's load, and the tag editor's duration probe. They
-share one shape, and two details of it are load-bearing.
+Five windows run a `QThread`: the editor's export, the Settings window's
+vocabulary sync, the Untagged Library Mesh's load, the Tagged Library Mesh's load,
+and the tag editor's duration probe. They share one shape, and two details of it are
+load-bearing.
 
 **A thread has to be told to stop.** `thread.started.connect(worker.run)` runs the
 worker's slot inside the thread's `exec()` loop, and a slot returning does not
@@ -206,12 +210,12 @@ usually "refuse to close while `self._thread` is set", because a `QThread` still
 running when its owner is destroyed aborts the process. That guard only comes off
 if the thread really stopped. So a thread that never ends makes the window
 permanently un-closable, and the shell's rule above stops it from being replaced
-— the wizard could not be closed at all, and advancing from it to the tag editor
+— the window could not be closed at all, and advancing from it to the tag editor
 left two live windows up before the abort.
 
 Tests cover this with real `QThread`s and the real event loop, in
-`tests/test_mesh_window.py` and `tests/test_queue.py`. See
-[testing.md](testing.md).
+`tests/test_mesh_window.py`, `tests/test_values_window.py` and `tests/test_queue.py`.
+See [testing.md](testing.md).
 
 ## The main menu
 
@@ -226,9 +230,13 @@ the Editing Wizard — it detects clip boundaries and hands off to the editor it
 — so the dialog, scanner, and editor are one journey, not three menu items. The
 window says so in a hint label and a tooltip, since "Editor" alone does not.
 
-**"Import" opens the Library Mesh Wizard** over `import/`, which asks what each
-folder name in there means. It is standalone: it ends at a report and imports
-nothing.
+**"Import" opens the Untagged Library Mesh** over `import/`, which asks what each
+folder name in the untagged half of it means. That window is also the **router** for
+the whole importer: its worker already walks `import/`, so it is the one place that
+knows which half the folder is, and a folder where every clip already has a record is
+handed to the Tagged Library Mesh rather than asked about folder names that are
+somebody install's *rendered* output. See
+[importing.md](importing.md#the-flow).
 
 The file dialog is modal, which puts it outside the shell: only the **Settings**
 and **Import** buttons call `shell().open_safely(name)` directly, and **Editor**
@@ -419,14 +427,22 @@ The shared modules are:
    each one and publishes its record. Also `find_videos()` for untagged discovery
    and `match_value()`, which ranks evidence without choosing. See
    [importing.md](importing.md).
- - `shared/mesh.py` — the Mesh Wizard's model, with no Qt: which folder name is
-   being asked about, what the two questions are, which path to show, and the
-   alias table that comes out. A folder name and an autofill rule are the same
-   kind of thing — a literal, and what a person decided it means — so they share
-   one table and one collision rule, and a literal already in it is refused
-   rather than duplicated. A rule may not target `title`. `importer/mesh.py` and
-   `importer/queue.py` render this and decide nothing. See
-   [importing.md](importing.md).
+  - `shared/mesh.py` — the Untagged Library Mesh's model, with no Qt: which folder
+    name is being asked about, what the two questions are, which path to show, and the
+    alias table that comes out. A folder name and an autofill rule are the same
+    kind of thing — a literal, and what a person decided it means — so they share
+    one table and one collision rule, and a literal already in it is refused
+    rather than duplicated. A rule may not target `title`. `importer/mesh.py` and
+    `importer/queue.py` render this and decide nothing. See
+    [importing.md](importing.md).
+  - `shared/values.py` — the Tagged Library Mesh's model, also with no Qt, and
+    deliberately **not** a mode of `MeshSession`. A value is keyed by
+    `(namespace, value)` and is renamed within its namespace or removed; a folder
+    name and a rule, by contrast, share one table because a literal means one thing
+    whatever its source. The `accumulate` collision rule is the wrong rule here —
+    two different values becoming one is the normal case — so the two tables are
+    kept apart deliberately. `importer/values.py` renders it and decides nothing.
+    See [importing.md](importing.md#the-tagged-library-mesh).
  - `shared/tag_form.py` — the ten tag fields, one widget, promoted into both the
    editor and the queue. Two forms would be two dropdown configurations, and each
    of those settings decides what a typed value becomes; see

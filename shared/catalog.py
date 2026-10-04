@@ -145,6 +145,34 @@ def _ignore_progress(_clips_found: int, _relative_path: str) -> None:
     return None
 
 
+def problem_summary(problems, consequence: str = "so they were skipped:") -> str:
+    """Records that could not be read, as one screen-sized block.
+
+    Lives here beside `CatalogProblem`, which is the type it formats, because the
+    importer has two windows that walk a folder and both need it — and a formatter of
+    a shared type is not one window's private wording.
+
+    Named rather than counted, and **grouped by reason**, so the user learns
+    something specific: a friend's export using a tag this build does not know is a
+    different problem from a corrupt file, and both are theirs to fix. Four hundred
+    sentences that all say something is wrong is a screen nobody reads.
+
+    `consequence` is the one thing the callers disagree about, and it is a parameter
+    rather than a rewording of this function's output: one window is reading the
+    library as *evidence*, the other is importing from it.
+    """
+    if not problems:
+        return ""
+    lines = [f"{len(problems)} record(s) could not be read, {consequence}"]
+    for reason in sorted({problem.reason for problem in problems}):
+        group = [problem for problem in problems if problem.reason == reason]
+        lines.append(f"  {reason} ({len(group)}):")
+        lines.extend(f"    - {problem.path}" for problem in group[:8])
+        if len(group) > 8:
+            lines.append(f"    ... and {len(group) - 8} more")
+    return "\n".join(lines)
+
+
 def _relative(root: str, path: str) -> str:
     """`path` relative to `root`, with forward slashes."""
     relative = os.path.relpath(path, root)

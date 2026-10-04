@@ -1,4 +1,4 @@
-"""Tests for the Library Mesh Wizard window.
+"""Tests for the Untagged Library Mesh window.
 
 The wizard's *decisions* are `tests/test_mesh.py`'s subject — this file is about
 rendering them, plus the two things only a window can do:
@@ -42,7 +42,7 @@ def videos_in(root, *relative_paths):
 
 
 def library_with(*relative_paths):
-    """A destination library, so the wizard has evidence to rank."""
+    """A destination library, so the mesh has evidence to rank."""
     for relative in relative_paths:
         path = os.path.join(str(relative))
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -140,11 +140,28 @@ def wizard(qapp, monkeypatch, tmp_path):
 def build_wizard(wizard, *relative_paths):
     """A second window over the same fixture, with some videos in it.
 
-    A second window rather than a mutation of the first, because the wizard reads
+    A second window rather than a mutation of the first, because the window reads
     its whole input once at construction, which is itself worth not working around.
     """
     videos_in(wizard.import_root, *relative_paths)
     return mesh_module.MeshWindow(wizard.import_root)
+
+
+def build_tagged(wizard, relative, tags=(("network", "CN"), ("filler_type", "Ad"),
+                                        ("time_period", "2000s"))):
+    """A clip that already has a record beside it — somebody else's library.
+
+    `tags` carries no `title` on purpose: the whole point of `has_record` is that the
+    *tags* are known, and the folder names around it are a rendering, not an answer.
+    """
+    from shared.records import ClipRecord, write_record
+
+    path = os.path.join(wizard.import_root, *relative.split("/"))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\0" * 8)
+    write_record(os.path.splitext(path)[0] + RECORD_EXTENSION, ClipRecord(
+        source=relative, segment_index=0, start=0.0, duration=30.0, tags=tags))
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +177,99 @@ def test_the_window_offers_the_namespace_dropdown_without_title(wizard):
     assert "network" in namespaces
 
 
+def test_the_window_carries_the_name_its_ui_gives_it(wizard):
+    """The `.ui` is the one place the name is written down, and Qt does not copy
+    `windowTitle` from a central widget to its `QMainWindow`."""
+    assert wizard.ui.windowTitle() == "Untagged Library Mesh"
+    assert wizard.windowTitle() == wizard.ui.windowTitle()
+
+
 def test_an_empty_folder_says_so_and_offers_only_close(wizard):
     prompt = wizard.ui.labelQuestion.text()
 
     assert "No videos were found" in prompt
     assert wizard.ui.buttonReject.isEnabled() is False
     assert wizard.ui.buttonClose.isHidden() is False
+    assert wizard.ui.buttonValues.isHidden() is True, (
+        "an empty folder has nothing to review either")
+
+
+def test_a_folder_where_every_clip_is_tagged_is_offered_the_value_mesh(wizard):
+    """The front door for a library exported from another commcut.
+
+    The folder names here are that install's *rendered* output, so asking what each
+    one means would produce answers about a rendering rather than about the clips.
+    `has_record` is the one fact that says so, and this is the branch it exists for.
+    """
+    build_tagged(wizard, "Cartoon Network/2000s/Promo/Toonami - Vol 3.mp4")
+
+    window = mesh_module.MeshWindow(wizard.import_root)
+    try:
+        assert "already has a record" in window.ui.labelQuestion.text()
+        assert wizard.ui.buttonReject.isEnabled() is False
+        assert window.ui.buttonValues.isHidden() is False
+        assert "Cartoon Network" not in window.ui.labelQuestion.text(), (
+            "and the rendered folder names are not put up as questions")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_value_mesh_hand_off_carries_only_the_folder(wizard, monkeypatch):
+    """No clip list travels with it — the Tagged Library Mesh builds its own session
+    from the folder, which is where the truth lives."""
+    calls = []
+
+    class FakeShell:
+        def open_safely(self, name, **kwargs):
+            calls.append((name, kwargs))
+
+    monkeypatch.setattr(mesh_module, "shell", lambda: FakeShell())
+    build_tagged(wizard, "CN/A.mp4")
+    window = mesh_module.MeshWindow(wizard.import_root)
+    try:
+        window.on_review_values()
+        assert calls == [("values", {"root": wizard.import_root})]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_mixed_folder_meshes_the_untagged_half_and_says_what_it_skipped(wizard):
+    """The interesting case, and the one `has_record` exists for: a folder holding
+    both halves at once. The untagged half is meshed, and the tagged half is named
+    rather than silently ignored."""
+    build_tagged(wizard, "CN/Already Done.mp4")
+    videos_in(wizard.import_root, "Toonami/A.mp4")
+
+    window = mesh_module.MeshWindow(wizard.import_root)
+    try:
+        assert "Toonami" in window.ui.labelQuestion.text(), (
+            "the untagged clip's folder is a question")
+        assert window.session.pending(), "and it is meshable"
+
+        while window.session.pending():
+            window.on_reject()
+        report = window.ui.textReport.toPlainText()
+        assert "1 clip(s) in this folder already had a record" in report
+        assert "Tagged Library Mesh" in report
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_mixed_folder_does_not_mesh_the_already_tagged_half(wizard):
+    """Their folder names are somebody's rendering. Tying them to a namespace here
+    would be answering a question nobody asked."""
+    build_tagged(wizard, "Cartoon Network/Already Done.mp4")
+    videos_in(wizard.import_root, "Toonami/A.mp4")
+
+    window = mesh_module.MeshWindow(wizard.import_root)
+    try:
+        assert [entry.name for entry in window.session.entries()] == ["Toonami"]
+    finally:
+        window.close()
+        window.deleteLater()
 
 
 def test_the_first_page_shows_the_deepest_unmeshed_path(wizard):
@@ -403,7 +507,7 @@ def test_the_report_hands_the_session_to_the_queue(wizard):
     """The alias table crosses with the window rather than being written to disk.
 
     It is a statement about *this* folder tree, so a saved copy would be stale
-    the moment the user reorganises — and re-running the Wizard rebuilds it from
+    the moment the user reorganises — and re-running that window rebuilds it from
     the tree, which is where its truth lives.
     """
     import mainwindow
@@ -619,14 +723,14 @@ def test_the_wizard_becomes_closable_once_it_finished_reading(
 
     `closeEvent` refuses while `self._thread` is set, and only `_on_stopped`
     clears it -- on `thread.finished`, which a thread that never ends never
-    emits. So the wizard could not be closed at all, and the shell ignored the
+    emits. So that window could not be closed at all, and the shell ignored the
     refusal and put the tag editor on top of it: two live windows, each holding
     a thread that was never going to stop.
     """
     window, qapp = real_thread_wizard
 
     assert _pump_until(qapp, lambda: window._thread is None), (
-        "the wizard still holds its loading thread, so its closeEvent refuses "
+        "the window still holds its loading thread, so its closeEvent refuses "
         "to close and the shell can never replace it")
 
     assert window.close(), "and with no thread left, closing it must work"

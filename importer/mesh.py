@@ -1,4 +1,4 @@
-"""The Library Mesh Wizard window.
+"""The Untagged Library Mesh window.
 
 Applies to: `importer/mesh.py`, `importer/meshwindow.ui`, `shared/mesh.py`
 (`MeshSession`), `shared/importing.py` (`find_videos`, `sync_vocabulary`),
@@ -17,9 +17,19 @@ evidence the dropdowns are ranked by. All three are a worker, because the librar
 walk is a network share as often as it is a local folder and
 `docs/status.md` names that as the thing that hangs the app.
 
-The wizard ends at a report. It does not import anything: the Manual Edit queue and
-the export are not built, and `REJECTED` already exists as the state the queue will
-take over.
+**The worker also decides which half of the import this window is.** `find_videos`
+reports `has_record` per clip, and that is the one fact that separates the two modes
+`docs/importing.md` describes: a clip with no `.cnfo` has nobody's idea of what it
+is, and a clip with one already has an answer. So a folder where every clip is
+already tagged is offered straight to the Tagged Library Mesh rather than asked about
+folder names that are somebody's *rendered* folders — which carry no information
+worth meshing, and whose folder names are the user's or nobody's rather than a tag's.
+That branch is why the entry point is here and not in a window of its own: the scan
+has already happened, off the GUI thread, and asking for it again would be the one
+thing a network share cannot afford.
+
+The window ends at a report. It imports nothing itself: the Tag Editor settles the
+clips into records, and the import is offered from there.
 """
 
 import os
@@ -35,13 +45,13 @@ SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QMainWindow, QMessageBox
 
-from shared.catalog import build_catalog, sync_vocabulary
+from shared.catalog import build_catalog, problem_summary, sync_vocabulary
 from shared.diagnostics import log, log_exception
 from shared.exporting import export_folder
 from shared.importing import find_videos, import_folder
 from shared.mesh import COLOURS, MESHED, REJECTED, MeshSession, namespace_choices
 from shared.session import shell
-from shared.ui_loader import UiLoader
+from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import get_vocabulary, vocabulary_path
 
 
@@ -83,7 +93,7 @@ class MeshWorker(QObject):
     close forever, and the thread is still spinning when Qt destroys it at exit.
     """
 
-    ready = Signal(object, str, str)
+    ready = Signal(object, str, str, int)
     failed = Signal(str)
     advanced = Signal(str)
     finished = Signal()
@@ -110,22 +120,27 @@ class MeshWorker(QObject):
 
             self.advanced.emit("Reading the import folder...")
             videos = find_videos(self.root)
+            # The one fact that separates the two import modes. A clip whose record
+            # is already there has somebody's answer; the folder names around it are
+            # how *that* library chose to render, not a tag waiting to be tied.
+            untagged = [video for video in videos if not video.has_record]
+            tagged = len(videos) - len(untagged)
 
             self.advanced.emit("Reading your library...")
             library = build_catalog(export_folder())
 
-            session = MeshSession(self.root, videos, library=library,
+            session = MeshSession(self.root, untagged, library=library,
                                   vocabulary=vocabulary)
             summary = vocabulary_sync_summary(sync)
-            problems = problem_summary(library.problems)
+            problems = problem_summary(
+                library.problems, "so they were not used as evidence:")
         except Exception as error:  # noqa: BLE001 - reported, never raised
-            log_exception(f"the mesh wizard could not read its input: {error}",
-                          error)
+            log_exception("the untagged mesh could not read its input", error)
             self.failed.emit(f"{type(error).__name__}: {error}")
             return
         finally:
             self.finished.emit()
-        self.ready.emit(session, summary, problems)
+        self.ready.emit(session, summary, problems, tagged)
 
 
 def vocabulary_sync_summary(sync) -> str:
@@ -150,37 +165,20 @@ def vocabulary_sync_summary(sync) -> str:
     return " ".join(lines)
 
 
-def problem_summary(problems) -> str:
-    """Library records that could not be read, as one screen-sized block.
-
-    Named rather than counted, and grouped by reason, so the user learns something
-    specific: a friend's export using a tag this build does not know is a different
-    problem from a corrupt file, and both are theirs to fix.
-    """
-    if not problems:
-        return ""
-    lines = [f"{len(problems)} record(s) in your library could not be read, so "
-             f"they were not used as evidence:"]
-    for reason in sorted({problem.reason for problem in problems}):
-        group = [problem for problem in problems if problem.reason == reason]
-        lines.append(f"  {reason} ({len(group)}):")
-        lines.extend(f"    - {problem.path}" for problem in group[:8])
-        if len(group) > 8:
-            lines.append(f"    ... and {len(group) - 8} more")
-    return "\n".join(lines)
-
-
 class MeshWindow(QMainWindow):
     """Asks, once per folder name, what that folder means."""
 
     def __init__(self, root: str | None = None):
         super().__init__()
         self.ui = UiLoader().load(resource_path("importer", "meshwindow.ui"))
+        adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
 
         self.root = root or import_folder()
         self.session: MeshSession | None = None
         self._intro = ""
+        #: Clips in the folder that already had a record when it was scanned.
+        self._tagged = 0
 
         self.ui.comboNamespace.addItems(namespace_choices())
         self.ui.comboNamespace.currentTextChanged.connect(
@@ -190,9 +188,11 @@ class MeshWindow(QMainWindow):
         self.ui.buttonReject.clicked.connect(self.on_reject)
         self.ui.buttonClose.clicked.connect(self.close)
         self.ui.buttonQueue.clicked.connect(self.on_queue)
+        self.ui.buttonValues.clicked.connect(self.on_review_values)
         self.ui.textReport.setVisible(False)
         self.ui.buttonClose.setVisible(False)
         self.ui.buttonQueue.setVisible(False)
+        self.ui.buttonValues.setVisible(False)
 
         self._thread: QThread | None = None
         self._worker: MeshWorker | None = None
@@ -219,8 +219,10 @@ class MeshWindow(QMainWindow):
         self.ui.labelProgress.setText(f"Reading {self.root}...")
         thread.start()
 
-    def _on_ready(self, session, summary: str, problems: str) -> None:
+    def _on_ready(self, session, summary: str, problems: str,
+                  tagged: int = 0) -> None:
         self.session = session
+        self._tagged = tagged
         self._intro = "\n\n".join(part for part in (summary, problems) if part)
         if not len(session.entries()):
             self._show_empty()
@@ -230,7 +232,8 @@ class MeshWindow(QMainWindow):
 
     def _on_failed(self, message: str) -> None:
         self._set_question_enabled(False)
-        QMessageBox.warning(self, "The Mesh Wizard could not start", message)
+        QMessageBox.warning(
+            self, "The Untagged Library Mesh could not start", message)
         self.ui.labelQuestion.setText("")
         self.ui.labelPathBar.setText("")
         self.ui.labelProgress.setText(message)
@@ -253,16 +256,45 @@ class MeshWindow(QMainWindow):
     # -- one page ---------------------------------------------------------
 
     def _show_empty(self) -> None:
-        """Nothing in the folder to mesh."""
+        """Nothing here needs a folder name meshed.
+
+        Two quite different situations land here, and they are told apart by the one
+        fact the scan produced. An **empty folder** has nothing in it at all. A
+        folder where **every clip already has a record** has nothing to mesh because
+        its tags are already known — and that is a job already waiting, so it is
+        offered rather than reported as an absence.
+        """
         self._set_question_enabled(False)
         self.ui.labelPathBar.setText("")
+        if self._tagged:
+            self._show_all_tagged()
+            return
         self.ui.labelQuestion.setText(
             f"No videos were found in:\n{self.root}\n\n"
-            f"Put some finished clips in there, or point the wizard at another "
-            f"folder."
+            f"Put some finished clips in there, or point this at another folder."
         )
         self.ui.labelEvidence.setText(self._intro)
         self.ui.labelProgress.setText("")
+        self.ui.buttonClose.setVisible(True)
+
+    def _show_all_tagged(self) -> None:
+        """Every clip here already has a record: nothing to mesh, something to do.
+
+        The front door for a library exported from another commcut. The folder names
+        here are that install's *rendered* output — `Cartoon Network/2000s/Promo/` is
+        three tags' worth of information in somebody else's scheme, and asking what
+        each one means would produce answers about a rendering rather than about the
+        clips. So the question is not asked at all.
+        """
+        self.ui.labelQuestion.setText(
+            f"Every one of the {self._tagged} clip(s) in:\n{self.root}\n\n"
+            f"already has a record beside it, so its tags are already known. What is "
+            f"left is whether the values in those records are the ones your library "
+            f"uses — which is one question per value, however many clips carry it."
+        )
+        self.ui.labelEvidence.setText(self._intro)
+        self.ui.labelProgress.setText("")
+        self.ui.buttonValues.setVisible(True)
         self.ui.buttonClose.setVisible(True)
 
     def _show_next_prompt(self) -> None:
@@ -421,7 +453,7 @@ class MeshWindow(QMainWindow):
         self.ui.labelQuestion.setText("Every folder name has been dealt with.")
         self.ui.labelEvidence.setText("")
         self.ui.labelProgress.setText("")
-        self.ui.textReport.setPlainText(self.session.report())
+        self.ui.textReport.setPlainText(self._report_text())
         self.ui.textReport.setVisible(True)
         self.ui.buttonQueue.setVisible(True)
         self.ui.buttonQueue.setEnabled(True)
@@ -430,15 +462,38 @@ class MeshWindow(QMainWindow):
         # are not wanted yet.
         self.ui.buttonClose.setVisible(True)
 
+    def _report_text(self) -> str:
+        """The session's report, plus what the folder held that this window ignored.
+
+        The second half matters: in a mixed folder the clips that already had
+        records were deliberately not meshed here, and a user who cannot see that
+        would reasonably wonder where they went. They have not gone anywhere — the
+        Tagged Library Mesh picks them up — but the screen is the only place that can
+        say so.
+        """
+        text = self.session.report()
+        if not self._tagged:
+            return text
+        return (
+            f"{text}\n\n{self._tagged} clip(s) in this folder already had a record "
+            f"and were not meshed here. Their tags are already known; the Tagged "
+            f"Library Mesh will ask about their values once the untagged clips are "
+            f"settled."
+        )
+
     def on_queue(self):
         """Open the Library Mesh Tag Editor on this session.
 
         The alias table crosses with the window rather than being written to disk:
         it is a statement about *this* folder tree, and a saved copy would be
-        stale the moment the user reorganises. Re-running the Wizard rebuilds it
+        stale the moment the user reorganises. Re-running this window rebuilds it
         from the tree, which is where its truth lives.
         """
         shell().open_safely('queue', session=self.session, root=self.root)
+
+    def on_review_values(self):
+        """Straight to the Tagged Library Mesh, for a folder that is all records."""
+        shell().open_safely('values', root=self.root)
 
     def closeEvent(self, event):
         """Refuse to close while the worker is reading.
@@ -455,14 +510,14 @@ class MeshWindow(QMainWindow):
 
 
 def create(app, root: str | None = None) -> MeshWindow:
-    """Build the wizard. Returns the window, unscaled; the shell shows it.
+    """Build the Untagged Library Mesh. Returns the window, unscaled; the shell shows it.
 
     `app` is the process's QApplication and this window does not make one or run an
     event loop — it shares the loop with the menu, the scanner, the editor and the
     Settings window, which is what `shared/session.py` requires of every builder.
 
-    `root` defaults to `import/` and exists so a test can point the wizard at a
-    temporary library. It is not a control in the window: choosing a folder to
-    import is a decision the import window will make, and this one is standalone.
+    `root` defaults to `import/` and exists so a test can point this at a temporary
+    library. It is not a control in the window: choosing a folder to import is a
+    decision the import window will make, and this one is standalone.
     """
     return MeshWindow(root)

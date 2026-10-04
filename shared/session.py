@@ -7,7 +7,7 @@ constructs a :class:`Shell` once, and the windows ask it to open each other.
 One visible window, not a stack
 ------------------------------------------------------------------------------
 
-The shell shows exactly one of {menu, scanner, editor, settings, mesh, queue} at a time. A
+The shell shows exactly one of {menu, scanner, editor, settings, mesh, queue, values} at a time. A
 window opens another by asking the shell, the shell hides or closes what is
 there, and the new window takes the screen. When a non-menu window goes away,
 the menu comes back.
@@ -86,6 +86,7 @@ _BUILDERS = {
     "settings": ("settings.settings", "create"),
     "mesh": ("importer.mesh", "create"),
     "queue": ("importer.queue", "create"),
+    "values": ("importer.values", "create"),
 }
 
 #: The names a caller may open. Settings is listed so a bad name says what the

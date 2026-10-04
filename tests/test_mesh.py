@@ -1,4 +1,4 @@
-"""Tests for the Library Mesh Wizard's model.
+"""Tests for the Untagged Library Mesh's model.
 
 The wizard's whole safety property is that a folder name becomes a tag only because
 a person said so, and that is enforced by there being no code path that fills the
@@ -88,7 +88,7 @@ def test_the_folder_chain_is_the_names_without_the_file():
 
 def test_the_chain_does_not_take_the_file_name_as_a_tag():
     """The narrowing to folder names, and the reason it is safe: a filename
-    contributes nothing, so the wizard cannot be argued into the reverse parser."""
+    contributes nothing, so this mesh cannot be argued into the reverse parser."""
     assert folder_chain("CN/2000s/Promo/Worlds Finest.mp4")[-1] == "Promo"
 
 
@@ -530,7 +530,7 @@ def test_an_already_answered_segment_shows_its_state_on_the_path_bar():
 
 
 def test_the_prompt_suggests_a_namespace_only_when_there_is_exactly_one_match():
-    """Two candidates and the wizard picks one is the guess it exists to prevent."""
+    """Two candidates and the mesh picks one is the guess it exists to prevent."""
     ambiguous = session(["Saturday/A.mp4"], library=catalog_with(
         ("block", "Saturday"), ("special", "Saturday")))
     clear = session(["Saturday/A.mp4"], library=catalog_with(
@@ -613,6 +613,65 @@ def test_the_alias_table_round_trips():
         (e.name, e.state, e.namespace, e.value) for e in table]
 
 
+def test_a_learned_rule_comes_back_as_a_rule_and_not_as_a_folder_name():
+    """`learned` has to round-trip, and the consequence of it not doing so is quiet.
+
+    `remove_rule` refuses an entry that is `LEARNED_FOLDER`, on the sound ground that
+    removing it would leave every clip under that name untagged. So an entry written
+    out without its provenance and read back as a folder name is a **saved rule that
+    the user can no longer delete**, and the only symptom is an error message
+    explaining why a rule they made by hand cannot be removed.
+
+    Worth its own test because nothing writes a table yet: the bug is latent, which is
+    exactly how it survives to the day persistence is added.
+    """
+    loose = session(["CN/A.mp4", "CN/B.mp4"])
+    learned = loose.learn_rule("CN - ", "network", "Cartoon Network").entry
+
+    restored = AliasTable.from_dict(loose.aliases().to_dict())
+    entry = next(e for e in restored if e.name == learned.name)
+
+    assert entry.learned == LEARNED_RULE
+    assert (entry.state, entry.namespace, entry.value) == (
+        MESHED, "network", "Cartoon Network")
+
+
+def test_a_rule_that_lost_its_provenance_is_a_rule_the_user_cannot_delete():
+    """The consequence, checked rather than described.
+
+    `remove_rule` refuses anything that is not `LEARNED_FOLDER`-provenance-free —
+    i.e. anything it read as a folder name — on the sound ground that dropping a
+    folder name would un-mesh every clip under it. That ground is right for a folder
+    name and wrong for a saved rule, so a rule that round-trips without `learned`
+    becomes undeletable, and the only symptom is an error message explaining why a
+    rule the user wrote by hand cannot be removed.
+
+    The two states cannot coexist in a live session — `learn_rule` refuses a literal
+    that already means something — so only a round trip can produce this. Worth its
+    own test for exactly that reason: nothing writes a table yet, which is how a
+    latent trap survives to the day persistence is added.
+    """
+    loose = session(["CN/A.mp4", "CN/B.mp4"])
+    loose.learn_rule("CN - ", "network", "Cartoon Network")
+
+    data = loose.aliases().to_dict()
+    for raw in data["entries"]:
+        raw.pop("learned")
+
+    restored = AliasTable.from_dict(data)
+    lost = next(e for e in restored if e.name == "CN -")
+
+    assert lost.learned == LEARNED_FOLDER, (
+        "which is what the pre-fix serialiser produced, and what a table written by "
+        "a build that does not send `learned` still produces")
+
+    stale = session(["CN/A.mp4", "CN/B.mp4"])
+    stale.assign("CN", "network", "Cartoon Network")
+    stale._entries["CN -"] = lost
+    with pytest.raises(ValueError, match="not a rule"):
+        stale.remove_rule("CN -")
+
+
 def test_the_path_count_is_not_persisted_because_it_is_not_a_decision():
     """`paths` is how much a decision affected in *this* run, recomputed from the
     tree every time. Persisting it would freeze a number that goes stale the moment
@@ -627,6 +686,24 @@ def test_the_path_count_is_not_persisted_because_it_is_not_a_decision():
     assert loose.entry("CN").paths == 2
     assert [(e.name, e.namespace, e.value, e.state) for e in restored] == [
         (e.name, e.namespace, e.value, e.state) for e in loose.aliases()]
+
+
+def test_an_unrecognised_provenance_reads_as_a_folder_name():
+    """The safe direction for a `learned` from a newer build.
+
+    A folder name can still be meshed and still be reported; it merely cannot be
+    forgotten as a rule. So an unknown `learned` costs the user the ability to
+    delete, never the ability to file — which is the right way round, because a
+    mistyped answer is a smaller problem than a tag that stops appearing.
+    """
+    loose = session(["CN/A.mp4"])
+    loose.assign("CN", "network", "CN")
+    data = loose.aliases().to_dict()
+    data["entries"][0]["learned"] = "learned-from-the-future"
+
+    restored = AliasTable.from_dict(data)
+
+    assert all(e.learned == LEARNED_FOLDER for e in restored)
 
 
 def test_the_serialised_table_says_which_version_it_is():

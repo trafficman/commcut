@@ -47,7 +47,7 @@ REQUIRED = {
 # ---------------------------------------------------------------------------
 
 class FakeVideo:
-    """A `FoundVideo` for building a Mesh Wizard session over the same tree."""
+    """A `FoundVideo` for building a MeshSession over the same tree."""
 
     def __init__(self, relative_path):
         self.path = os.path.normpath(os.path.join("C:/library", relative_path))
@@ -234,7 +234,7 @@ def harness(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(queue_module, "probe_duration", lambda _path: 30.0)
 
     def open_queue(*clips, session=None, duration=30.0):
-        """A queue over the given clips, and the wizard session behind it."""
+        """A queue over the given clips, and the mesh session behind it."""
         if clips:
             put_clips(import_root, *clips)
         built = session or MeshSession(
@@ -327,7 +327,7 @@ def test_clips_are_visited_in_full_path_order(harness):
 
 
 # ---------------------------------------------------------------------------
-# What the wizard's answers contribute
+# What the folder answers contribute
 # ---------------------------------------------------------------------------
 
 def test_the_folders_answers_are_on_the_first_clip(harness):
@@ -536,19 +536,174 @@ def test_the_record_takes_the_duration_the_probe_measured(harness):
         window.deleteLater()
 
 
-def test_the_settled_tags_are_noted_as_used_in_the_vocabulary(harness):
-    """The vocabulary is fed at a commit, never from a keystroke, so the queue's
-    dropdowns improve as the run goes."""
+def test_settling_a_clip_never_touches_the_vocabulary(harness):
+    """The inverse of what this window used to do, and the reason it changed.
+
+    Every value in this window comes from somebody else's library. Recording them
+    wrote `CN` and `Toonami - Vol 3` into the user's tag history on the way past —
+    including the clip's *title*, since the queue passed the whole tag dict where the
+    editor filters to `SUGGESTED_TAG_FIELDS` first — and then `sync_vocabulary`
+    deleted them again on the next open, because the prune only ever counts the
+    library in `export/`. So the user's own dropdowns churned on every import of a
+    library they had not imported yet.
+
+    Values reach the file the one way they should: read back out of `export/` by
+    `sync_vocabulary`, once the user has actually imported them. Until then they are
+    somebody else's words and nothing here is a confirmation of anything.
+    """
     open_queue, root, _ = harness
     window = open_queue("CN/A.mp4")
 
     try:
+        from shared.vocabulary import Vocabulary
+
+        # Compared against a *fresh* vocabulary rather than against "is this value
+        # absent", because `filler_type: Promo` is a shipped default and is in every
+        # one of them. What must not happen is a **user** value appearing.
+        before = Vocabulary.defaults(window.ui.tagForm.vocabulary_path)
+
         fill_form(window)
         window.on_next()
 
-        from shared.vocabulary import Vocabulary
         stored = Vocabulary.load(window.ui.tagForm.vocabulary_path)
-        assert "Cartoon Network" in stored.values("network")
+        for namespace in before.namespaces():
+            assert stored.values(namespace) == before.values(namespace), (
+                f"{namespace} gained {sorted(set(stored.values(namespace)) - set(before.values(namespace)))}"
+                f" from an imported clip. A value reaches the file by being read back"
+                f" out of export/, not by passing through this window.")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_tag_removed_by_the_value_mesh_is_not_resurrected_by_the_folder_mesh(
+        harness):
+    """The record is authoritative once it exists.
+
+    The folder answers used to sit *underneath* it, so re-opening the queue with a
+    live `MeshSession` put back a tag the Tagged Library Mesh had just taken out of
+    every clip — the residue pass, undoing the pass that preceded it. A clip's tags
+    live in its record (invariant 12); the folder answers only have something to add
+    on a clip that has never been settled at all.
+    """
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4")
+    write_sidecar(root, "CN/A.mp4", {key: value for key, value in REQUIRED.items()
+                                     if key != "filler_type"})
+    # A live session that would supply `filler_type: Promo` from the folder name.
+    session = MeshSession(str(root), [FakeVideo("CN/A.mp4")], vocabulary=None)
+    session.assign("CN", "filler_type", "Promo")
+    assert session.tags_for_clip("CN/A.mp4").tags["filler_type"] == "Promo"
+
+    window = open_queue("CN/A.mp4", session=session)
+    try:
+        assert window.ui.tagForm.read_tags()["filler_type"] == "", (
+            "the folder mesh would have offered the tag the value mesh removed")
+        assert window.ui.tagForm.read_tags()["title"] == "Some Title", (
+            "and everything the record does hold is still there")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_clip_with_no_record_still_gets_the_folder_answers(harness):
+    """The other half of the same rule: on a clip that has never been settled, the
+    folder answers are all there is."""
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4")
+    session = MeshSession(str(root), [FakeVideo("CN/A.mp4")],
+                          vocabulary=None)
+    session.assign("CN", "network", "Cartoon Network")
+
+    window = open_queue("CN/A.mp4", session=session)
+    try:
+        assert window.ui.tagForm.read_tags()["network"] == "Cartoon Network"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_report_offers_the_value_mesh_for_the_clips_it_had_to_settle(harness):
+    """The fork. Settling a clip is what puts a foreign record in `import/`, so the
+    report is where the two halves of untagged import are offered side by side."""
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4")
+
+    window = open_queue("CN/A.mp4")
+    try:
+        fill_form(window)
+        window.on_next()
+
+        assert window.ui.buttonValues.isHidden() is False
+        report = window.ui.textReport.toPlainText()
+        assert "tag value(s) in those records" in report
+        assert "turns their words into yours" in report
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_report_offers_nothing_when_no_clip_was_settled(harness):
+    """Nothing was written, so there is no record, so there is nothing to review.
+    Offering the window anyway would be a button that can only say "there is
+    nothing to do"."""
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4", "CN/B.mp4")
+
+    window = open_queue("CN/A.mp4")
+    try:
+        window._show_report()
+
+        assert window.ui.buttonValues.isHidden() is True
+        assert window.ui.buttonImport.isHidden() is False
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_report_counts_a_shared_value_once(harness):
+    """`network: CN` on two hundred clips is **one** question. The number on the
+    report is the number of questions, because that is what the user is about to be
+    asked — and counting tag-clip pairs instead would quote a number that means
+    nothing."""
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4", "CN/B.mp4", "CN/C.mp4")
+    for name in ("A", "B", "C"):
+        write_sidecar(root, f"CN/{name}.mp4", REQUIRED)
+
+    window = open_queue("CN/A.mp4")
+    try:
+        window._show_report()
+
+        report = window.ui.textReport.toPlainText()
+        assert "3 tag value(s)" in report, (
+            "three clips sharing the same three values is three questions, not nine")
+        assert "9 tag value(s)" not in report
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_value_mesh_is_opened_on_the_same_folder(harness, monkeypatch):
+    """No clip list travels with the hand-off — the folder is where the truth lives,
+    and the mesh re-derives what it needs from it."""
+    open_queue, root, _ = harness
+    calls = []
+
+    class FakeShell:
+        def open_safely(self, name, **kwargs):
+            calls.append((name, kwargs))
+
+    monkeypatch.setattr(queue_module, "shell", lambda: FakeShell())
+    put_clips(root, "CN/A.mp4")
+
+    window = open_queue("CN/A.mp4")
+    try:
+        fill_form(window)
+        window.on_next()
+        window.on_review_values()
+
+        assert calls == [("values", {"root": str(root)})]
     finally:
         window.close()
         window.deleteLater()
@@ -1010,7 +1165,7 @@ def test_the_rules_dialog_refuses_something_the_table_rejects(harness, qapp):
 
 
 def test_the_rules_dialog_suggests_a_namespace_from_the_library(harness, qapp):
-    """The same evidence the Wizard offers, so one table means one vocabulary."""
+    """The same evidence the folder mesh offers, so one table means one vocabulary."""
     from importer.rules import RulesDialog
 
     open_queue, root, _ = harness

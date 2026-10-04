@@ -90,6 +90,7 @@ UI_FILES = (
     'importer/meshwindow.ui',
     'shared/tagform.ui',
     'importer/queuewindow.ui',
+    'importer/valueswindow.ui',
 )
 
 # Folders the app expects next to the executable. import/ and export/ are in
@@ -104,8 +105,13 @@ Copy clips here, then run commcut.exe and press "Import".
 
 If each video has a .cnfo record beside it -- a folder exported from another
 commcut, say -- commcut reads the tags straight out of the records. If they do
-not, the Library Mesh Wizard asks you what each folder name in here means, and
+not, the Untagged Library Mesh asks you what each folder name in here means, and
 uses your answers. It never guesses a tag from a name on its own.
+
+Either way the values in those records are somebody else's words, so commcut
+also asks you once per tag value -- however many clips carry it -- what your
+library calls it. Press "Import Now" at any point to skip that and take the
+records as they are.
 
 To cut a new compilation into clips you do not need this folder at all. Press
 "Editor" and pick the source video from anywhere on your computer. Its .cmct file

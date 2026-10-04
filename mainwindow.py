@@ -6,7 +6,7 @@ Wizard, which detects clip boundaries and then hands off to the editor itself, s
 scanner and editor are one journey rather than two menu items. A source video can
 be anywhere on disk: there is no folder it has to be in, which is what freed
 ``import/`` to be the Library Importer's staging folder instead. "Import" opens the
-Library Mesh Wizard over that folder. "Settings" opens the standalone scheme editor.
+Untagged Library Mesh over that folder. "Settings" opens the standalone scheme editor.
 
 Every window in the app is in this process, and exactly one of them is on screen
 at a time. This one is the shell's (:mod:`shared.session`) starting point: it is
@@ -45,7 +45,7 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
 from shared.session import shell
 from shared.sources import VIDEO_EXTENSIONS, validate_source_video
-from shared.ui_loader import UiLoader
+from shared.ui_loader import UiLoader, adopt_title
 
 
 def video_name_filter():
@@ -108,8 +108,8 @@ class MainWindow(QMainWindow):
         if self.ui is None:
             raise RuntimeError(
                 f"Failed to load the main window UI: {ui_file.fileName()}")
+        adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
-        self.setWindowTitle(self.ui.windowTitle())
 
         self.ui.editorButton.clicked.connect(self.open_editor)
         self.ui.importButton.clicked.connect(self.open_import)
@@ -140,12 +140,18 @@ class MainWindow(QMainWindow):
         shell().open_safely('scanner', source=source)
 
     def open_import(self):
-        """Open the Library Mesh Wizard.
+        """Open the Untagged Library Mesh.
 
-        The Wizard is the first half of importing somebody else's finished clips:
-        it turns the folder names in `import/` into tags. It is standalone for now —
-        nothing it produces is imported yet, because the Manual Edit queue and the
-        export are not built.
+        **Import** opens the Library Importer's first window over `import/`: it
+        turns the folder names in the untagged half of that folder into tags. It is
+        also the whole importer's router — its worker already walks the folder, so a
+        folder where every clip already has a record is handed on to the Tagged
+        Library Mesh instead of being asked about folder names that are somebody
+        install's rendered output.
+
+        It is opened with no arguments, so it takes `import/` for itself; there is
+        nothing to choose here, because the untagged wizard is what a bare Import
+        button has always meant.
         """
         shell().open_safely('mesh')
 
