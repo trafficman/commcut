@@ -64,14 +64,19 @@ package). That is a policy difference, not an implementation one, so it is data:
     which platforms ship binaries in ``bin/<os>/``. On these, a missing bundled
     binary is an error -- falling back to a system copy would silently run a
     build nobody tested.
-``_SYSTEM_BIN_PREFIXES``
-    the absolute prefixes searched on platforms that do *not* bundle.
+``_SYSTEM_BIN_DIRS``
+    the absolute ``bin`` directories searched on platforms that do *not* bundle.
+``_SYSTEM_LIB_DIRS``
+    the absolute library directories searched there. A sibling of the ``bin``
+    directory, **not** a child: appending ``lib`` to ``/opt/homebrew/bin`` gives
+    ``/opt/homebrew/bin/lib``, which exists nowhere, while Homebrew's libmpv is
+    in ``/opt/homebrew/lib``.
 ``system_lib_dirs()``
-    the ``lib/`` subdirectories of those prefixes, plus the multiarch directory
-    on Linux -- where ``apt install libmpv2`` puts libmpv, which no prefix
-    list contains.
+    ``_SYSTEM_LIB_DIRS`` for this platform, plus the multiarch directory on
+    Linux -- where ``apt install libmpv2`` puts libmpv, which no entry in that
+    table contains.
 
-The prefixes are an explicit list rather than ``shutil.which`` on purpose: a
+The directories are an explicit list rather than ``shutil.which`` on purpose: a
 bare name resolves through a mutated ``PATH`` and picks up whatever happens to
 be installed, which is a very confusing bug to chase. On a bundling platform
 that is exactly wrong. On a sourcing platform "whatever the user installed" is
@@ -185,19 +190,44 @@ _OS_BIN_FOLDERS = {
 # and get their binaries from the prefixes below.
 _BUNDLED_BINARY_PLATFORMS = frozenset({'windows'})
 
-# Absolute prefixes searched on platforms that do not bundle, in order.
-# Deliberately explicit rather than shutil.which: see the module docstring.
-# macOS needs no architecture handling -- Homebrew uses /opt/homebrew on Apple
+# Absolute *directories* searched on platforms that do not bundle, in order, for
+# an executable like ffmpeg or ffprobe. Deliberately explicit rather than
+# shutil.which: see the module docstring.
+#
+# These are directories that already end in `bin`. They are NOT prefixes, and
+# nothing may derive a library directory from them by appending `lib` -- that
+# produces `/opt/homebrew/bin/lib`, which has never existed on any machine, while
+# the library Homebrew actually installs sits in the *sibling* directory
+# `/opt/homebrew/lib`. `_SYSTEM_LIB_DIRS` below says so out loud.
+#
+# macOS needs no architecture handling: Homebrew uses /opt/homebrew on Apple
 # Silicon and /usr/local on Intel, and both are listed.
-_SYSTEM_BIN_PREFIXES = {
+_SYSTEM_BIN_DIRS = {
     'darwin': ('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'),
     'linux': ('/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin', '/usr/bin'),
+}
+
+# Absolute *directories* searched for a shared library, in order. Written out
+# rather than computed from `_SYSTEM_BIN_DIRS`, because a package manager's bin
+# and lib directories are siblings under a prefix, not parent and child:
+#
+#     /opt/homebrew/bin/ffmpeg      <- _SYSTEM_BIN_DIRS
+#     /opt/homebrew/lib/libmpv.dylib   <- _SYSTEM_LIB_DIRS
+#
+# Deriving the second from the first is a one-character mistake that produces a
+# directory no machine has, and the search then reports success-shaped output
+# while having looked nowhere libmpv has ever been installed.
+_SYSTEM_LIB_DIRS = {
+    'darwin': ('/opt/homebrew/lib', '/usr/local/lib', '/usr/lib'),
+    'linux': (
+        '/home/linuxbrew/.linuxbrew/lib', '/usr/local/lib', '/usr/lib',
+    ),
 }
 
 # Where a Linux distro package keeps its shared libraries, which is under a
 # multiarch triplet rather than directly in /usr/lib: `apt install libmpv2`
 # installs /usr/lib/x86_64-linux-gnu/libmpv.so.2, and no entry in
-# _SYSTEM_BIN_PREFIXES contains that directory. The triplet itself is read from
+# _SYSTEM_LIB_DIRS contains that directory. The triplet itself is read from
 # sysconfig in system_lib_dirs() so an aarch64 host names its own.
 _MULTIARCH_LIB_ROOT = '/usr/lib'
 
@@ -348,34 +378,33 @@ def _binary_filename(binary_name):
 def _system_bin_candidates(binary_name):
     """Absolute paths searched for a binary on a platform that does not bundle."""
     filename = _binary_filename(binary_name)
-    for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ()):
-        yield os.path.join(prefix, filename)
+    for directory in _SYSTEM_BIN_DIRS.get(_os_key(), ()):
+        yield os.path.join(directory, filename)
 
 
 def system_lib_dirs():
     """Absolute library directories searched on a platform that does not bundle.
 
-    Each entry of ``_SYSTEM_BIN_PREFIXES`` contributes its ``lib/``
-    subdirectory, which is where Homebrew and Linuxbrew put theirs and where a
-    hand-built ``/usr/local`` keeps one.
+    ``_SYSTEM_LIB_DIRS``, written out rather than derived from
+    ``_SYSTEM_BIN_DIRS``: a package manager's bin and lib directories are
+    siblings under a prefix, not parent and child, so appending ``lib`` to
+    ``/opt/homebrew/bin`` yields ``/opt/homebrew/bin/lib`` -- a directory no
+    machine has -- while Homebrew's libmpv is in the sibling ``/opt/homebrew/lib``.
+    That mistake is why this is a table of its own.
 
     **Plus, on Linux, the multiarch directory.** A distro package puts libmpv in
     ``/usr/lib/<multiarch>`` -- ``x86_64-linux-gnu``, ``aarch64-linux-gnu``,
-    and so on -- and that is *not* ``/usr/lib``, so a prefix-only search misses
+    and so on -- and that is *not* ``/usr/lib``, so the table alone misses
     exactly the case the error message tells the user to create: ``apt install
-    libmpv2`` installs ``/usr/lib/x86_64-linux-gnu/libmpv.so.2``, and the
-    prefix list has no idea it exists. The triplet is read from
-    ``sysconfig`` rather than written out, so an aarch64 host resolves its own
-    name instead of a hardcoded one.
+    libmpv2`` installs ``/usr/lib/x86_64-linux-gnu/libmpv.so.2``. The triplet is
+    read from ``sysconfig`` rather than written out, so an aarch64 host resolves
+    its own name instead of a hardcoded one.
 
     Nothing is filtered on existence here. The caller reports every directory it
     looked in, and a list that silently dropped the ones not present would be a
     worse error message than a longer one.
     """
-    directories = [
-        os.path.join(prefix, "lib")
-        for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ())
-    ]
+    directories = list(_SYSTEM_LIB_DIRS.get(_os_key(), ()))
 
     multiarch = sysconfig.get_config_var('MULTIARCH')
     if _os_key() == 'linux' and multiarch:
@@ -392,7 +421,7 @@ def get_binary_path(binary_name):
     falling through to a system copy would silently run a build nobody tested,
     which is a much worse failure than a missing file. On a platform that does
     not bundle -- the macOS and Linux source installs -- the absolute prefixes
-    in ``_SYSTEM_BIN_PREFIXES`` are searched next, and a candidate has to be an
+    in ``_SYSTEM_BIN_DIRS`` are searched next, and a candidate has to be an
     executable file to count.
 
     Raises ``FileNotFoundError`` naming every location it looked in, because a

@@ -457,19 +457,29 @@ The full vision in `README.md` has three pieces; two are not started:
   case-folded than case-sensitively, and differ in no letter-case from one
   another. →
   [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
-- **The macOS leg could not find libmpv, and the search was already correct.**
-  `_MPV_LIBRARY_NAMES` lists `libmpv.2.dylib` and `libmpv.dylib`, and
-  `system_lib_dirs()` searches `/opt/homebrew/lib` and `/usr/local/lib` — exactly
-  where Homebrew installs it. So the soname is a guess nobody promised to keep
-  (it has already changed once: `libmpv.1` → `libmpv.2`), and a hardcoded list
-  turns an upstream bump into "cannot find libmpv" everywhere. `resolve_mpv_library`
-  now makes a second pass over the same directories matching
-  `libmpv*.dylib` / `libmpv*.so*`, which is safe because `ctypes.CDLL` does not
-  care what a library calls itself, and narrow because `libmpv.a` does not match.
-  **Not confirmed as the cause** — the CI log for the failing step was not
-  available — so the workflow now prints what the package manager installed and
-  what is on disk in each searched directory before the installer runs, rather
-  than only reporting that something could not be found. →
+- **The libmpv search looked in `/opt/homebrew/bin/lib`, which exists nowhere.**
+  The library directories were derived from the *binary* directories by
+  appending `lib`, on the reasoning that a package manager keeps one under the
+  other. They are siblings, not parent and child: `/opt/homebrew/bin/ffmpeg` and
+  `/opt/homebrew/lib/libmpv.dylib`. So the search reported
+  `/opt/homebrew/bin/lib`, `/usr/local/bin/lib` and `/usr/bin/lib` — three
+  directories no machine has — and never looked in `/opt/homebrew/lib`, where
+  Homebrew installs it. A correctly installed libmpv came back "could not find
+  the libmpv library" immediately after `brew install mpv` succeeded, which reads
+  as a broken install rather than a wrong path. `_SYSTEM_LIB_DIRS` now writes the
+  library directories out, and
+  `test_no_searched_library_directory_is_under_a_bin_directory` pins the shape.
+  The same conflation is why `/usr/lib` needed the multiarch directory appended
+  by hand — a symptom of the same root cause. →
+  [source-install.md](source-install.md#the-bin-and-lib-directories-are-two-tables-and-must-stay-two)
+- **The known libmpv names are a guess, so there is a fallback.**
+  `_MPV_LIBRARY_NAMES` lists `libmpv.2.dylib` and `libmpv.dylib` on macOS and
+  `libmpv.so.2` on Linux. That is a guess about a soname nobody promised to keep
+  — it has already changed once, `libmpv.1` on mpv 0.35 to `libmpv.2` on 0.37 —
+  so a hardcoded list turns a routine upstream bump into "cannot find libmpv"
+  everywhere. `resolve_mpv_library` now makes a second pass matching
+  `libmpv*.dylib` / `libmpv*.so*`, safe because `ctypes.CDLL` does not care what a
+  library calls itself, and narrow because `libmpv.a` does not match. →
   [source-install.md](source-install.md#the-known-names-are-a-guess-and-there-is-a-fallback)
 - **`apt install libmpv2` did not produce a findable libmpv.** The search in
   `shared/environment.py` covered each system prefix's `lib/` plus `/usr/lib`,

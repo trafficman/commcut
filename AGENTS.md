@@ -228,6 +228,14 @@ diagnose. The linked document has the full reasoning.
     answer to the same question and would be wrong the day someone adds a
     platform. `--brew` is the one opt-in exception, and it is macOS-only. →
     [docs/source-install.md](docs/source-install.md#installing-it)
+17. **`bin/` and `lib/` directories are siblings, never parent and child.**
+    `_SYSTEM_BIN_DIRS` holds `/opt/homebrew/bin`; libmpv is in
+    `/opt/homebrew/lib`. Appending `lib` to a bin directory yields
+    `/opt/homebrew/bin/lib`, which exists on no machine, and the search then
+    reports a plausible-looking failure while having looked nowhere libmpv has
+    ever been installed. `_SYSTEM_LIB_DIRS` is written out in full for the same
+    reason `apt install libmpv2` needs `/usr/lib/<multiarch>` appended by hand.
+    → [docs/source-install.md](docs/source-install.md#the-bin-and-lib-directories-are-two-tables-and-must-stay-two)
 
 ## Working agreements
 

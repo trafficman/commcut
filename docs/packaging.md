@@ -500,6 +500,19 @@ of them were things a green Windows suite could not have found:
   macOS from inside the code under test. They now supply the constant as well as
   faking the platform, which means those legs verify the Windows branch rather
   than skipping it.
+- **`shared/environment.py` derived the library directories from the binary ones.**
+  It appended `lib` to each entry of `_SYSTEM_BIN_PREFIXES`, so the search ran
+  in `/opt/homebrew/bin/lib`, `/usr/local/bin/lib` and `/usr/bin/lib` — three
+  directories that exist on no machine — and never in `/opt/homebrew/lib`, where
+  Homebrew puts libmpv. A correctly `brew install mpv`'d machine therefore got
+  "could not find the libmpv library", which is indistinguishable from a broken
+  install unless you read the searched paths and notice they are nonsense. The
+  table was *named* `_SYSTEM_BIN_PREFIXES` while holding directories that already
+  ended in `bin`, which is what invited the string surgery; it is now
+  `_SYSTEM_BIN_DIRS` and there is a second table, `_SYSTEM_LIB_DIRS`, written out
+  in full. The multiarch directory added earlier for Linux was the same root
+  cause showing up as a missing `/usr/lib/x86_64-linux-gnu`.
+
 - **`tests/test_queue.py::test_clips_are_visited_in_full_path_order` asserted
   the filesystem rather than the sort.** Its clips were `alpha/B.mp4` and
   `Alpha/C.mp4` — one folder on a case-insensitive filesystem, two on a
@@ -517,11 +530,18 @@ of them were things a green Windows suite could not have found:
   test failing. The Linux leg installs them.
 
 The pattern is worth stating, because it is the argument for the whole workflow
-rather than a detail of it. **Every one of these five was a behaviour that was
-silently Windows-only**, in three different ways: a refusal keyed on which
-`OSError` the host raises; a guard that reads a constant only Windows defines;
-and an expectation that encoded case-insensitive path resolution. None of them
-was a test gap in the ordinary sense — the suite was green, and green on the one
-platform that had ever run it. A suite that has only ever run on one platform
-has not been tested on the others, whatever it asserts.
+rather than a detail of it. **Every one of these was a behaviour that was
+silently Windows-only, in four different ways:** a refusal keyed on which
+`OSError` the host raises; a guard that reads a constant only Windows defines; an
+expectation that encoded case-insensitive path resolution; and a *search path*
+built for the Windows layout and applied everywhere. None was a test gap in the
+ordinary sense — the suite was green, and green on the one platform that had ever
+run it. A suite that has only ever run on one platform has not been tested on the
+others, whatever it asserts.
+
+The last one is the caution: every test here ran green on Windows and on Linux,
+and the Linux leg passed this whole time, because the directory was wrong on
+*both* Unix platforms. A CI run that goes green is evidence about the code it
+exercised, not about the machine it ran on — and the diagnostic step added to the
+workflow exists because "could not find libmpv" is not diagnosable on its own.
 

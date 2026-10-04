@@ -241,7 +241,7 @@ def test_a_bundled_binary_is_preferred_over_the_system(monkeypatch, tmp_path):
     prefix = tmp_path / "system"
     prefix.mkdir()
     (prefix / "ffprobe.exe").write_bytes(b"not the one we ship")
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS",
                         {"windows": (str(prefix),)})
 
     assert get_binary_path("ffprobe") == os.path.join(
@@ -253,7 +253,7 @@ def test_a_platform_that_bundles_refuses_to_fall_back(monkeypatch, tmp_path):
     nobody tested, which is the failure this policy exists to prevent."""
     monkeypatch.setattr(environment.platform, "system", lambda: "Windows")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "bin"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS",
                         {"windows": (str(tmp_path),)})
     present = tmp_path / "ffmpeg.exe"
     present.write_bytes(b"system ffmpeg")
@@ -278,7 +278,7 @@ def test_a_platform_that_does_not_bundle_resolves_from_a_prefix(
     installed = prefix / "ffmpeg"
     installed.write_bytes(b"#!/bin/sh\n")
     installed.chmod(0o755)
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS",
                         {"darwin": (str(prefix),)})
 
     assert get_binary_path("ffmpeg") == str(installed)
@@ -298,7 +298,7 @@ def test_a_non_executable_file_does_not_count_as_installed(monkeypatch, tmp_path
     prefix = tmp_path / "brew"
     prefix.mkdir()
     (prefix / "ffmpeg").write_bytes(b"not executable")
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS",
                         {"darwin": (str(prefix),)})
     asked = []
     monkeypatch.setattr(
@@ -317,7 +317,7 @@ def test_the_exhausted_search_names_every_place_it_looked(monkeypatch, tmp_path)
     monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
     (tmp_path / "empty").mkdir()
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS",
                         {"darwin": (str(tmp_path / "a"), str(tmp_path / "b"))})
 
     with pytest.raises(FileNotFoundError) as error:
@@ -381,18 +381,19 @@ def test_libmpv_resolves_out_of_the_bundled_folder(monkeypatch, tmp_path):
     assert environment.resolve_mpv_library() == str(bundled / "libmpv-2.dll")
 
 
-def test_libmpv_resolves_out_of_a_system_prefix(monkeypatch, tmp_path):
+def test_libmpv_resolves_out_of_a_system_library_directory(monkeypatch, tmp_path):
+    """The ordinary case: a Homebrew libmpv in the sibling `lib` directory of the
+    one ffmpeg was found in."""
     monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(environment.os, "environ", {})
-    prefix = tmp_path / "opt" / "homebrew"
-    (prefix / "lib").mkdir(parents=True)
-    (prefix / "lib" / "libmpv.2.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+    lib_dir = tmp_path / "opt" / "homebrew" / "lib"
+    lib_dir.mkdir(parents=True)
+    expected = lib_dir / "libmpv.2.dylib"
+    expected.write_bytes(b"\xcf\xfa\xed\xfe")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
-                        {"darwin": (str(prefix),)})
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS", {"darwin": (str(lib_dir),)})
 
-    assert environment.resolve_mpv_library() == str(
-        prefix / "lib" / "libmpv.2.dylib")
+    assert environment.resolve_mpv_library() == str(expected)
 
 
 def test_libmpv_resolves_out_of_a_libdir_naming_a_soname_we_do_not_know(
@@ -415,8 +416,7 @@ def test_libmpv_resolves_out_of_a_libdir_naming_a_soname_we_do_not_know(
     future = lib_dir / "libmpv.7.dylib"
     future.write_bytes(b"\xcf\xfa\xed\xfe")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
-                        {"darwin": (str(tmp_path / "opt" / "homebrew"),)})
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS", {"darwin": (str(lib_dir),)})
 
     assert environment.resolve_mpv_library() == str(future)
 
@@ -433,9 +433,7 @@ def test_a_known_soname_still_wins_over_the_fallback(monkeypatch, tmp_path):
     plain = lib_dir / "libmpv.dylib"
     plain.write_bytes(b"\xcf\xfa\xed\xfe")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    # Steered through the prefix table rather than by replacing the function, so
-    # the real directory list is what gets exercised.
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"darwin": (str(tmp_path),)})
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS", {"darwin": (str(lib_dir),)})
 
     assert environment.resolve_mpv_library() == str(lib_dir / "libmpv.2.dylib")
 
@@ -452,8 +450,7 @@ def test_the_fallback_does_not_match_an_unrelated_library(
     for decoy in ("libmpv.a", "libmpv.pc", "libmpv-dev", "libmpv.la"):
         (lib_dir / decoy).write_bytes(b"x")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
-    monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(lib_dir))
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS", {"linux": (str(lib_dir),)})
     monkeypatch.setattr(environment.sysconfig, "get_config_var", lambda name: None)
 
     with pytest.raises(FileNotFoundError):
@@ -466,8 +463,8 @@ def test_a_missing_libmpv_explains_which_library_is_needed(monkeypatch, tmp_path
     monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(environment.os, "environ", {})
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
-                        {"darwin": (str(tmp_path / "brew"),)})
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS",
+                        {"darwin": (str(tmp_path / "brew" / "lib"),)})
 
     with pytest.raises(FileNotFoundError) as error:
         environment.resolve_mpv_library()
@@ -485,7 +482,7 @@ def test_libmpv_resolves_out_of_the_linux_multiarch_directory(
     ``apt install libmpv2`` -- the command shared/environment.py's own error
     message tells the user to run -- installs
     ``/usr/lib/x86_64-linux-gnu/libmpv.so.2``. That is not ``/usr/lib``, and no
-    prefix in _SYSTEM_BIN_PREFIXES contains it, so a prefix-only search misses
+    entry in _SYSTEM_LIB_DIRS contains it, so the table alone misses
     exactly the case the error message recommends creating.
 
     The root is substituted rather than used verbatim because these paths are
@@ -500,7 +497,7 @@ def test_libmpv_resolves_out_of_the_linux_multiarch_directory(
     multiarch.mkdir(parents=True)
     (multiarch / "libmpv.so.2").write_bytes(b"\x7fELF")
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS", {"linux": ()})
     monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(root))
     monkeypatch.setattr(environment.sysconfig, "get_config_var",
                         lambda name: "x86_64-linux-gnu")
@@ -547,7 +544,7 @@ def test_the_exhausted_libmpv_search_names_the_multiarch_directory(
     monkeypatch.setattr(environment.os, "environ", {})
     root = tmp_path / "usr" / "lib"
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_DIRS", {"linux": ()})
     monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(root))
     monkeypatch.setattr(environment.sysconfig, "get_config_var",
                         lambda name: "x86_64-linux-gnu")
@@ -688,8 +685,8 @@ def test_setting_dyld_library_path_on_macos(monkeypatch, tmp_path):
     monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(environment.os, "environ", {})
     monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
-    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
-                        {"darwin": (str(tmp_path / "brew"),)})
+    monkeypatch.setattr(environment, "_SYSTEM_LIB_DIRS",
+                        {"darwin": (str(library.parent),)})
     monkeypatch.setattr(environment.ctypes, "CDLL",
                         lambda path, **kwargs: "handle")
     monkeypatch.setattr(environment, "_mpv_library_handle", None)
@@ -766,13 +763,13 @@ def test_every_platform_that_does_not_bundle_knows_where_to_look():
     for system in environment._OS_BIN_FOLDERS:
         if system in environment._BUNDLED_BINARY_PLATFORMS:
             continue
-        assert environment._SYSTEM_BIN_PREFIXES.get(system), system
+        assert environment._SYSTEM_BIN_DIRS.get(system), system
 
 
 def test_every_platform_that_does_not_bundle_has_a_library_directory(
     monkeypatch
 ):
-    """The ffmpeg prefixes and the libmpv directories are separate lists, so a
+    """The ffmpeg directories and the libmpv directories are separate lists, so a
     platform can satisfy the check above and still have nowhere to look for a
     library -- which is a FileNotFoundError naming two empty folders."""
     for system in environment._OS_BIN_FOLDERS:
@@ -780,6 +777,79 @@ def test_every_platform_that_does_not_bundle_has_a_library_directory(
             continue
         monkeypatch.setattr(environment.platform, "system", lambda: system)
         assert environment.system_lib_dirs(), system
+
+
+def test_the_library_directories_are_where_a_package_manager_actually_installs(
+    monkeypatch
+):
+    """The test that would have caught the macOS release failure.
+
+    The library search used to be derived from the *binary* directories by
+    appending `lib`, on the reasoning that a package manager keeps one under the
+    other. It does not: they are siblings.
+
+        /opt/homebrew/bin/ffmpeg          <- the binary directory
+        /opt/homebrew/lib/libmpv.dylib   <- where libmpv goes
+
+    so the derived list was `/opt/homebrew/bin/lib`, `/usr/local/bin/lib` and
+    `/usr/bin/lib` -- three directories that exist on no machine anywhere -- and
+    `/opt/homebrew/lib`, the one Homebrew installs into, was never searched. The
+    failure said "could not find libmpv" immediately after `brew install mpv`
+    succeeded, which is indistinguishable from a broken install unless you read
+    the paths, and those are the paths.
+
+    Written against the real tables rather than a substitute, so it runs on the
+    Windows leg too and holds the data down everywhere.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: None)
+    darwin = environment.system_lib_dirs()
+
+    assert "/opt/homebrew/lib" in darwin, "Apple Silicon Homebrew libmpv"
+    assert "/usr/local/lib" in darwin, "Intel Homebrew libmpv"
+
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(environment.sysconfig, "get_config_var", lambda name: None)
+    linux = environment.system_lib_dirs()
+
+    assert "/home/linuxbrew/.linuxbrew/lib" in linux, "Linuxbrew libmpv"
+
+
+@pytest.mark.parametrize("system", ["darwin", "linux"])
+def test_no_searched_library_directory_is_under_a_bin_directory(monkeypatch, system):
+    """The shape of the mistake, asserted directly rather than through one
+    platform's data.
+
+    Nothing installs a library into a `bin` directory: that path is always the
+    mistake of treating a bin directory as a prefix and appending `lib`. Checked
+    on segments rather than on whole paths because these are POSIX paths joined
+    with `os.path.join`, and this suite mostly runs on Windows -- where the
+    derived `/opt/homebrew/bin/lib` comes back with a backslash in it and a
+    string comparison would quietly pass.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: system)
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: None)
+
+    for directory in environment.system_lib_dirs():
+        segments = directory.replace("\\", "/").split("/")
+        assert "bin" not in segments, directory
+
+
+def test_the_bin_and_lib_directories_are_siblings_not_nested(monkeypatch):
+    """Stated as the relationship it actually has, which is the thing a reader
+    would otherwise have to know to check the table above."""
+    for system, lib_directory in (("darwin", "/opt/homebrew/lib"),
+                                  ("linux", "/home/linuxbrew/.linuxbrew/lib")):
+        monkeypatch.setattr(environment.platform, "system", lambda: system)
+        monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                            lambda name: None)
+
+        bin_directories = environment._SYSTEM_BIN_DIRS[system]
+        assert os.path.dirname(lib_directory) in {
+            os.path.dirname(directory) for directory in bin_directories
+        }, (system, lib_directory, bin_directories)
 
 
 def test_every_platform_knows_its_libmpv_filename():

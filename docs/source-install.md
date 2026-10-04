@@ -203,6 +203,31 @@ so one artifact works on both.
 Linux does need one, and it is about **libraries** rather than binaries — see
 `libmpv` below.
 
+### The bin and lib directories are two tables, and must stay two
+
+`_SYSTEM_BIN_DIRS` holds directories that already end in `bin`. It is *not* a
+prefix list, and no library directory may be derived from it by appending `lib`:
+
+```
+/opt/homebrew/bin/ffmpeg          <- _SYSTEM_BIN_DIRS
+/opt/homebrew/lib/libmpv.dylib    <- _SYSTEM_LIB_DIRS
+```
+
+They are **siblings under a prefix**, not parent and child. Appending `lib` to
+`/opt/homebrew/bin` gives `/opt/homebrew/bin/lib`, which exists on no machine
+anywhere — and that is exactly what the search did for its entire life, so
+`/opt/homebrew/lib` was never searched and a Homebrew libmpv installed
+correctly still came back "could not find the libmpv library". The failure looks
+identical to a broken install unless you read the paths, and the paths were
+nonsense.
+
+`_SYSTEM_LIB_DIRS` therefore writes the library directories out in full.
+`tests/test_frozen_mode.py` asserts the real Homebrew and Linuxbrew paths, and
+that no searched library directory sits under a `bin` — checked on path segments
+rather than whole strings, because these are POSIX paths built with
+`os.path.join` and a Windows host would put a backslash in the middle of the very
+comparison meant to catch it.
+
 ## libmpv is not mpv
 
 **The one that trips people up.** `brew install mpv` gives you the *player*.
