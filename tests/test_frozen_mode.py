@@ -395,6 +395,71 @@ def test_libmpv_resolves_out_of_a_system_prefix(monkeypatch, tmp_path):
         prefix / "lib" / "libmpv.2.dylib")
 
 
+def test_libmpv_resolves_out_of_a_libdir_naming_a_soname_we_do_not_know(
+    monkeypatch, tmp_path
+):
+    """The fallback pass, and the reason it exists.
+
+    libmpv's soname is not a contract: mpv 0.35 shipped `libmpv.1`, 0.37 shipped
+    `libmpv.2`, and every distribution may pick its own. A hardcoded list turns a
+    routine upstream bump into "commcut cannot find libmpv" on every machine
+    that has not been patched yet -- which is what the macOS release CI leg hit,
+    against a Homebrew that installs exactly the documented path and name.
+    `ctypes.CDLL` does not care what a library calls itself, so an unfamiliar
+    name is still loadable.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.os, "environ", {})
+    lib_dir = tmp_path / "opt" / "homebrew" / "lib"
+    lib_dir.mkdir(parents=True)
+    future = lib_dir / "libmpv.7.dylib"
+    future.write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES",
+                        {"darwin": (str(tmp_path / "opt" / "homebrew"),)})
+
+    assert environment.resolve_mpv_library() == str(future)
+
+
+def test_a_known_soname_still_wins_over_the_fallback(monkeypatch, tmp_path):
+    """The fallback is a second pass, not a replacement: where the list is right
+    it must not change which file is picked, and the unversioned name still beats
+    a stray `libmpv.2.dylib` sitting beside it in the same directory."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.os, "environ", {})
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    (lib_dir / "libmpv.2.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+    plain = lib_dir / "libmpv.dylib"
+    plain.write_bytes(b"\xcf\xfa\xed\xfe")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    # Steered through the prefix table rather than by replacing the function, so
+    # the real directory list is what gets exercised.
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"darwin": (str(tmp_path),)})
+
+    assert environment.resolve_mpv_library() == str(lib_dir / "libmpv.2.dylib")
+
+
+def test_the_fallback_does_not_match_an_unrelated_library(
+    monkeypatch, tmp_path
+):
+    """`libmpv*.so*` must not widen into 'some file near libmpv'. A static
+    archive is not loadable by ctypes, and a linker script is not a library."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(environment.os, "environ", {})
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    for decoy in ("libmpv.a", "libmpv.pc", "libmpv-dev", "libmpv.la"):
+        (lib_dir / decoy).write_bytes(b"x")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
+    monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(lib_dir))
+    monkeypatch.setattr(environment.sysconfig, "get_config_var", lambda name: None)
+
+    with pytest.raises(FileNotFoundError):
+        environment.resolve_mpv_library()
+
+
 def test_a_missing_libmpv_explains_which_library_is_needed(monkeypatch, tmp_path):
     """The whole reason this resolution is rewritten: the alternative is a bare
     ctypes OSError from inside python-mpv naming none of these folders."""

@@ -457,6 +457,20 @@ The full vision in `README.md` has three pieces; two are not started:
   case-folded than case-sensitively, and differ in no letter-case from one
   another. →
   [packaging.md](packaging.md#what-running-the-suite-on-macos-and-linux-actually-found)
+- **The macOS leg could not find libmpv, and the search was already correct.**
+  `_MPV_LIBRARY_NAMES` lists `libmpv.2.dylib` and `libmpv.dylib`, and
+  `system_lib_dirs()` searches `/opt/homebrew/lib` and `/usr/local/lib` — exactly
+  where Homebrew installs it. So the soname is a guess nobody promised to keep
+  (it has already changed once: `libmpv.1` → `libmpv.2`), and a hardcoded list
+  turns an upstream bump into "cannot find libmpv" everywhere. `resolve_mpv_library`
+  now makes a second pass over the same directories matching
+  `libmpv*.dylib` / `libmpv*.so*`, which is safe because `ctypes.CDLL` does not
+  care what a library calls itself, and narrow because `libmpv.a` does not match.
+  **Not confirmed as the cause** — the CI log for the failing step was not
+  available — so the workflow now prints what the package manager installed and
+  what is on disk in each searched directory before the installer runs, rather
+  than only reporting that something could not be found. →
+  [source-install.md](source-install.md#the-known-names-are-a-guess-and-there-is-a-fallback)
 - **`apt install libmpv2` did not produce a findable libmpv.** The search in
   `shared/environment.py` covered each system prefix's `lib/` plus `/usr/lib`,
   and a Debian package installs to `/usr/lib/x86_64-linux-gnu/` — which is none

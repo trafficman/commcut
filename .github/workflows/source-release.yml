@@ -225,10 +225,43 @@ jobs:
         run: |
           if [ "${{ matrix.name }}" = "macos" ]; then
             brew install ffmpeg mpv
+            echo "brew prefix: $(brew --prefix)"
+            brew list --versions mpv ffmpeg || true
           else
             sudo apt-get update
             sudo apt-get install -y ffmpeg libmpv2
+            dpkg -l libmpv2 2>/dev/null | tail -n 1 || true
           fi
+
+      # Name the failure here rather than three steps later inside
+      # install_deps.sh. "Could not find the libmpv library" says what commcut
+      # wanted and not whether the package manager ever supplied one, so a
+      # failure there has to be read alongside the install log to be
+      # diagnosable at all. This prints what was installed, what is on disk in
+      # every directory the resolver will look in, and the resolver's own
+      # verdict.
+      - name: confirm the resolver can see what was just installed
+        run: |
+          app=$(find "$RUNNER_TEMP/extracted" -mindepth 1 -maxdepth 1 -type d)
+          cd "$app"
+          .venv/bin/python - <<'PYTHON'
+          import os
+          from shared.environment import resolve_mpv_library, system_lib_dirs
+
+          directories = system_lib_dirs()
+          print("the resolver will look in:")
+          for directory in directories:
+              print("  ", directory, "(exists)" if os.path.isdir(directory) else "(absent)")
+              if os.path.isdir(directory):
+                  for entry in sorted(os.listdir(directory)):
+                      if "libmpv" in entry or entry in ("ffmpeg", "ffprobe"):
+                          print("       ", entry)
+          try:
+              print("resolved:", resolve_mpv_library())
+          except Exception as error:
+              print("FAILED:", error)
+              raise SystemExit(1)
+          PYTHON
 
       - name: re-check the installed tree now that the binaries are present
         run: |

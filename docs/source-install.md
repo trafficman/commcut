@@ -217,7 +217,7 @@ machines install mpv successfully and then cannot start commcut.
    that silently does nothing is worse than none. Point it at a framework binary
    (`…/mpv.framework/mpv`) if that is what your build ships; `ctypes` loads those
    too.
-2. `bin/<os>/`, for the platform's candidate filenames.
+2. `bin/<os>/`, for the platform's known filenames.
 3. `system_lib_dirs()`: the `lib/` subdirectory of each system prefix, **plus,
    on Linux, `/usr/lib/<multiarch>`**.
 
@@ -225,6 +225,25 @@ machines install mpv successfully and then cannot start commcut.
 ls /opt/homebrew/lib/libmpv*
 export COMMCUT_MPV_LIB=/opt/homebrew/lib/libmpv.2.dylib
 ```
+
+### The known names are a guess, and there is a fallback
+
+`_MPV_LIBRARY_NAMES` lists `libmpv.2.dylib` and `libmpv.dylib` on macOS and
+`libmpv.so.2` on Linux. That list is a **guess about a soname nobody promised to
+keep**: libmpv's has already changed once, `libmpv.1` on mpv 0.35 and
+`libmpv.2` on 0.37, and each distribution is free to pick its own.
+
+So when none of the listed names exist, `resolve_mpv_library` makes a **second
+pass** over the same directories matching `libmpv*.dylib` / `libmpv*.so*` /
+`libmpv-*.dll`. `ctypes.CDLL` does not care what a library calls itself, so an
+unfamiliar soname is still loadable, and a routine upstream bump stops being
+"commcut cannot find libmpv" on every machine that has not been patched yet.
+
+Two things keep that honest. It is a *second* pass, so where the list is right it
+cannot change which file is picked. And every candidate it considered is added
+to the failure listing, so a wrong guess is visible rather than mysterious. It
+also stays narrow — `libmpv.a`, `libmpv.pc` and `libmpv.la` do not match, because
+a static archive is not something `ctypes` can load.
 
 ### The multiarch directory, and why it is in the list
 

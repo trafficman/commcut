@@ -155,6 +155,7 @@ put libmpv in every process including the one that has no player. Wrap the
 import contextlib
 import ctypes
 import ctypes.util
+import fnmatch
 import os
 import platform
 import subprocess
@@ -207,6 +208,13 @@ _MPV_LIBRARY_NAMES = {
     'windows': ('libmpv-2.dll',),
     'darwin': ('libmpv.2.dylib', 'libmpv.dylib'),
     'linux': ('libmpv.so.2',),
+}
+
+# The same, as a pattern, for the fallback pass below.
+_MPV_LIBRARY_PATTERNS = {
+    'windows': 'libmpv-*.dll',
+    'darwin': 'libmpv*.dylib',
+    'linux': 'libmpv*.so*',
 }
 
 #: Overrides the libmpv search outright. Set it to the absolute path of a
@@ -430,8 +438,10 @@ def resolve_mpv_library():
     Searched in order: the ``MPV_LIBRARY_ENV_VAR`` override, then ``bin/<os>/``,
     then ``system_lib_dirs()`` -- which is each system prefix's ``lib/``
     subdirectory plus, on Linux, the multiarch directory a distro package
-    actually uses. Returns the first hit and raises ``FileNotFoundError``
-    -- naming every location -- when there is none.
+    actually uses. Within those, the platform's known libmpv filenames first and
+    a pattern match second, so a soname nobody promised to keep still resolves.
+    Returns the first hit and raises ``FileNotFoundError`` -- naming every
+    location -- when there is none.
 
     The override must be an absolute path that exists. One that does not is an
     error rather than a reason to keep searching, because an override that
@@ -471,6 +481,37 @@ def resolve_mpv_library():
             searched.append(candidate)
             if os.path.isfile(candidate):
                 return candidate
+
+    # Second pass, on a pattern rather than a name.
+    #
+    # The list above is a guess about a soname nobody promised to keep. libmpv's
+    # has already changed once -- mpv 0.35 shipped `libmpv.1`, 0.37 shipped
+    # `libmpv.2` -- and every distribution is free to pick its own, so a hardcoded
+    # list turns a routine upstream bump into "commcut cannot find libmpv" on
+    # every machine that has not been patched yet. That is exactly the shape of
+    # failure this search is supposed to absorb.
+    #
+    # Only reached when none of the named files exist, so it cannot change which
+    # library is picked where the list is right, and an unfamiliar name still
+    # loads: `ctypes.CDLL` does not care about a soname. Every candidate it
+    # considered is added to the failure listing below, so a wrong guess is
+    # visible rather than mysterious.
+    pattern = _MPV_LIBRARY_PATTERNS.get(_os_key())
+    if pattern:
+        for directory in directories:
+            try:
+                entries = sorted(os.listdir(directory))
+            except OSError:
+                # A directory we cannot list is one we cannot search, and it is
+                # already named in the failure listing below.
+                continue
+            for entry in entries:
+                if not fnmatch.fnmatch(entry, pattern):
+                    continue
+                candidate = os.path.join(directory, entry)
+                searched.append(candidate)
+                if os.path.isfile(candidate):
+                    return candidate
 
     listing = "\n".join(f"  {path}" for path in searched)
     raise FileNotFoundError(
