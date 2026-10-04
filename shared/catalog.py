@@ -335,6 +335,48 @@ def build_catalog(
 # Reconciling the vocabulary against the library
 # ---------------------------------------------------------------------------
 
+def pending_record_tags(root: str) -> dict[str, list[str]]:
+    """Tag values used by the records in a staging folder, per namespace.
+
+    A clip the Library Mesh Tag Editor has settled has a ``.cnfo`` beside it in
+    `import/`, and those tags are answers a person gave that have not been
+    imported yet. `sync_vocabulary` counts them as **in use** so its prune does
+    not take back a value the moment it was recorded -- which is what turned an
+    eager record into churn: the value appeared in the dropdowns, and the next
+    window to open deleted it.
+
+    Every ``.cnfo`` under `root` counts, with or without a video beside it. This
+    is a narrower question than `build_catalog`'s -- what is *in use*, not what is
+    a clip -- and it is deliberately the wider of the two: a record the user
+    settled is their answer whether or not the file is still there, and the
+    alternative is a value that vanishes because a folder is mid-import.
+
+    **A record that cannot be read contributes nothing and is not reported.** It
+    says nothing about what is in use, and the sync's own walk reports what it
+    could not read; this is a second, quieter question and reporting it twice
+    would put an import-folder path in a summary about the library.
+    """
+    target = os.path.abspath(os.fspath(root))
+    in_use: dict[str, list[str]] = {}
+    if not os.path.isdir(target):
+        return in_use
+
+    for current_root, _directory_names, file_names in os.walk(
+        target, topdown=True, followlinks=False,
+    ):
+        for name in file_names:
+            if not name.lower().endswith(RECORD_SCAN_EXTENSION):
+                continue
+            try:
+                record = load_record(os.path.join(current_root, name))
+            except (OSError, ValueError):
+                continue
+            for key, value in record.tags:
+                if isinstance(value, str) and value.strip():
+                    in_use.setdefault(key, []).append(value)
+    return in_use
+
+
 @dataclass(frozen=True)
 class VocabularySync:
     """What one sync did, in the terms a screen can report.
@@ -366,6 +408,7 @@ def sync_vocabulary(
     vocabulary,
     on_progress: Callable[[int, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    pending_root: str | None = None,
 ) -> VocabularySync:
     """Reconcile `vocabulary` against the clips the library holds.
 
@@ -401,6 +444,15 @@ def sync_vocabulary(
     instance. Loading a fresh copy would write a correct file and leave the
     cache stale, so an editor opened later in the same session would offer the
     old dropdowns.
+
+    `pending_root` is the import folder, and every caller that can see one passes
+    it. It changes only the **prune**: a value a clip in `import/` uses is spared
+    until that clip is imported, deleted, or skipped. It does not change the
+    union, so `values_added` still means "values this library uses" and the
+    summary shown on screen keeps describing the library. The importer windows
+    record their own confirmations eagerly (`record_use`), so nothing is lost by
+    leaving the union alone here -- the pending records are there to stop the
+    prune undoing that, not to redo it.
     """
     catalog = build_catalog(root, on_progress=on_progress,
                             should_cancel=should_cancel)
@@ -442,6 +494,14 @@ def sync_vocabulary(
         for clip in catalog.clips:
             for key, value in clip.tags:
                 in_use.setdefault(key, []).append(value)
+        if pending_root:
+            # Records in a staging folder are the user's own confirmed tags
+            # waiting to be imported, so they keep their values alive through
+            # the prune. Without this the two importer windows could not record a
+            # value at all: the next sync would count the library, find nothing
+            # using it yet, and remove it -- see `pending_record_tags`.
+            for key, values in pending_record_tags(pending_root).items():
+                in_use.setdefault(key, []).extend(values)
         removed = vocabulary.prune_to(in_use)
     else:
         removed = PruneResult()

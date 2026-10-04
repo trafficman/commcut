@@ -571,24 +571,42 @@ is for. Every other caller of `_load_current` — advancing a clip, skipping one
 reopening the run — writes the form whole, because carrying the last clip's
 typing into the next one would be worse than losing it.
 
-### Settling a clip never touches `vocabulary.json`
+### Settling a clip records its tags, and so does Assign
 
-This is a deliberate omission and it used to be the opposite. The Tag Editor used to
-call `record_use` on every settled clip, which wrote an imported library's values —
-**and its titles**, since it passed the whole tag dict where the editor filters to
-`SUGGESTED_TAG_FIELDS` first — into the user's tag history. Two things were wrong with
-that:
+Both importer windows write the value they were just given into
+`vocabulary.json` the moment the user confirms it — `QueueWindow._note_confirmed_tags`
+on Next, `MeshWindow._note_confirmed_tag` on Assign. This used to be the opposite
+in the queue, and the reason it was is worth keeping: the Tag Editor recorded the
+whole tag dict, **including titles**, which wrote an imported library's
+vocabulary *and* its titles into the user's tag history, and then
+`sync_vocabulary` deleted them again on the next open because the prune counted
+only `export/`. Two things followed, and both were visible:
 
-- `sync_vocabulary` prunes against `export/` only, so those values were written on
-  one run and **deleted on the next open**, taking any value the user genuinely typed
-  along with them.
-- `match_value` ranks `in_vocabulary` hits as real evidence. During a value translation
-  run the file would have been full of exactly the values being decided about, so the
-  pass would have been ranking its own input as prior belief.
+- The user's own dropdowns churned on every import of a library they had not
+  imported yet — the very cost the file exists to remove.
+- `match_value` ranks `in_vocabulary` hits as real evidence, so a file holding
+  somebody else's spellings makes the value mesh rank its own input as prior belief.
 
-Values reach the file the one way they should: read back out of `export/` by
-`sync_vocabulary`, once the user has actually imported them. Until then they are
-somebody else's words and settling a clip confirms nothing.
+Both are addressed rather than preserved, and it is worth being precise about what
+changed:
+
+- **Only the suggestable tags are recorded**, filtered to `SUGGESTED_TAG_FIELDS` at
+  the call site exactly where the editor filters them, so a title never reaches the
+  file and `shared/vocabulary.py` stays a plain store that does not know which tags
+  are worth remembering.
+- **A record in `import/` is a use.** `sync_vocabulary` takes a `pending_root` and
+  folds those records into the prune's `in_use` (`shared/catalog.py:pending_record_tags`),
+  so a confirmed value survives until the clip is imported, skipped or deleted. That
+  is the churn fix, and it is why the eager record does not simply bring the old bug
+  back: the prune now has a source that knows about staged clips. Every caller that
+  can see an import folder passes it — both importer windows and the Settings
+  button — so no route into the sync can delete a value the user just confirmed.
+- **The union is untouched.** `values_added` still means "values this library uses",
+  so the summary the mesh shows on open keeps describing the library and does not
+  claim credit for staged clips.
+
+A rejected folder name records nothing: a name is not a value, and "this folder is
+not a tag" is not an answer to remember.
 
 ### The record is authoritative once it exists
 

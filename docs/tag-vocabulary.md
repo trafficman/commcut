@@ -10,6 +10,9 @@ Applies to: `shared/vocabulary.py`, `editor/editor.py:MediaPlayer`
 (`_init_tag_vocabulary`, `_ordered_tag_values`, `_refresh_tag_combos`,
 `_note_recent_tags`, `_commit_form_tags_to_model`),
 `editor/editorwindow.ui`, `shared/catalog.py:sync_vocabulary`,
+`shared/catalog.py:pending_record_tags`,
+`importer/queue.py:QueueWindow._note_confirmed_tags`,
+`importer/mesh.py:MeshWindow._note_confirmed_tag`,
 `settings/settings.py` (`SyncWorker`, `VocabularySyncDialog`).
 
 Related: [segment-model.md](segment-model.md#tag-suggestions) (the widgets and
@@ -234,6 +237,10 @@ deleted from `export/` leaves its values behind. **Settings → Sync from Export
 Library** reconciles the file against what the library actually holds. It is the
 only thing in the app that removes a value.
 
+It also runs on its own when either importer window opens a session, and its
+summary is shown to the user while they answer — see
+[importing.md](importing.md#the-vocabulary-sync-runs-on-open-and-says-so).
+
 One click, one pass, two halves, in this order:
 
 1. **Union.** Every tag value in every clip's `.cnfo` record is added. A value
@@ -263,6 +270,26 @@ question is whether they pressed this button.
 
 Two rules keep a destructive operation survivable:
 
+- **A value a staged record uses is not unused.** `sync_vocabulary` takes a
+  `pending_root` — the import folder — and folds the tags of every `.cnfo` under it
+  into the prune's `in_use` (`shared/catalog.py:pending_record_tags`). A clip the Tag
+  Editor has settled is the user's own confirmed answer that has not been imported
+  yet, and it counts until it is imported, skipped or deleted. Without this the two
+  importer windows could not record anything: the value would appear in the
+  dropdowns and the next window to open would delete it, because nothing in
+  `export/` used it yet. Every caller that can see an import folder passes one — both
+  importer windows and the Settings button — so no route into the sync can undo a
+  confirmation.
+
+  Every `.cnfo` counts, with or without a video beside it: this is a narrower
+  question than `build_catalog`'s, and deliberately the wider of the two, because a
+  value that vanishes because a folder is mid-import is the churn the pending root
+  exists to stop. A record that cannot be read contributes nothing and is not
+  reported — the sync's own walk is what reports those.
+
+  It changes only the **prune**. The union still reads `export/` alone, so
+  `values_added` keeps meaning "values this library uses" and the summary shown on
+  open describes the library rather than claiming credit for staged clips.
 - **A cancelled sync writes nothing.** `shared/catalog.py:sync_vocabulary` builds
   the whole catalog before it mutates anything and discards a cancelled one
   outright. Pruning against half a library would delete every value the other
@@ -304,18 +331,22 @@ catalog without touching this file.
 
 ## What counts as used
 
-`_commit_form_tags_to_model()` — **Stage** and **export preparation**. Those two
-sites are the complete definition, because the boundary operations pass
-`_inherited_tags()` (the lock values) rather than the form.
+`_commit_form_tags_to_model()` — **Stage** and **export preparation** — and, in the
+Library Importer, `QueueWindow._note_confirmed_tags` on **Next** and
+`MeshWindow._note_confirmed_tag` on **Assign**. Those are the complete definition,
+because the editor's boundary operations pass `_inherited_tags()` (the lock values)
+rather than the form.
 
 This matters: the vocabulary is fed at a commit, not from a keystroke. A form
-read mid-entry holds `Cartoon N`, which is not a tag anybody means. And both
-sites run *after* their own required-tag check, so a stage refused for a
-missing required field records nothing.
+read mid-entry holds `Cartoon N`, which is not a tag anybody means. And every site
+runs *after* its own required-tag check, so a stage refused for a missing
+required field records nothing.
 
-"Used" means *suggestible and staged*. The same call writes all ten tags to the
+"Used" means *suggestible and confirmed*. The same call writes all ten tags to the
 model and the nine suggestable ones to the file — see
-[Namespaces](#namespaces).
+[Namespaces](#namespaces). The importer's two sites filter to the same nine for the
+same reason, and a **rejected** folder name records nothing at all: "this folder is
+not a tag" is not an answer to remember.
 
 A vocabulary that cannot be written — a full disk, a read-only folder — is
 logged and otherwise ignored. Every value in it is also in the `.cmct` and the

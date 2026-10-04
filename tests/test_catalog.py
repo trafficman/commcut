@@ -14,6 +14,7 @@ from shared.catalog import (
     Catalog,
     CatalogClip,
     build_catalog,
+    pending_record_tags,
     sync_vocabulary,
 )
 from shared.records import (
@@ -700,6 +701,79 @@ def test_a_sync_drops_a_value_whose_only_clip_is_gone(tmp_path):
     assert result.values_removed == (("block", "Toonami"),)
     assert vocabulary.values("block") == ()
     assert Vocabulary.load(str(tmp_path / "vocabulary.json")).values("block") == ()
+
+
+def test_a_sync_spares_a_value_a_staged_record_still_uses(tmp_path):
+    """The prune asks what is *in use*, and a record waiting in `import/` is a use.
+
+    The Tag Editor records a value the moment it is confirmed, which is before the
+    clip has been imported. Without the staging folder counted, the next sync would
+    find nothing in `export/` using that value and delete it again — so the record
+    would be churn, and the user's dropdowns would empty between one clip and the
+    next.
+    """
+    library = tmp_path / "export"
+    staging = tmp_path / "import"
+    write_clip(library, "Kept", tags=(("network", "Cartoon Network"),))
+    write_clip(staging, "Staged", tags=(("network", "Nickelodeon"),))
+    vocabulary = Vocabulary(path=str(tmp_path / "vocabulary.json"))
+    vocabulary.record({"network": "Nickelodeon"})
+    vocabulary.save()
+
+    result = sync_vocabulary(str(library), vocabulary, pending_root=str(staging))
+
+    assert result.values_removed == ()
+    assert vocabulary.values("network") == ("Cartoon Network", "Nickelodeon")
+
+
+def test_a_staged_record_stops_counting_once_it_is_gone(tmp_path):
+    """The other half: the spare is not permanent.
+
+    Skipping a clip deletes its record, and the value it was the only user of has
+    to go with it, or a typo made once in a folder of eight hundred would be
+    offered forever.
+    """
+    library = tmp_path / "export"
+    staging = tmp_path / "import"
+    write_clip(library, "Kept", tags=(("network", "Cartoon Network"),))
+    vocabulary = Vocabulary(path=str(tmp_path / "vocabulary.json"))
+    vocabulary.record({"network": "Nickelodeon"})
+    vocabulary.save()
+
+    result = sync_vocabulary(str(library), vocabulary, pending_root=str(staging))
+
+    assert result.values_removed == (("network", "Nickelodeon"),)
+    assert vocabulary.values("network") == ("Cartoon Network",)
+
+
+def test_pending_record_tags_reads_records_with_or_without_their_video(tmp_path):
+    """A settled answer is the user's whether or not the file is still there.
+
+    Every `.cnfo` counts, deliberately wider than `build_catalog`'s clip rule:
+    pruning a value because the folder is mid-import is the churn this exists to
+    stop, and an unreadable record contributes nothing rather than being reported
+    — the sync's own walk is what reports those.
+    """
+    staging = tmp_path / "import"
+    directory = staging / "Rips"
+    directory.mkdir(parents=True)
+    write_record(str(directory / "With video.cnfo"),
+                 make_record(tags=(("network", "Cartoon Network"),)))
+    write_record(str(directory / "No video.cnfo"),
+                 make_record(tags=(("block", "Toonami"),)))
+    broken = write_record(str(directory / "Broken.cnfo"), make_record())
+    with open(broken, "w", encoding="utf-8") as handle:
+        handle.write("not xml at all")
+
+    found = pending_record_tags(str(staging))
+
+    assert found == {"network": ["Cartoon Network"], "block": ["Toonami"]}
+
+
+def test_pending_record_tags_of_a_folder_that_is_not_there_is_empty(tmp_path):
+    """Same rule as the catalog: no folder is an empty answer, not a fault. A
+    fresh install has no `import/` yet."""
+    assert pending_record_tags(str(tmp_path / "never-existed")) == {}
 
 
 def test_a_sync_keeps_the_shipped_defaults_a_library_does_not_use(tmp_path):

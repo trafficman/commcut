@@ -36,6 +36,7 @@ from shared.exporting import (
     FOLDER_ORGANIZATION_SCHEME_KEY,
     export_folder,
 )
+from shared.importing import import_folder
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
@@ -191,7 +192,8 @@ class SyncWorker(QObject):
     advanced = Signal(int, str)
     finished = Signal(object)
 
-    def __init__(self, root: str, vocabulary, cancel_event=None):
+    def __init__(self, root: str, vocabulary, cancel_event=None,
+                 pending_root: str | None = None):
         super().__init__()
         self.root = root
         #: The cached instance, passed in rather than resolved here: a fresh
@@ -199,6 +201,10 @@ class SyncWorker(QObject):
         #: editor opened later in the same session would offer the old
         #: dropdowns.
         self.vocabulary = vocabulary
+        #: The import folder, whose settled records count as uses so the prune
+        #: does not delete a value the Tag Editor recorded a moment ago. See
+        #: `shared/catalog.py:pending_record_tags`.
+        self.pending_root = pending_root
         self.cancel_event = cancel_event or threading.Event()
 
     @Slot()
@@ -209,6 +215,7 @@ class SyncWorker(QObject):
                 self.vocabulary,
                 on_progress=lambda found, path: self.advanced.emit(found, path),
                 should_cancel=self.cancel_event.is_set,
+                pending_root=self.pending_root,
             )
         except Exception as error:  # noqa: BLE001 - reported, never raised
             log_exception(f"the tag vocabulary sync over {self.root} failed", error)
@@ -563,13 +570,19 @@ class SettingsWindow(QMainWindow):
 
     # --- the tag vocabulary sync ---
 
-    def start_vocabulary_sync(self, root: str | None = None):
+    def start_vocabulary_sync(self, root: str | None = None,
+                              pending_root: str | None = None):
         """Reconcile the tag vocabulary with the clips in the export library.
 
         `root` defaults to the export folder and is a parameter so a test can
         point the walk at a temporary library: `export_folder()` resolves
         through the install root, and the Settings tests redirect
         `PROJECT_ROOT` rather than the install root.
+
+        `pending_root` is the import folder, and the button leaves it unset so it
+        resolves to `import_folder()`. It is a parameter for the same reason:
+        without pointing it at a temporary folder, a test run would read the
+        developer's real staged records.
 
         The window is disabled for the duration rather than just the button,
         because the worker holds the live cached vocabulary instance and an edit
@@ -579,6 +592,7 @@ class SettingsWindow(QMainWindow):
             return None
 
         library = root or export_folder()
+        pending = import_folder() if pending_root is None else pending_root
         self._sync_cancel = threading.Event()
         self._sync_result = None
         self._sync_close_after = False
@@ -602,6 +616,7 @@ class SettingsWindow(QMainWindow):
         self._sync_dialog = progress
 
         worker = SyncWorker(library, get_vocabulary(vocabulary_path()),
+                            pending_root=pending,
                             cancel_event=self._sync_cancel)
         thread = QThread(self)
         worker.moveToThread(thread)

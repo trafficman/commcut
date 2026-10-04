@@ -25,13 +25,14 @@ Five decisions shape it:
   one rather than forking it. It also means an eight-hundred-clip session has a
   save point per clip. Resume asks `missing_required_tags(record)`, *not* "is
   there a record", because a half-tagged record exists and is not finished.
-- **Settling a clip does not touch `vocabulary.json`.** The values in an imported
-  library are somebody else's, and this window is where the user finds that out,
-  not where they are confirmed. They enter the file when `sync_vocabulary` reads
-  them back out of `export/`, which is the one owner of that file's contents and
-  the only source they have any business coming from. Recording them here wrote
-  foreign spellings into the user's tag history and then deleted them on the next
-  open, because the prune only ever counts the library.
+- **Settling a clip records its suggestable tags.** A confirmed tag goes into
+  `vocabulary.json` the moment it is confirmed, as it does on Stage in the editor,
+  because this is the one window where the same eight hundred tags get typed over
+  and over and the file is exactly the thing that stops it. Title is excluded
+  along with every other window, and `sync_vocabulary` counts a record in
+  `import/` as a use so the value is still there on the next open — otherwise the
+  record would be deleted by the prune before it was ever imported, which is what
+  this window used to do. `docs/tag-vocabulary.md` has the reasoning.
 - **The rules are learned from file names and can never set a title.** A rule is
   a standing instruction; a title is per clip. That distinction is the reason the
   title is the only thing still asked for here, and it is enforced in
@@ -79,10 +80,15 @@ from shared.records import (
 )
 from shared.segments import probe_duration
 from shared.session import shell
-from shared.tag_form import TAG_FIELDS, TagForm, field_change_signal
+from shared.tag_form import (
+    SUGGESTED_TAG_FIELDS,
+    TAG_FIELDS,
+    TagForm,
+    field_change_signal,
+)
 from shared.ui_loader import UiLoader, adopt_title
 from shared.values import TITLE_TAG, ValueSession
-from shared.vocabulary import get_vocabulary, vocabulary_path
+from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 
 from importer.importrun import confirm_and_import
 from importer.rules import RulesDialog
@@ -280,7 +286,7 @@ class QueueWindow(QMainWindow):
         """Read the library and the import folder the way the Untagged Library Mesh
         did."""
         vocabulary = get_vocabulary(vocabulary_path())
-        sync_vocabulary(self.library_root, vocabulary)
+        sync_vocabulary(self.library_root, vocabulary, pending_root=self.root)
         return MeshSession(self.root, find_videos(self.root),
                            library=build_catalog(self.library_root),
                            vocabulary=vocabulary)
@@ -576,9 +582,40 @@ class QueueWindow(QMainWindow):
                 self, "That clip could not be saved",
                 f"{clip.filename} could not be recorded:\n\n{error}")
             return
+        self._note_confirmed_tags(tags)
         self.done += 1
         self.position += 1
         self._load_current()
+
+    def _note_confirmed_tags(self, tags) -> None:
+        """Offer this clip's own tags back on the next one.
+
+        Settling a clip is the user confirming its tags, and an eight-hundred-clip
+        session is the worst possible place to make somebody retype `Cartoon
+        Network` once per clip. So the suggestable tags are recorded in
+        `vocabulary.json` at the moment they are confirmed, exactly where the
+        editor records them on Stage -- the shared form owns the same dropdowns,
+        so this is what makes the next clip's dropdown offer the value.
+
+        **Only the suggestable tags.** Title is excluded for the reason it is
+        excluded everywhere else: it is unique per clip, so a list of every title
+        ever typed is a list with one use each, and it has no dropdown to appear
+        in.
+
+        The order is the editor's: the session's own most-recently-used list is
+        moved first, and the file is only rewritten if it gained something. A
+        repopulate is skipped otherwise, because clearing and refilling ten fields
+        to no purpose is how a value being typed elsewhere gets eaten.
+
+        `record_use` cannot fail this window. It logs a vocabulary it could not
+        save and carries on, because every value in it is still in the record just
+        written and the next clip will try again.
+        """
+        suggested = {key: value for key, value in tags.items()
+                     if key in SUGGESTED_TAG_FIELDS}
+        reordered = self.ui.tagForm.note_recent_tags(suggested)
+        if record_use(suggested, self.ui.tagForm.vocabulary_path) or reordered:
+            self.ui.tagForm.refresh_combos()
 
     def on_skip_delete(self):
         """Delete this clip from `import/` and move on.

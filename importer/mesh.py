@@ -52,7 +52,7 @@ from shared.importing import find_videos, import_folder
 from shared.mesh import COLOURS, MESHED, REJECTED, MeshSession, namespace_choices
 from shared.session import shell
 from shared.ui_loader import UiLoader, adopt_title
-from shared.vocabulary import get_vocabulary, vocabulary_path
+from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 
 
 #: Readable foreground/background pairs for the path bar, indexed by the matching
@@ -113,6 +113,7 @@ class MeshWorker(QObject):
                 on_progress=lambda _found, path: self.advanced.emit(
                     f"Reading {path}"),
                 should_cancel=self.cancel_event.is_set,
+                pending_root=self.root,
             )
             if self.cancel_event.is_set():
                 self.failed.emit("Cancelled while reading your library.")
@@ -415,7 +416,26 @@ class MeshWindow(QMainWindow):
         if conflict is not None and not self._confirm_conflict(conflict):
             return
         self.session.assign(prompt.name, namespace, value)
+        self._note_confirmed_tag(namespace, value)
         self._show_next_prompt()
+
+    def _note_confirmed_tag(self, namespace: str, value: str) -> None:
+        """Record the answer the user just gave, so it can be picked next time.
+
+        Assigning is this window's confirmation — the namespace and value are on
+        screen and the press is deliberate — so the value joins
+        `vocabulary.json` at that moment, the way a Stage does in the editor.
+        Without it a folder name answered here has to be answered the same way
+        again on the next run, which is the whole cost this feature exists to
+        remove.
+
+        The path is resolved the same way the worker resolved it, so this is the
+        same cached instance the sync at open already reconciled. A file that
+        cannot be written is logged and dropped: the answer is in the alias
+        table either way, and the value being missing from a suggestion list is
+        an inconvenience rather than a failure.
+        """
+        record_use({namespace: value}, vocabulary_path())
 
     def _confirm_conflict(self, conflict) -> bool:
         """Ask before committing a mapping that will need a person later.

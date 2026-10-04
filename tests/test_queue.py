@@ -23,10 +23,11 @@ from PySide6.QtGui import QCloseEvent, QTextCursor
 
 import importer.queue as queue_module
 from editor_stub import ensure_qapp
+from shared.catalog import sync_vocabulary
 from shared.mesh import MeshSession
 from shared.mpv import MpvBridge
 from shared.records import ClipRecord, load_record, write_record
-from shared.vocabulary import get_vocabulary
+from shared.vocabulary import Vocabulary, get_vocabulary
 
 
 @pytest.fixture(scope="module")
@@ -644,41 +645,84 @@ def test_the_record_takes_the_duration_the_probe_measured(harness):
         window.deleteLater()
 
 
-def test_settling_a_clip_never_touches_the_vocabulary(harness):
-    """The inverse of what this window used to do, and the reason it changed.
+def test_settling_a_clip_records_its_tags_for_the_next_dropdown(harness):
+    """Confirming a tag is what puts it in the vocabulary.
 
-    Every value in this window comes from somebody else's library. Recording them
-    wrote `CN` and `Toonami - Vol 3` into the user's tag history on the way past —
-    including the clip's *title*, since the queue passed the whole tag dict where the
-    editor filters to `SUGGESTED_TAG_FIELDS` first — and then `sync_vocabulary`
-    deleted them again on the next open, because the prune only ever counts the
-    library in `export/`. So the user's own dropdowns churned on every import of a
-    library they had not imported yet.
+    This is the window where the same handful of tags get typed once per clip for
+    eight hundred clips, so a value recorded here has to be offered back on the
+    next clip — which it is, because the form repopulates from the file the record
+    went into.
+    """
+    open_queue, root, _ = harness
+    put_clips(root, "CN/A.mp4", "CN/B.mp4")
+    window = open_queue("CN/A.mp4")
 
-    Values reach the file the one way they should: read back out of `export/` by
-    `sync_vocabulary`, once the user has actually imported them. Until then they are
-    somebody else's words and nothing here is a confirmation of anything.
+    try:
+        fill_form(window, title="Worlds Finest", block="Toonami",
+                  network="Cartoon Network")
+
+        window.on_next()
+
+        path = window.ui.tagForm.vocabulary_path
+        assert "Cartoon Network" in Vocabulary.load(path).values("network")
+        assert "Toonami" in Vocabulary.load(path).values("block")
+
+        # Offered on the clip now in front of the user, not merely on the next open.
+        assert "Cartoon Network" in [
+            item for item in window.ui.tagForm.ordered_tag_values("network")]
+        assert window.ui.tagForm.ordered_tag_values("network")[0] == (
+            "Cartoon Network"), "most recently confirmed leads its own dropdown"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_settling_never_records_the_title(harness):
+    """A title is unique per clip, so a list of every title ever typed is a list
+    with one use each — and it has no dropdown to appear in. Only the nine
+    suggestable tags are worth remembering; this is where that filter is applied.
     """
     open_queue, root, _ = harness
     window = open_queue("CN/A.mp4")
 
     try:
-        from shared.vocabulary import Vocabulary
+        fill_form(window, title="A Title Nobody Else Uses")
 
-        # Compared against a *fresh* vocabulary rather than against "is this value
-        # absent", because `filler_type: Promo` is a shipped default and is in every
-        # one of them. What must not happen is a **user** value appearing.
-        before = Vocabulary.defaults(window.ui.tagForm.vocabulary_path)
-
-        fill_form(window)
         window.on_next()
 
         stored = Vocabulary.load(window.ui.tagForm.vocabulary_path)
-        for namespace in before.namespaces():
-            assert stored.values(namespace) == before.values(namespace), (
-                f"{namespace} gained {sorted(set(stored.values(namespace)) - set(before.values(namespace)))}"
-                f" from an imported clip. A value reaches the file by being read back"
-                f" out of export/, not by passing through this window.")
+        assert "A Title Nobody Else Uses" not in stored.values("title")
+        assert "title" not in stored.namespaces()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_recorded_value_is_still_there_after_the_next_sync(harness):
+    """The record and the prune have to agree, or the recording is churn.
+
+    Settling writes a record into `import/` and the value into the file; the next
+    window to open runs `sync_vocabulary`, whose prune asks what the *library*
+    uses. Without the import folder passed to it as a source of uses, that is
+    nothing yet — so the value the user just confirmed would be deleted before it
+    was ever imported, which is exactly what this window used to do.
+    """
+    open_queue, root, library = harness
+    window = open_queue("CN/A.mp4")
+    vocabulary = get_vocabulary(window.ui.tagForm.vocabulary_path)
+
+    try:
+        fill_form(window, network="Cartoon Network")
+        window.on_next()
+        assert "Cartoon Network" in vocabulary.values("network")
+
+        # What the next open does: reconcile against the library, counting the
+        # records still waiting in `import/`.
+        result = sync_vocabulary(
+            library, vocabulary, pending_root=root)
+
+        assert ("network", "Cartoon Network") not in result.values_removed
+        assert "Cartoon Network" in vocabulary.values("network")
     finally:
         window.close()
         window.deleteLater()

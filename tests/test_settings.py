@@ -528,10 +528,11 @@ class FakeSyncWorker(QObject):
 
     instances = []
 
-    def __init__(self, root, vocabulary, cancel_event=None):
+    def __init__(self, root, vocabulary, cancel_event=None, pending_root=None):
         super().__init__()
         self._real = RealSyncWorker(
-            root, vocabulary, cancel_event=cancel_event)
+            root, vocabulary, cancel_event=cancel_event,
+            pending_root=pending_root)
         self.cancel_event = self._real.cancel_event
         self.advanced = self._real.advanced
         self.finished = self._real.finished
@@ -593,6 +594,8 @@ def sync_harness(qapp, window_factory, monkeypatch, tmp_path):
                         lambda: str(vocabulary_file))
     monkeypatch.setattr(settings_module, "export_folder",
                         lambda: str(library))
+    monkeypatch.setattr(settings_module, "import_folder",
+                        lambda: str(tmp_path / "import"))
     monkeypatch.setattr(settings_module, "QThread", FakeThread)
     monkeypatch.setattr(settings_module, "SyncWorker", FakeSyncWorker)
     monkeypatch.setattr(settings_module, "QProgressDialog", FakeProgressDialog)

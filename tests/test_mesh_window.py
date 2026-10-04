@@ -324,6 +324,50 @@ def test_assigning_advances_to_the_next_folder_name(wizard):
         window.deleteLater()
 
 
+def test_assigning_records_the_answer_in_the_vocabulary(wizard):
+    """The value the user just chose is the one they will be asked for again.
+
+    `CN` might appear in the next library too, and the alternative is typing
+    `Cartoon Network` once per folder name per run — which is the whole cost this
+    window exists to remove. Recorded through `record_use` against the same
+    resolved path the open-time sync used, so it lands in the file rather than in a
+    copy of it.
+    """
+    from shared.vocabulary import Vocabulary
+
+    window = build_wizard(wizard, "CN/2000s/A.mp4")
+    try:
+        window.ui.comboNamespace.setCurrentText("network")
+        window.ui.comboValue.setCurrentText("Cartoon Network")
+
+        window.on_assign()
+
+        assert "Cartoon Network" in Vocabulary.load(
+            mesh_module.vocabulary_path()).values("network")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_rejected_name_records_nothing(wizard):
+    """Rejecting is a decision that a folder name is *not* a tag, so there is no
+    value to remember — and a name is not a value, whatever else it is."""
+    from shared.vocabulary import Vocabulary
+
+    window = build_wizard(wizard, "CN/A.mp4")
+    try:
+        window.ui.comboNamespace.setCurrentText("network")
+        window.ui.comboValue.setCurrentText("Cartoon Network")
+
+        window.on_reject()
+
+        assert "Cartoon Network" not in Vocabulary.load(
+            mesh_module.vocabulary_path()).values("network")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_assign_is_refused_until_both_halves_are_filled(wizard):
     """The "never written without being tied" rule as a UI fact: there is no way
     to press a button that meshes a name onto nothing."""
