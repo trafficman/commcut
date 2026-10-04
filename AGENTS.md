@@ -35,8 +35,9 @@ Run from the project root.
 | Run the app | `python main.py` |
 | Tests | `python -m pytest` — one file: `python -m pytest tests/test_paths.py` |
 | Build the portable app | `python packaging/build.py` — Windows only; see [packaging/README.md](packaging/README.md) |
+| Build a source release | `python packaging/source_release.py` — macOS/Linux; `--target macos\|linux`, `--check-only`; see [docs/source-install.md](docs/source-install.md) |
 | Cut a release | set `VERSION` in `shared/version.py`, then `git tag v<version> && git push origin v<version>` — CI builds it and attaches a draft release; see [docs/packaging.md](docs/packaging.md#releases) |
-| Run on macOS or Linux | Same, from a clone, with ffmpeg/mpv installed — see [docs/source-install.md](docs/source-install.md) |
+| Run on macOS or Linux | `./install_deps.sh` then `./run.sh` (`commcut.command` on Finder), or `python main.py` from a clone; see [docs/source-install.md](docs/source-install.md) |
 
 There is no pytest config: `tests/conftest.py` puts the project root on
 `sys.path` and redirects the log out of the source tree. Widget tests set
@@ -53,8 +54,9 @@ commcut/
 ├── export/                  # named clips are written here
 ├── temp/                    # scratch (the scanner's 2-minute preview)
 ├── commcut.log              # beside the exe; override with COMMCUT_LOG
-├── packaging/               # PyInstaller spec + build script (docs/packaging.md)
-├── .github/workflows/       # a pushed tag builds the Windows release zip
+├── packaging/               # the two release builds (docs/packaging.md)
+├── install_deps.sh          # source-release installer; run.sh, commcut.command
+├── .github/workflows/       # a pushed tag builds the Windows zip + source tars
 ├── scanner/                 # Segment Scanner: detect boundaries, hand off
 ├── editor/                  # Editing Wizard: segments, tags, export
 ├── settings/                # file + folder scheme editors
@@ -67,14 +69,13 @@ commcut/
 
 `shared/` in one line each: `environment` (roots, binaries, `mpv_import_context`),
 `session` (the `QApplication` and the one visible window), `version` (the release
-number `packaging/build.py` checks a tag against), `diagnostics`
+number the two build scripts check a tag against), `diagnostics`
 (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, `MpvBridge.shutdown`),
 `timeline` (editor timeline), `segments` (`SegmentModel`, `.cmct`), `sources` (which
 videos may be opened, and the `import/` path), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
-planner and `export_folder()`), `catalog` (reading the library back),
-`mesh` (the Untagged Library Mesh), `values` (the Tagged Library Mesh), `tag_form`
-(the tag fields), `splash` (the banner), `ui_loader` (promoted widgets).
+planner and `export_folder()`), `catalog` (reading the library back), `records`
+(the `.cnfo`), `vocabulary`, `mesh`, `values`, `tag_form`, `splash`, `ui_loader`.
 Per-module detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
@@ -88,8 +89,8 @@ Per-module detail: [docs/architecture.md](docs/architecture.md).
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI |
 | [docs/importing.md](docs/importing.md) | the Library Importer: both meshes and the tag editor, reading somebody else's library, the occupied-destination rule, copy/link/move and what a move deletes, and why a path can only ever propose a tag |
 | [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, who records a confirmed tag, what the sync counts as "used" |
-| [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the tag-driven release pipeline |
-| [docs/source-install.md](docs/source-install.md) | running from source on macOS or Linux: where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is unverified |
+| [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the two tag-driven release pipelines |
+| [docs/source-install.md](docs/source-install.md) | the macOS/Linux source release: the tarball and what is kept out of it, `install_deps.sh`/`run.sh`/`commcut.command`, where the binaries come from, the `COMMCUT_MPV_LIB` override, and what is still unverified |
 | [docs/testing.md](docs/testing.md) | how to run the suite, the widget/`FakeBridge` harness, which test file covers what, the Qt/import gotchas |
 | [docs/status.md](docs/status.md) | what is built, what is next, known gaps |
 | [docs/design_legacy.md](docs/design_legacy.md) | the original scope/design notes |
@@ -211,6 +212,22 @@ diagnose. The linked document has the full reasoning.
     `worker.finished → thread.quit` ends a thread; teardown on the *worker's*
     signal destroys a live one — a `qFatal`, uncatchable and invisible in the log.
     → [docs/architecture.md](docs/architecture.md)
+15. **The source-release manifest is an allow-list, never an exclusion list.**
+    `import/`, `export/` and `temp/` are **not** gitignored, and for a source
+    install the project root *is* `install_root()` — so a developer has a hundred
+    real clips sitting exactly where a walker would look. "Everything, minus what
+    I remembered to exclude" would publish them. Only a path named in
+    `packaging/source_release.py:SOURCE_ENTRIES` is ever walked; the
+    `FORBIDDEN_PATHS` sweep is the tripwire for someone widening that list by
+    accident, not the mechanism. → [docs/source-install.md](docs/source-install.md)
+16. **The launchers report a missing binary; they never install one.**
+    `install_deps.sh` must not run a package manager and must not run `sudo`, so
+    it calls the app's own `get_binary_path` / `resolve_mpv_library` /
+    `check_video_encoder` and prints what *they* said — including every folder
+    searched. A second, shell-side copy of the search order would be a second
+    answer to the same question and would be wrong the day someone adds a
+    platform. `--brew` is the one opt-in exception, and it is macOS-only. →
+    [docs/source-install.md](docs/source-install.md#installing-it)
 
 ## Working agreements
 
@@ -236,5 +253,9 @@ diagnose. The linked document has the full reasoning.
   one exception: it is a coverage claim, and it is checked.
 - **Each document opens with a purpose line and an `Applies to:` list** of the
   source paths it describes, so you can tell whether it is the right one first.
-- **`AGENTS.md` stays under 240 lines.** The ceiling is enforced by
-  `tests/test_docs.py`; new detail goes in `docs/`, not here.
+- **`AGENTS.md` stays under 300 lines.** The ceiling is enforced by
+  `tests/test_docs.py`; new detail goes in `docs/`, not here. It was 240 until
+  the source release landed, and the three release surfaces — a Windows exe, a
+  macOS/Linux tarball, and a tag-driven pipeline per platform — needed room to
+  be described without either dropping them or condensing the tree into
+  uselessness. Raise it again only for the same reason.

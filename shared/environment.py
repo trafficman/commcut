@@ -66,6 +66,10 @@ package). That is a policy difference, not an implementation one, so it is data:
     build nobody tested.
 ``_SYSTEM_BIN_PREFIXES``
     the absolute prefixes searched on platforms that do *not* bundle.
+``system_lib_dirs()``
+    the ``lib/`` subdirectories of those prefixes, plus the multiarch directory
+    on Linux -- where ``apt install libmpv2`` puts libmpv, which no prefix
+    list contains.
 
 The prefixes are an explicit list rather than ``shutil.which`` on purpose: a
 bare name resolves through a mutated ``PATH`` and picks up whatever happens to
@@ -155,6 +159,7 @@ import os
 import platform
 import subprocess
 import sys
+import sysconfig
 
 
 # Presence of this file inside a `shared/` folder is what identifies a folder
@@ -187,6 +192,13 @@ _SYSTEM_BIN_PREFIXES = {
     'darwin': ('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'),
     'linux': ('/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin', '/usr/bin'),
 }
+
+# Where a Linux distro package keeps its shared libraries, which is under a
+# multiarch triplet rather than directly in /usr/lib: `apt install libmpv2`
+# installs /usr/lib/x86_64-linux-gnu/libmpv.so.2, and no entry in
+# _SYSTEM_BIN_PREFIXES contains that directory. The triplet itself is read from
+# sysconfig in system_lib_dirs() so an aarch64 host names its own.
+_MULTIARCH_LIB_ROOT = '/usr/lib'
 
 # The libmpv client library, by platform. This is not the mpv player binary:
 # python-mpv needs the library, which is a separate thing to install and the
@@ -332,6 +344,38 @@ def _system_bin_candidates(binary_name):
         yield os.path.join(prefix, filename)
 
 
+def system_lib_dirs():
+    """Absolute library directories searched on a platform that does not bundle.
+
+    Each entry of ``_SYSTEM_BIN_PREFIXES`` contributes its ``lib/``
+    subdirectory, which is where Homebrew and Linuxbrew put theirs and where a
+    hand-built ``/usr/local`` keeps one.
+
+    **Plus, on Linux, the multiarch directory.** A distro package puts libmpv in
+    ``/usr/lib/<multiarch>`` -- ``x86_64-linux-gnu``, ``aarch64-linux-gnu``,
+    and so on -- and that is *not* ``/usr/lib``, so a prefix-only search misses
+    exactly the case the error message tells the user to create: ``apt install
+    libmpv2`` installs ``/usr/lib/x86_64-linux-gnu/libmpv.so.2``, and the
+    prefix list has no idea it exists. The triplet is read from
+    ``sysconfig`` rather than written out, so an aarch64 host resolves its own
+    name instead of a hardcoded one.
+
+    Nothing is filtered on existence here. The caller reports every directory it
+    looked in, and a list that silently dropped the ones not present would be a
+    worse error message than a longer one.
+    """
+    directories = [
+        os.path.join(prefix, "lib")
+        for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ())
+    ]
+
+    multiarch = sysconfig.get_config_var('MULTIARCH')
+    if _os_key() == 'linux' and multiarch:
+        directories.append(os.path.join(_MULTIARCH_LIB_ROOT, multiarch))
+
+    return tuple(directories)
+
+
 def get_binary_path(binary_name):
     """Absolute path to this machine's ffmpeg, ffprobe, or any bundled binary.
 
@@ -384,9 +428,10 @@ def resolve_mpv_library():
     """Absolute path to the libmpv client library on this machine.
 
     Searched in order: the ``MPV_LIBRARY_ENV_VAR`` override, then ``bin/<os>/``,
-    then the ``lib/`` subdirectory of each system prefix. Returns the first hit
-    and raises ``FileNotFoundError`` -- naming every location -- when there is
-    none.
+    then ``system_lib_dirs()`` -- which is each system prefix's ``lib/``
+    subdirectory plus, on Linux, the multiarch directory a distro package
+    actually uses. Returns the first hit and raises ``FileNotFoundError``
+    -- naming every location -- when there is none.
 
     The override must be an absolute path that exists. One that does not is an
     error rather than a reason to keep searching, because an override that
@@ -417,11 +462,7 @@ def resolve_mpv_library():
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
 
-    directories = [_bin_dir()]
-    directories.extend(
-        os.path.join(prefix, "lib")
-        for prefix in _SYSTEM_BIN_PREFIXES.get(_os_key(), ())
-    )
+    directories = [_bin_dir(), *system_lib_dirs()]
 
     searched = []
     for directory in directories:

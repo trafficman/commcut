@@ -1,0 +1,294 @@
+# Builds the macOS and Linux source releases and attaches them to the same
+# draft GitHub release as the Windows zip.
+#
+# Split from release.yml rather than added to it as a matrix, for two reasons.
+# The Windows job is the only path that has ever shipped, and restructuring it
+# to accommodate two platforms that need none of its machinery is how a working
+# release pipeline gets broken. And the preconditions are opposites: that job
+# needs Git LFS and PyInstaller, this one needs neither.
+#
+# Three things here are load-bearing.
+#
+#   concurrency.group   Character-identical to release.yml's. GitHub's
+#                       concurrency is repo-wide across workflows, so the same
+#                       group name serializes these two on one draft release.
+#                       Without it both can fail `gh release view` and both try
+#                       to create the release, and the loser fails a run that
+#                       actually did its job.
+#   the extract step     Builds the archive and then extracts it and runs
+#                       ./install_deps.sh inside it. Without that, three shell
+#                       scripts ship having never been executed by anything, and
+#                       the first person to try one finds out. It costs a second
+#                       PySide6 download per runner and it is the reason the
+#                       launchers are covered at all.
+#   --target / no LFS    A source archive's contents are platform-independent:
+#                       nothing is compiled, and the only platform-specific thing
+#                       is the filename. So the Windows checkout could build
+#                       either archive, and `lfs: false` (the default) is left
+#                       alone on purpose -- setting it true would pull ~384 MB of
+#                       bin/win/ binaries for a release that must not contain
+#                       any of them.
+#
+# The tag is not trusted to be the version: packaging/source_release.py refuses
+# anything that disagrees with shared/version.py, by the same function the
+# Windows build uses. And the archive's name is read back out of the build
+# script's own stdout rather than reconstructed here, so the filename exists in
+# exactly one place.
+name: source-release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)cut a release for, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: read
+
+# Same string as release.yml. See above.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }} source release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One in flight at a time: both legs attach to the same draft release, and
+      # the point of the shared concurrency group is that they do not race.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-latest
+            name: linux
+    permissions:
+      contents: write
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # ref, not github.ref: on a manual re-run that is the branch the
+          # workflow ran from, so without it the re-run would build a different
+          # commit than the tag it is cutting a release for.
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          # The default glob is **/requirements.txt, which does not match
+          # requirements-build.txt -- so bumping pytest would not invalidate the
+          # cache. That matters more here than on Windows: these runners are the
+          # only place the suite runs on a non-Windows interpreter.
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: install
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      # The gate. It needs none of the LFS binaries -- ffmpeg is stubbed and the
+      # mpv import is deferred and mocked -- but it does need the pinned PySide6
+      # wheel to import on this platform's interpreter, which is the thing this
+      # job exists to find out.
+      #
+      # A green suite here is still not proof that playback works: FakeBridge
+      # stands in for libmpv by design. docs/source-install.md says so, and it is
+      # why the summary step below says it too.
+      - name: tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest
+
+      # The tag goes in through env, not ${{ }} in the script body. A tag is
+      # reachable input -- anyone who can push one can put text there -- and an
+      # expression interpolated into a shell script is substituted before the
+      # shell ever parses it, so the script would be that text.
+      - name: build
+        id: build
+        env:
+          TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # pipefail, because the build's output is piped into tee below and a
+          # pipeline's status is its *last* command's. Without it a failed build
+          # exits 0 through tee and this step goes green having built nothing.
+          set -o pipefail
+          tag="${TAG:-$REF_NAME}"
+          python packaging/source_release.py --version "$tag" \
+            | tee "$RUNNER_TEMP/build-output.txt"
+          # Read back rather than reconstructed: source_release.py owns the
+          # name, and the Windows workflow's habit of rebuilding it in PowerShell
+          # is a second place for it to be wrong.
+          artifact=$(sed -n 's/^artifact: //p' "$RUNNER_TEMP/build-output.txt")
+          if [ -z "$artifact" ]; then
+            echo "the build printed no 'artifact:' line" >&2
+            exit 1
+          fi
+          echo "asset=$(basename "$artifact")" >> "$GITHUB_OUTPUT"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
+
+      # The step that makes the three shell scripts covered rather than shipped.
+      # It extracts what was just built and runs the installer inside it, so a
+      # quoting bug, a wrong relative path or a shebang problem fails the
+      # release instead of the user.
+      #
+      # It costs a second PySide6 download per runner and it is the reason the
+      # launchers are covered at all.
+      - name: extract and install into the extracted archive
+        run: |
+          root="$RUNNER_TEMP/extracted"
+          mkdir -p "$root"
+          tar xzf "${{ steps.build.outputs.path }}" -C "$root"
+          app=$(find "$root" -mindepth 1 -maxdepth 1 -type d)
+          echo "extracted to $app"
+
+          for name in install_deps.sh run.sh commcut.command; do
+            if [ ! -x "$app/$name" ]; then
+              echo "$name did not extract executable" >&2
+              exit 1
+            fi
+          done
+
+          cd "$app"
+
+          # The Python half has to work. The binary check is *expected* to fail
+          # here, because the system packages are installed in the next step and
+          # this script refuses to install them itself. So the exit status is
+          # not asserted -- but the virtual environment it should have built is,
+          # which is what catches a broken installer rather than a missing ffmpeg.
+          if ! ./install_deps.sh; then
+            echo "install_deps.sh exited non-zero -- expected until the system packages are installed"
+          fi
+          test -x .venv/bin/python || {
+            echo "install_deps.sh did not build a virtual environment" >&2
+            exit 1
+          }
+
+      # Why install_deps.sh is allowed to fail above, and what this replaces it
+      # with: the script refuses to run sudo and reports what is missing, so a
+      # hosted runner with no ffmpeg and no libmpv would exit 1 for a reason that
+      # has nothing to do with the release. A *workflow* may use sudo where the
+      # shipped script does not, so the system packages go here -- and then
+      # install_deps.sh is re-run against a machine that has them, which is the
+      # arrangement that actually proves something.
+      #
+      # This is also the closest thing to an answer for the open question in
+      # docs/source-install.md: if libmpv could not be resolved on this platform,
+      # install_deps.sh would now exit 1 and fail the release. That is the
+      # multiarch directory fix in shared/environment.py being checked on the
+      # platform it exists for.
+      - name: system packages the installer refuses to install itself
+        run: |
+          if [ "${{ matrix.name }}" = "macos" ]; then
+            brew install ffmpeg mpv
+          else
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg libmpv2
+          fi
+
+      - name: re-check the installed tree now that the binaries are present
+        run: |
+          app=$(find "$RUNNER_TEMP/extracted" -mindepth 1 -maxdepth 1 -type d)
+          cd "$app"
+          ./install_deps.sh
+
+      # The other half of the extract step: an archive can install cleanly and
+      # still be missing a module, which is a failure at window-open time on a
+      # user's machine rather than here. This imports everything the app reaches
+      # without starting a GUI -- and it works without libmpv, because
+      # shared/mpv.py defers its `import mpv` into create_mpv_player rather than
+      # doing it at module level. main.py is in the list and is safe too: the
+      # QApplication is built in run_main_menu, not at import.
+      - name: the extracted tree is importable
+        run: |
+          app=$(find "$RUNNER_TEMP/extracted" -mindepth 1 -maxdepth 1 -type d)
+          cd "$app"
+          .venv/bin/python - <<'PYTHON'
+          import shared.environment, shared.session, shared.mpv, shared.ffmpeg
+          import editor.editor, scanner.scanner, settings.settings
+          import importer.mesh, importer.queue, importer.values, importer.rules
+          import mainwindow, main
+          print("every module the app reaches imported")
+          PYTHON
+
+      # The other half of the build's own guarantee: that the file which exists
+      # is the file whose digest is published, before either is uploaded. A
+      # source archive is reproducible (fixed mtime, uid, gid and gzip header),
+      # so this is a real check rather than a formality.
+      - name: verify the artifact
+        run: |
+          asset="${{ steps.build.outputs.asset }}"
+          path="${{ steps.build.outputs.path }}"
+          test -f "$path" || { echo "no $path" >&2; exit 1; }
+          test -f "$path.sha256" || { echo "no sha256 sidecar" >&2; exit 1; }
+          want=$(cut -d' ' -f1 "$path.sha256")
+          got=$(shasum -a 256 "$path" | cut -d' ' -f1)
+          if [ "$want" != "$got" ]; then
+            echo "sha256 mismatch: sidecar says $want, file is $got" >&2
+            exit 1
+          fi
+          echo "$asset: $got"
+
+      # Re-running a workflow is a normal thing to do, and `gh release create`
+      # fails hard when a release for the tag exists. A green no-op is more
+      # useful than a red X for "I already did this". --clobber on the upload is
+      # what makes a re-run replace the asset instead of colliding with it.
+      - name: does a release already exist for this tag
+        id: existing
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release view "$TAG" --json isDraft
+
+      # The tag and asset names arrive through env for the same reason as in
+      # release.yml: an expression interpolated into a shell script becomes the
+      # script.
+      - name: create the draft release
+        if: steps.existing.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          ASSET: ${{ steps.build.outputs.asset }}
+          PATH_TO_ASSET: ${{ steps.build.outputs.path }}
+        run: |
+          gh release create "$TAG" \
+            "$PATH_TO_ASSET" \
+            "$PATH_TO_ASSET.sha256" \
+            --draft --verify-tag \
+            --title "commcut $TAG" \
+            --generate-notes
+
+      - name: attach to an existing release
+        if: steps.existing.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          ASSET: ${{ steps.build.outputs.asset }}
+          PATH_TO_ASSET: ${{ steps.build.outputs.path }}
+        run: |
+          gh release upload "$TAG" \
+            "$PATH_TO_ASSET" \
+            "$PATH_TO_ASSET.sha256" \
+            --clobber
+
+      # Only on success. With always() this would also print after a failed
+      # build, claiming a release that is not there.
+      - name: summary
+        if: success()
+        env:
+          ASSET: ${{ steps.build.outputs.asset }}
+        run: |
+          echo "commcut source release attached to the draft: $ASSET"
+          echo "On ${{ matrix.name }}: extract it, run ./install_deps.sh, then ./run.sh."
+          echo "Nothing here is signed or notarized, and nothing here proves"
+          echo "playback works on this platform yet -- a person still has to try it."

@@ -16,7 +16,7 @@ README_MD = os.path.join(PROJECT_ROOT, "README.md")
 PACKAGING_README = os.path.join(PROJECT_ROOT, "packaging", "README.md")
 DOCS_ROOT = os.path.join(PROJECT_ROOT, "docs")
 DOCS_README = os.path.join(DOCS_ROOT, "README.md")
-AGENTS_LINE_CEILING = 240
+AGENTS_LINE_CEILING = 300
 
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 _BACKTICKED = re.compile(r"`([^`\n]+)`")

@@ -1,6 +1,11 @@
 # Python
 __pycache__/
 
+# The virtual environment install_deps.sh builds. install_root() is the project
+# root unfrozen, so for a source install this folder *is* the app's install
+# root -- the same place settings.json and import/ live.
+.venv/
+
 # Build output
 build/
 dist/

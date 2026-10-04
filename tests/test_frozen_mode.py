@@ -412,6 +412,88 @@ def test_a_missing_libmpv_explains_which_library_is_needed(monkeypatch, tmp_path
     assert environment.MPV_LIBRARY_ENV_VAR in message
 
 
+def test_libmpv_resolves_out_of_the_linux_multiarch_directory(
+    monkeypatch, tmp_path
+):
+    """The directory a distro package actually uses.
+
+    ``apt install libmpv2`` -- the command shared/environment.py's own error
+    message tells the user to run -- installs
+    ``/usr/lib/x86_64-linux-gnu/libmpv.so.2``. That is not ``/usr/lib``, and no
+    prefix in _SYSTEM_BIN_PREFIXES contains it, so a prefix-only search misses
+    exactly the case the error message recommends creating.
+
+    The root is substituted rather than used verbatim because these paths are
+    built with ``os.path.join``, which on a Windows host -- where this suite
+    mostly runs -- would put backslashes in a path that has to be a POSIX one on
+    the platform that cares.
+    """
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(environment.os, "environ", {})
+    root = tmp_path / "usr" / "lib"
+    multiarch = root / "x86_64-linux-gnu"
+    multiarch.mkdir(parents=True)
+    (multiarch / "libmpv.so.2").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
+    monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(root))
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: "x86_64-linux-gnu")
+
+    assert environment.resolve_mpv_library() == str(multiarch / "libmpv.so.2")
+
+
+def test_the_multiarch_triplet_is_read_from_sysconfig_rather_than_written_out(
+    monkeypatch
+):
+    """A hardcoded x86_64 triplet would silently miss on aarch64, which is a real
+    target for this app rather than a hypothetical one."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: "aarch64-linux-gnu")
+
+    assert os.path.join(environment._MULTIARCH_LIB_ROOT,
+                        "aarch64-linux-gnu") in environment.system_lib_dirs()
+
+
+def test_the_multiarch_root_is_the_one_a_distro_uses():
+    """A string comparison, so it holds on any host. Changing this constant to
+    anything else stops finding the libraries it exists to find."""
+    assert environment._MULTIARCH_LIB_ROOT == "/usr/lib"
+
+
+def test_macos_gets_no_multiarch_directory(monkeypatch):
+    """The multiarch layout is a Linux dpkg convention. Adding it to macOS
+    would put a path that never exists into the error message's search list."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: "x86_64-linux-gnu")
+
+    assert not any(directory.endswith("x86_64-linux-gnu")
+                   for directory in environment.system_lib_dirs())
+
+
+def test_the_exhausted_libmpv_search_names_the_multiarch_directory(
+    monkeypatch, tmp_path
+):
+    """A list that silently dropped the directories it did not find would make
+    the error message worse, not shorter."""
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(environment.os, "environ", {})
+    root = tmp_path / "usr" / "lib"
+    monkeypatch.setattr(environment, "_bin_dir", lambda: str(tmp_path / "empty"))
+    monkeypatch.setattr(environment, "_SYSTEM_BIN_PREFIXES", {"linux": ()})
+    monkeypatch.setattr(environment, "_MULTIARCH_LIB_ROOT", str(root))
+    monkeypatch.setattr(environment.sysconfig, "get_config_var",
+                        lambda name: "x86_64-linux-gnu")
+
+    with pytest.raises(FileNotFoundError) as error:
+        environment.resolve_mpv_library()
+
+    assert os.path.join(str(root), "x86_64-linux-gnu",
+                        "libmpv.so.2") in str(error.value)
+
+
 def test_the_import_context_answers_python_mpvs_own_lookup(
     monkeypatch, tmp_path
 ):
@@ -620,6 +702,19 @@ def test_every_platform_that_does_not_bundle_knows_where_to_look():
         if system in environment._BUNDLED_BINARY_PLATFORMS:
             continue
         assert environment._SYSTEM_BIN_PREFIXES.get(system), system
+
+
+def test_every_platform_that_does_not_bundle_has_a_library_directory(
+    monkeypatch
+):
+    """The ffmpeg prefixes and the libmpv directories are separate lists, so a
+    platform can satisfy the check above and still have nowhere to look for a
+    library -- which is a FileNotFoundError naming two empty folders."""
+    for system in environment._OS_BIN_FOLDERS:
+        if system in environment._BUNDLED_BINARY_PLATFORMS:
+            continue
+        monkeypatch.setattr(environment.platform, "system", lambda: system)
+        assert environment.system_lib_dirs(), system
 
 
 def test_every_platform_knows_its_libmpv_filename():

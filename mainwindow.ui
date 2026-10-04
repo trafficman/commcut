@@ -75,7 +75,7 @@
      <item>
       <widget class="QLabel" name="labelEditorHint">
        <property name="text">
-        <string>Choose a video, or drop one here, to begin editing</string>
+        <string>Choose a video, or drop one here, to scan and begin editing</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignmentFlag::AlignCenter</set>

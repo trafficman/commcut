@@ -5,9 +5,10 @@ is frozen: the two roots, the read-only payload layout, and per-platform library
 loading.
 
 Applies to: `packaging/commcut.spec`, `packaging/build.py`,
-`packaging/README.md`, `shared/environment.py`, `shared/version.py`,
-`shared/session.py`, `shared/splash.py`, `assets/commcut_banner.png`, `main.py`,
-`.github/workflows/release.yml`, `tests/test_frozen_mode.py`,
+`packaging/source_release.py`, `packaging/README.md`, `shared/environment.py`,
+`shared/version.py`, `shared/session.py`, `shared/splash.py`,
+`assets/commcut_banner.png`, `main.py`, `.github/workflows/release.yml`,
+`.github/workflows/source-release.yml`, `tests/test_frozen_mode.py`,
 `tests/test_release_build.py`.
 
 Related: [source-install.md](source-install.md) (how you run commcut on macOS or
@@ -339,9 +340,13 @@ The libmpv load is separate from this, and happens at `import mpv` rather than a
 
 Pre-flight, `build.py` refuses to build when the host is not Windows, or when a
 bundled binary is a Git LFS pointer file rather than a real binary. The Windows
-gate stays because there is no macOS or Linux build: those platforms ship as
-source installs, and a frozen macOS build would put `install_root()` inside a
-signed `.app` bundle, which is read-only.
+gate stays because there is no macOS or Linux *build*: those platforms ship as
+source releases — see [source-install.md](source-install.md) — and a frozen
+macOS build would put `install_root()` inside a signed `.app` bundle, which is
+read-only. `packaging/source_release.py` has no such gate, because a source
+archive's contents are platform-independent; it refuses only on the *name*, and
+`--target` overrides even that so the archive can be built and inspected from a
+Windows checkout.
 
 Post-build, it asserts `_internal/` is absent, and that `prototypes/` and
 `tests/` were not bundled. `docs/` is not bundled either — the spec's `datas`
@@ -394,8 +399,8 @@ the required entries, the sidecar, and the version rule.
 
 Deflate is doing real work here: the ~412 MB folder lands at roughly 190 MB,
 comfortably under the 2 GiB per-asset limit, and zipping it takes about twenty
-seconds. The bytes are not reproducible — PyInstaller embeds a build timestamp
-— but the *entry order* is, so two archives of one tree diff on their contents
+seconds. The bytes are not reproducible — PyInstaller embeds a build timestamp —
+but the *entry order* is, so two archives of one tree diff on their contents
 rather than on their ordering.
 
 Two things in the workflow are load-bearing. **`lfs: true`**: `bin/win/` is Git
@@ -418,4 +423,31 @@ moves, and a different Visual Studio image means a different bundled
 The exe is **unsigned**, so SmartScreen shows "Windows protected your PC" and
 the user has to choose *More info → Run anyway*. Every release until signing is
 added will do this.
+
+### The source releases, and why they are a second workflow
+
+The same tag push also runs `.github/workflows/source-release.yml`, which builds
+`commcut-<version>-source-<os>-<arch>.tar.gz` for macOS and Linux and attaches
+it, with its sidecar, to the **same** draft release. It is a separate workflow
+rather than a third leg on this one, for two reasons: this job is the only path
+that has ever shipped and should not be restructured to accommodate two
+platforms that need none of its machinery, and the preconditions are opposites —
+this one needs Git LFS and PyInstaller, the other needs neither.
+
+Its load-bearing detail is that **its concurrency group is character-identical
+to the one above**. GitHub's concurrency is repo-wide across workflows, so the
+two serialize on one release; without that they can both fail `gh release view`
+and both try to create it.
+
+`packaging/source_release.py` is the builder, and it is loaded by path for the
+same reason this file is: `packaging/` is a namespace portion and the real
+`packaging` package is installed alongside it. It reuses `normalize_version`,
+`check_requested_version` and `write_sha256_sidecar` from `build.py` rather than
+reimplementing them, so the tag-must-match rule above has one owner.
+
+Its manifest is an allow-list, its modes and timestamps are fixed so two builds
+are byte-identical, and it prints an `artifact:` line the workflow reads back
+instead of reconstructing the filename. All of that is
+[source-install.md](source-install.md)'s subject, along with what the macOS and
+Linux CI legs do and do not prove.
 

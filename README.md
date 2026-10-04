@@ -10,7 +10,44 @@ A suite of tools to manage, rename, organize, and edit pre-made filler for the p
 
 # Install
 
-COMING SOON
+## Windows
+
+Download `commcut-<version>-windows-x64.zip` from the
+[releases page](https://github.com/trafficman/commcut/releases), extract it
+anywhere, and run `commcut.exe`. No Python required, the zip carries it.
+
+It is unsigned, so SmartScreen will throw a warning. Choose **More info → Run anyway** (I ain't paying $80/mo for code signing)
+
+## macOS and Linux
+
+Download `commcut-<version>-source-macos-<arch>.tar.gz` (or `-linux-`) from the
+same page, then:
+
+```bash
+tar xzf commcut-<version>-source-macos-arm64.tar.gz
+cd commcut-*
+./install_deps.sh
+./run.sh
+```
+
+`install_deps.sh` builds a Python environment in the folder you extracted to and
+installs everything PySide6 needs. It then **tells you** if ffmpeg or the mpv
+client library is missing — it will not install system packages for you, because
+it will not ask for your password. It prints the exact command to run:
+
+```bash
+brew install ffmpeg mpv                  # macOS
+sudo apt install ffmpeg libmpv2          # Debian, Ubuntu
+```
+
+Then re-run `./install_deps.sh` to confirm, and `./run.sh` to start. On macOS
+you can double-click `commcut.command` instead of running `./run.sh`.
+
+Your clips, settings and log all live in the folder you extracted to — that is
+where commcut reads and writes, and it needs to stay writable.
+
+Full detail, including the one thing about this platform that is not yet
+verified, is in [docs/source-install.md](docs/source-install.md).
 
 # Usage
 

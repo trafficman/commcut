@@ -202,10 +202,30 @@ Detail in [architecture.md](architecture.md) and
   warns), and CI does not launch the exe — see
   [packaging.md](packaging.md#releases).
 
-- **macOS and Linux run from source**, not from a build — see
-  [source-install.md](source-install.md). No frozen build exists for them, and
-  none is planned: a frozen macOS build would resolve `install_root()` inside a
-  signed `.app` bundle, which is read-only.
+- **macOS and Linux ship as source releases**, built by
+  `packaging/source_release.py` and attached to the same draft release as the
+  Windows zip by `.github/workflows/source-release.yml` — a
+  `commcut-<version>-source-<os>-<arch>.tar.gz` holding the app, every markdown
+  file in the repository, and three launchers: `install_deps.sh` (finds a
+  Python ≥3.10, builds a `.venv/` in the install root, pip-installs the pins,
+  then *checks* ffmpeg/ffprobe/libmpv/libx264 through the app's own resolvers
+  and prints what is missing — it never runs a package manager and never sudo),
+  `run.sh` (execs `.venv/bin/python main.py`), and `commcut.command` (the same
+  for Finder). No frozen macOS or Linux build exists and none is planned: a
+  frozen `.app` would resolve `install_root()` into a read-only signed bundle,
+  whereas the extracted folder is writable. →
+  [source-install.md](source-install.md)
+- The manifest is an **allow-list**, which is a safety property and not a style
+  choice: `import/`, `export/` and `temp/` are not gitignored — for a source
+  install the project root *is* the install root — so an exclusion-list walker
+  would publish a developer's clips.
+  `tests/test_source_release.py` plants a full set of every excluded thing and
+  requires that none of it arrives.
+- `.github/workflows/source-release.yml` runs the suite on macOS and Linux and
+  gates the archive on it, then extracts the archive and runs
+  `./install_deps.sh` inside it with the system packages installed. So the code
+  imports, libmpv resolves, and the three launchers run on those platforms —
+  none of which was true before. **Playback is still unverified**; see below.
 
 Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md).
 
@@ -401,11 +421,20 @@ The full vision in `README.md` has three pieces; two are not started:
   one change that separates the reported frozen and working cases. See
   [experiments/README.md](../experiments/README.md#mpv_teardown) — a person is
   still the oracle for the freeze.
-- **macOS and Linux are unverified.** The resolution logic is cross-platform and
-  the suite covers it on any host, but nothing here has been run on either
-  platform. The open assumptions, in the order worth checking: whether a
-  loadable `libmpv` exists (a `brew install mpv` gives the *player*, not the
-  library — `COMMCUT_MPV_LIB` is the escape hatch); whether `vo=gpu` renders
-  into an `NSView*`; and, on Linux, whether `wid` embedding works at all under
-  Wayland. A green suite proves none of these, because `FakeBridge` stands in
-  for libmpv by design. See [source-install.md](source-install.md#what-has-not-been-verified).
+- **macOS and Linux: playback is still unverified.** The resolution logic is
+  cross-platform, the suite now runs on both in CI, and
+  `.github/workflows/source-release.yml` installs the system packages and then
+  runs the installer against the extracted archive — so libmpv resolving and
+  the launchers running are now checked on the platforms they are for. That is
+  still not a rendering test, because `FakeBridge` stands in for libmpv by
+  design. The open assumptions are the two that remain: whether `vo=gpu` renders
+  into an `NSView*` on macOS, and, on Linux, whether `wid` embedding works at
+  all under Wayland. A person on each machine is the only oracle for both. See
+  [source-install.md](source-install.md#what-has-not-been-verified).
+- **`apt install libmpv2` did not produce a findable libmpv.** The search in
+  `shared/environment.py` covered each system prefix's `lib/` plus `/usr/lib`,
+  and a Debian package installs to `/usr/lib/x86_64-linux-gnu/` — which is none
+  of those. The error message named that exact `apt` command as the fix, so the
+  message recommended a step that could not work. `system_lib_dirs()` now
+  appends the multiarch directory on Linux, reading the triplet from `sysconfig`
+  so an aarch64 host names its own. → [source-install.md](source-install.md#the-multiarch-directory-and-why-it-is-in-the-list)

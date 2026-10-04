@@ -20,23 +20,27 @@ commcut/
 ├── README.md                # Project spec (source of truth for scope)
 ├── AGENTS.md                # Agent orientation + index into docs/
 ├── docs/                    # This documentation set
-├── bin/                     # Bundled binaries, one subfolder per OS
-│   ├── win/                 # Windows binaries (ffmpeg.exe, ffprobe.exe, libmpv-2.dll)
-│   ├── linux/               # Linux binaries (placeholders, none shipped yet)
-│   └── mac/                 # macOS binaries (placeholders, none shipped yet)
+├── bin/                     # Bundled binaries; Windows only. bin/mac and
+│   └── win/                 # bin/linux are resolved against but never exist:
+│                            # macOS and Linux resolve from the system instead.
 ├── assets/                  # commcut_banner.png, drawn on the loading splash
 ├── import/                  # Finished clips to import; not source videos
 ├── export/                  # Named clips are written here
 ├── temp/                    # Scratch output (e.g. 2-min scanner preview clips)
 ├── commcut.log              # Written beside the exe (override with COMMCUT_LOG)
-├── main.py                  # Application entry point: argv dispatcher + main menu
+├── install_deps.sh          # Source-release installer: a .venv in the install
+├── run.sh                   #   root, then a report on ffmpeg/libmpv/libx264
+├── commcut.command          # The launcher pair, and the same for Finder
+├── main.py                  # Application entry point: the main menu, and the
+│                            # one QApplication every window shares
 ├── mainwindow.py            # MainWindow: asks for a source video with a file
 │                            # dialog, or opens the settings window
 ├── mainwindow.ui            # Qt Designer file for the main menu
-├── packaging/               # PyInstaller build (see packaging.md)
-│   ├── commcut.spec         # onefile (default) and onedir modes
-│   ├── build.py             # pre-flight checks + portable folder assembly
-│   └── README.md            # build instructions and the shipped layout
+├── packaging/               # The two release builds (see packaging.md)
+│   ├── commcut.spec         # PyInstaller onefile (default) and onedir modes
+│   ├── build.py             # Windows: pre-flight checks + portable assembly
+│   ├── source_release.py    # macOS/Linux: the source-release tarball
+│   └── README.md            # Windows build instructions and shipped layout
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
@@ -77,10 +81,19 @@ commcut/
 │   ├── importrun.py         # The progress dialog and summary both endings share
 │   ├── rules.py             # The Manage Autofill Rules dialog
 ├── tests/                   # pytest suite (see testing.md)
-└── prototypes/              # Earlier exploration / alternatives
-    ├── BasicUI/             # First prototype
-    └── VideoEditor/         # Pre-rename copy of the editor module
+├── experiments/             # Never shipped; code answering what docs could not
+│   └── mpv_foreground/      # The mpv-embedding test the process model rests on
+├── prototypes/              # Earlier exploration / alternatives
+│   ├── BasicUI/             # First prototype
+│   └── VideoEditor/         # Pre-rename copy of the editor module
+└── core.py                  # Dead: nothing imports it. Kept as history.
 ```
+
+Three of those are in neither release. `tests/` and `prototypes/` are excluded
+from the Windows payload by `build.py:_assert_no_strays`, and both are excluded
+from the source release by its allow-list manifest; `experiments/` ships only
+its `README.md`, because `AGENTS.md` and three documents link into it. → 
+[source-install.md](source-install.md#what-is-in-it-and-what-is-not)
 
 ## One process, one event loop, one visible window
 

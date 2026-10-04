@@ -104,6 +104,8 @@ state.
 | `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting, the encoder probe, and the no-console flag reaching `Popen` (`Popen` mocked) |
 | `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run, and the summary screen (window wiring with a substituted dialog, plus the shipped dialog itself) |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels, and the vocabulary sync button (thread, worker, progress dialog, and result dialog substituted) |
+| `test_release_build.py` | the Windows release archive: what goes in it, the required entries, the sha256 sidecar, and the tag-must-match rule |
+| `test_source_release.py` | the macOS/Linux source release: that the manifest covers every module in the app folders and every `resource_path` payload file, that **nothing the app owns at runtime reaches the archive** (the leak test, which plants a developer's `export/`, a `.venv/` and a `settings.json` in a scratch tree and requires none of it ships), that every markdown file is included and no link inside the archive dangles, the tar member modes, byte-identical rebuilds, the sidecar, and the three launchers — including running `install_deps.sh`'s embedded check against a stubbed `shared` package, which is what covers a script nothing else executes |
 | `test_docs.py` | the documentation guard (see below) |
 
 ## Gotchas that decide whether a test means anything
@@ -208,6 +210,15 @@ state.
   on that platform. The suite covers *resolution*; playback on macOS and Linux
   can only be confirmed by a person on that machine — see
   [source-install.md](source-install.md#what-has-not-been-verified).
+- **A shell script is not covered by a suite that never runs `sh`.**
+  `test_source_release.py` parses `install_deps.sh`'s embedded Python and runs it
+  against a stubbed `shared` package, which works anywhere. But
+  `test_every_launcher_parses_as_posix_shell` needs a `sh` and skips without one,
+  so on a Windows checkout it does not run at all. The macOS and Linux CI jobs
+  that build the source release are the only place it executes — which is the
+  point of building those releases on the platforms they are for, and the reason
+  a new launcher belongs in `install_deps.sh`'s extracted-and-run check rather
+  than only in the tarball.
 - **Cross-platform behavior is asserted by table completeness, not by the host.**
   The per-OS tables in `shared/environment.py` are checked for holes (every
   platform has a video output, a libmpv filename, and — if it does not bundle —
