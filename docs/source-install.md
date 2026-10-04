@@ -413,12 +413,19 @@ this app depends on a source sitting in a particular folder.
 Two comparisons remain, and they differ on purpose:
 
 - `shared/exporting.py:_overlaps` — whether the chosen export root overlaps
-  `import/`. It runs `os.path.normcase` on **both** paths before
-  `os.path.commonpath`, which is what makes `C:\CommCut\Import` and
-  `c:\commcut\import` one folder rather than two unrelated ones. This direction
-  is the safe one to fold: a case-*sensitive* filesystem would only refuse a
-  pair that a case-insensitive one considers the same folder, so the worst case
-  is a needless refusal rather than a hole.
+  `import/`. It `casefold()`s **both** paths on every platform rather than
+  calling `os.path.normcase`, which folds on Windows and is a **no-op on
+  POSIX**. That distinction is load-bearing here: APFS is case-insensitive by
+  default, so on a Mac `.../IMPORT` and `.../import` are one folder, and a
+  normcase-based check would pass the first as a fine export root and hand it to
+  the importer the rule exists to protect. Folding unconditionally is safe *for
+  this rule* because being wrong that way refuses a folder the user can rename,
+  where the opposite mistake is the dangerous one — the same fold applied to a
+  **traversal** decision is the dangerous direction, which is why this
+  comparison is not shared with anything that decides what may be opened.
+  `tests/test_exporting.py::test_the_overlap_check_folds_case_on_every_platform`
+  asserts it without a platform skip, and
+  `test_the_fold_does_not_over_refuse` keeps the cost of being wrong small.
 - `shared/paths.py` needed nothing here: `normalized_validation_key` already
   applies `unicodedata.normalize("NFC", ...)` and then `casefold()`, so the
   case-insensitive APFS default and HFS+ NFD-vs-NFC do not affect export

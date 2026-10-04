@@ -66,18 +66,31 @@ def default_export_folder() -> str:
 
 
 def _overlaps(candidate: str, other: str) -> bool:
-    r"""True when either path contains the other, comparing case as the OS does.
+    """True when either path contains the other.
 
-    Both arguments must be absolute and normalized. `normcase` is what makes
-    this correct on Windows, where `C:\CommCut\Import` and `c:\commcut\import`
-    are one folder and would otherwise read as two unrelated ones.
+    Case-folded on **every** platform, which is the whole point of spelling it
+    out rather than reaching for `os.path.normcase` -- that is a no-op on POSIX.
+    macOS ships a case-*insensitive* filesystem by default, so on a Mac
+    `.../IMPORT` and `.../import` are one folder, and a normcase-based check
+    would pass the first as a perfectly good export root and hand it straight to
+    the importer it is meant to protect. A rule that only works on the platform
+    its author develops on is not a rule.
+
+    Folding unconditionally is the safe direction to be wrong in *here*, and
+    that is a property of this rule rather than of paths in general. Being wrong
+    this way means refusing an export folder that really is a distinct directory
+    on a case-sensitive volume -- one clear message, and a rename fixes it.
+    The opposite mistake would let the export root be the folder the importer
+    moves and deletes from. (The same fold applied to a *traversal* decision
+    would be the dangerous direction instead, which is why this comparison is not
+    shared with anything that decides what may be opened.)
 
     A `ValueError` from `commonpath` -- different drives, or a relative path
     mixed with an absolute one -- answers False. Two paths on different drives
     cannot contain each other, which is the answer being asked for.
     """
-    left = os.path.normcase(os.path.abspath(candidate))
-    right = os.path.normcase(os.path.abspath(other))
+    left = os.path.abspath(candidate).casefold()
+    right = os.path.abspath(other).casefold()
     try:
         shared = os.path.commonpath((left, right))
     except ValueError:

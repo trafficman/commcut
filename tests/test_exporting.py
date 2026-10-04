@@ -196,13 +196,31 @@ def test_the_export_folder_cannot_contain_the_import_folder(install_root):
         export_folder()
 
 
-def test_the_overlap_check_compares_case_the_way_windows_does(install_root):
-    """Two spellings of one folder are one folder. Without `normcase` this
-    check is decoration on Windows and the only thing enforcing it is the
-    spelling the picker happened to hand back."""
+def test_the_overlap_check_folds_case_on_every_platform(install_root):
+    """Unconditional on purpose: the point is that there is no platform where
+    this does not hold.
+
+    `os.path.normcase` folds on Windows and is a no-op on POSIX, so a check built
+    on it passes `.../IMPORT` as a distinct folder on a Mac -- where APFS is
+    case-insensitive by default, so it is not distinct at all, it *is* the import
+    folder. The same is true on Linux for the volumes that are case-insensitive,
+    and true of Windows too for anyone who created a per-directory case-sensitive
+    folder. The rule has to be the same everywhere or it is not a rule.
+    """
     stored = str(install_root / "IMPORT")
 
     assert export_folder_setting_error(stored) is not None
+    write_settings(install_root, {EXPORT_FOLDER_KEY: stored})
+    with pytest.raises(ExportSettingsError):
+        export_folder()
+
+
+def test_the_fold_does_not_over_refuse(install_root):
+    """The other side of the same rule. Folding case is only free because being
+    wrong that way costs a message, so the cost has to stay small: a sibling
+    whose name merely ends in the same word is an ordinary export folder."""
+    for name in ("exports", "My Imports", "import-old", "reimport"):
+        assert export_folder_setting_error(str(install_root / name)) is None
 
 
 def test_a_file_is_not_a_folder(install_root):

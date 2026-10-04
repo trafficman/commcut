@@ -554,8 +554,14 @@ editor for folder schemes:
   `shared/exporting.py:export_folder_setting_error` so the window and the
   resolver cannot disagree. Three of them: the path must be absolute; it must not
   be `import/`, inside it, or contain it; and it must not be an existing file.
-  The overlap check compares `os.path.normcase` on both sides, because
-  `C:\CommCut\Import` and `c:\commcut\import` are one folder on Windows.
+  The overlap check `casefold()`s both paths **on every platform**, not through
+  `os.path.normcase` — that folds on Windows and is a no-op on POSIX, and macOS
+  ships a case-insensitive filesystem by default, so `.../IMPORT` *is*
+  `.../import` there. See
+  [source-install.md](source-install.md#case-insensitive-filesystems) for why
+  folding is the safe direction to be wrong in for this rule, and
+  `tests/test_exporting.py::test_the_fold_does_not_over_refuse` for what the
+  cost of being wrong is.
 - Writability is **not** checked. `shared/exporting.py:_validate_export_root`
   already accepts a root that does not exist yet as long as its nearest existing
   ancestor is a directory, and `shared/ffmpeg.py` creates the tree when it
