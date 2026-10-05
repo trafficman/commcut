@@ -370,10 +370,16 @@ def _configure_tag_combo(combo) -> None:
     default inline mode rewrites what you typed to match a completion, so
     pressing Enter commits `Toonami Kids` when you wrote `Toonami`.
 
-    The popup is opened by calling the completer on each edit rather than by
+    The popup is opened by calling the completer on each keystroke rather than by
     `QComboBox.setCompleterPopupVisible(True)`, which PySide6 does not expose.
-    Signals are already blocked around every programmatic write, so this fires
-    for typing and for picking, and not for the form being repopulated.
+    The trigger is `QLineEdit.textEdited`, not `QComboBox.editTextChanged`:
+    both fire on typing, but only `editTextChanged` also fires when an item is
+    picked from the popup -- and re-running `complete()` on that second fire
+    re-opens the popup, so it never closes after a selection. `textEdited`
+    skips the programmatic `setText` that a selection performs, so the popup
+    closes on its own while staying open for the next keystroke. Signals are
+    blocked around every programmatic write, so this never sees the form being
+    repopulated.
     """
     combo.setEditable(True)
     combo.setInsertPolicy(QComboBox.NoInsert)
@@ -382,6 +388,6 @@ def _configure_tag_combo(combo) -> None:
     completer.setCaseSensitivity(Qt.CaseInsensitive)
     completer.setFilterMode(Qt.MatchContains)
     completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
-    combo.editTextChanged.connect(
+    combo.lineEdit().textEdited.connect(
         lambda text: completer.complete() if text and combo.count() else None
     )

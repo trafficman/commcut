@@ -211,8 +211,11 @@ widget types (`_field_text`, `_set_field_text`, `_field_change_signal`).
   typed to match a completion, so typing `Toonami` and pressing Enter would
   commit `Toonami Kids`.
 - **`MatchContains`, case-insensitive.** `toon` has to find `Toonami`.
-- **The popup is opened by calling `complete()` on each edit**, because PySide6
-  does not expose `QComboBox.setCompleterPopupVisible(True)`.
+- **The popup is opened on each keystroke** (via `QLineEdit.textEdited`, not
+  `QComboBox.editTextChanged`), because PySide6 does not expose
+  `QComboBox.setCompleterPopupVisible(True)`. `textEdited` fires only on typing,
+  not on the programmatic `setText` a picked value performs, so the popup closes
+  after a selection instead of re-opening.
 - **`_refresh_tag_combos` saves and restores each field's text.** `clear()`
   empties the line edit as well as the item list, so without that a Stage would
   erase whatever the user is partway through typing in a *different* field.

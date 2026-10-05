@@ -15,6 +15,8 @@ regression guard for "the editor is unchanged by this existing".
 import os
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QComboBox, QLineEdit
 
 from editor_stub import ensure_qapp
@@ -169,6 +171,65 @@ def test_a_refresh_leaves_an_already_emptied_dropdown_alone(form):
     form.refresh_combos()
 
     assert form.field("special").count() == before
+
+
+def test_the_popup_closes_after_selecting_a_value(form, qapp):
+    """Regression: selecting from the popup used to re-open it.
+
+    The old code connected `completer.complete()` to
+    `QComboBox.editTextChanged`, which fires on *both* typing and picking.
+    After a selection the popup re-opened, obscuring the form and forcing a
+    manual click-away.  The fix uses `QLineEdit.textEdited`, which fires only
+    on typing, so the popup closes on its own after a pick.
+    """
+    get_vocabulary(form.vocabulary_path).record({"network": "Cartoon Network"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    combo.show()
+    qapp.processEvents()
+
+    completer = combo.completer()
+    completer.complete()
+    qapp.processEvents()
+
+    popup = completer.popup()
+    assert popup.isVisible()
+
+    QTest.keyClick(popup, Qt.Key_Down)
+    qapp.processEvents()
+    QTest.keyClick(popup, Qt.Key_Return)
+    qapp.processEvents()
+
+    assert not popup.isVisible()
+    assert combo.currentText() == "Cartoon Network"
+
+
+def test_the_popup_reopens_when_typing_after_a_selection(form, qapp):
+    """A selection that closes the popup must not break the next open on
+    typing."""
+    get_vocabulary(form.vocabulary_path).record({"network": "Cartoon Network"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    combo.show()
+    qapp.processEvents()
+
+    completer = combo.completer()
+    completer.complete()
+    qapp.processEvents()
+    popup = completer.popup()
+    assert popup.isVisible()
+
+    QTest.keyClick(popup, Qt.Key_Down)
+    qapp.processEvents()
+    QTest.keyClick(popup, Qt.Key_Return)
+    qapp.processEvents()
+    assert not popup.isVisible()
+
+    QTest.keyClicks(combo.lineEdit(), "C")
+    qapp.processEvents()
+    assert popup.isVisible()
 
 
 # ---------------------------------------------------------------------------
