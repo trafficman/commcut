@@ -2,15 +2,45 @@
 
 # CommCut, A Linear Television Filler Manager
 
-A suite of tools to manage, rename, organize, and edit pre-made filler for the purposes of linear television emulation
+<img width="858" height="581" alt="image" src="https://github.com/user-attachments/assets/12cd3700-0407-430c-9546-2acc5f36d69a" />
 
-- Maps onto existing filler organization scheme (or creates one based on given criteria)
-- Rename Wizard (Throw existent individual clips into import folder, programmatically rename them, dynamically save them to mapped filler export folder)
-- Editing Wizard designed specifically with cutting compilations of commercials into individual clips in mind
+### Less Clicks, Less Clacks, More Commercials
+
+Are you interested in commercials, network bumpers, and promos from 20+ years ago? Do you wish you could create, organize, and utilize a large library of them for your own enjoyment?
+
+Good, I too, am insane.
+
+My hope for this repository, between CommCut and the [Filler and You guide (WIP)](docs/guides/filler_and_you.md), is to give people both the tooling and the knowledge to start at 
+
+- `I downloaded "Cartoon Network Commercials (August 10, 2004) [dQw4w9WgXcQ].mp4", now what?`
+
+and make it all the way to
+
+- `Yeah, I run a mix of general commercials from 2005 (+/- 5 years, only child demographic targeted) and CN City era Cartoon Network promos as my filler on that channel`
+
+I have spent countless hours figuring out an editing workflow and an organizational structure to make that dream a reality, and that was *before* I had even considered designing my own filler editor/library manager. Now, for the first time, *you* too can benefit from my struggles, for the low low price of downloading my junk and reading my ramblings!
+
+So, **what is CommCut**? In short, it is **a suite of tools to manage, rename, organize, and edit filler for the purposes of linear television emulation.** I'm a highly ~~lazy~~ efficient person, so every single workflow in this program tries to automate as much as possible, and that which cannot be fully automated is offered for user review and/or accomplished in the smallest amount of clicks and typing possible.
+
+**AI Disclaimer**: An LLM wrote 95% of this code, some of it more thoroughly reviewed by me (an admittedly amateur coder) than others. I designed and tested every module (which is preserved in the [closed Issues](https://github.com/trafficman/commcut/issues?q=is%3Aissue+state%3Aclosed)), made most of the UI myself, drew everything in mspaint (poorly), and wrote all of the public facing text aside from the install instructions and the engineering documentation.
+
+## Common Use Cases
+
+- You have compilations of commercials that you would like to quickly and easily cut up into individual clips
+- You would like your created clips to be dynamically named and organized on export based on the tags you have set for them
+- Similarly, you would like to organize an existing library of filler with an easy to use tagging wizard
+- You would like to easily share your filler library with others, and be able to import and mesh other's libraries into yours
+
+## Features
+
+- **Video Editor**: Scan a compilation video for commercial boundaries, then verify and/or confirm those boundaries one at a time, from left to right.
+- **Tagging**: Apply tags to each clip in your library, this allows them to be named and organized to your liking (the schemes are user customizable!), plus trivializes sharing!
+- **Importing**: Whether it's an existing, untagged library, or a library which has already been processed by CommCut, there's an easy to use wizard that walks you through the process of meshing that library into yours.
+- **File/Folder Schemes**: Name and organize your filler library *your* way, with tag based naming and organization schemes that are customizable in the settings, try to match your existing structure or use the provided defaults!
 
 # Install
 
-## Windows
+### Windows
 
 Download `commcut-<version>-windows-x64.zip` from the
 [releases page](https://github.com/trafficman/commcut/releases), extract it
@@ -51,7 +81,15 @@ verified, is in [docs/source-install.md](docs/source-install.md).
 
 # Usage
 
-## Editor (initial alpha release)
+## Editor
+
+Video tutorial (**unmute**):
+
+
+https://github.com/user-attachments/assets/a6e2e82e-040b-456e-8159-c6f3e7087310
+
+
+(Real video tutorials coming soon)
 
 ### Main Menu
 
@@ -121,9 +159,13 @@ Four required tags, **Title**, **Type**, **Network**, and **Time Period**, and m
 
 #### Export
 
-When you've staged the last segment, click "Finished - Export" at the bottom, and the clips will be named and organized in your export folder according to their tags using the schemes set in the settings (the defaults are what I personally use, although they can be changed).
+When you've staged the last segment, click "Finished - Export" at the bottom, and the clips will be named and organized in your export folder according to their tags using the schemes set in the settings (the defaults are what I personally use, although they can be changed in the settings).
 
 **Example**: `Cartoon Network/Blocks/Toonami/Promo/Cartoon Network - Promo - 2000 - Toonami Worlds Finest (30 Sec Remastered).mp4`
+
+## Library Importer
+
+Included in the current release, usage instructions coming soon.
 
 # Roadmap
 
