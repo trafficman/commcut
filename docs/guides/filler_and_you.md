@@ -26,6 +26,8 @@ In the next section, I will detail how I go about editing the large compilation 
 
 ***"How do I turn this single, large, convenient, compilation of commercials into 80, small, inconvenient files?"***
 
+(This is the original Editing section, obviously I'm building CommCut as a tool to totally replace LosslessCut, this will be updated in the future)
+
 My secret: **a tool called LosslessCut.** 
 
 Pretty much every other editing tool requires transcoding the entire file, which not only takes a lot of time but results in a potential loss of quality in the output file. A tool called ffmpeg can create lossless (no quality loss), basically instant cuts in video files, but it's limited to only cutting along predetermined points in the video that appear every few seconds (in short: videos are compressed by only storing data between "keyframes", and these types of cuts can only be made at these keyframe borders). This results in very imprecise cuts in output videos, adding a few seconds of extra unwanted footage to the beginning and end of every clip, which is extremely detrimental when the commercial itself might only be 15 seconds long.
