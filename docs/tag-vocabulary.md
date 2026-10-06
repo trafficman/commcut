@@ -207,10 +207,16 @@ widget types (`_field_text`, `_set_field_text`, `_field_change_signal`).
 
 - **Editable, `NoInsert`.** The default insert policy grows the list from
   everything typed into it, which is the opposite of what the file is for.
-- **`UnfilteredPopupCompletion`.** The default inline mode rewrites what you
-  typed to match a completion, so typing `Toonami` and pressing Enter would
-  commit `Toonami Kids`.
+- **`PopupCompletion`.** The popup prunes itself to the matching tags as you
+  type, so the list narrows toward one or none instead of staying full and
+  scrolling to the best match.
 - **`MatchContains`, case-insensitive.** `toon` has to find `Toonami`.
+- **The matched tag is highlighted, and Enter commits it.** That is what an
+  autocomplete popup does: the shrinking list is the feedback while typing, and
+  a single match is the one Enter stages. When nothing matches the popup is
+  empty, which is the "no tags" signal; Enter then leaves what was typed. To
+  keep a typed value that happens to be a prefix of another tag, dismiss the
+  popup first (Escape) before committing.
 - **The popup is opened on each keystroke** (via `QLineEdit.textEdited`, not
   `QComboBox.editTextChanged`), because PySide6 does not expose
   `QComboBox.setCompleterPopupVisible(True)`. `textEdited` fires only on typing,

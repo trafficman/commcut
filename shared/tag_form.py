@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import QFile, Qt
+from PySide6.QtCore import QEvent, QObject, QFile, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from shared.environment import resource_path
 from shared.exporting import missing_required_tags
+from shared.session import _alive
 from shared.ui_loader import UiLoader
 from shared.vocabulary import get_vocabulary, vocabulary_path
 
@@ -356,6 +357,45 @@ class TagForm(QWidget):
         return moved
 
 
+class _EnterCommitsCompletion(QObject):
+    """Pressing Enter while the dropdown is open commits the matched tag.
+
+    `QCompleter.PopupCompletion` gives a popup with no current item, so an Enter
+    forwarded to the popup view activates nothing and commits nothing -- the
+    typed text would survive unchanged despite a single, obvious match being on
+    display. The completer still tracks that match in `currentCompletion()`, so
+    this filter intercepts Enter on the line edit while the popup is visible,
+    writes that completion into the combo, and dismisses the popup. Enter with no
+    open popup (no match, or already dismissed) falls through unchanged, so a
+    custom typed value is staged as-is. `Escape` keeps the typed text the same
+    way it always did -- this filter only touches Enter.
+
+    The combo owns both this filter and its completer as C++ children, so at
+    teardown Qt can dispatch events to us after they are deleted; the `_alive`
+    guard (see `shared.session`) skips the lookup in that window.
+    """
+
+    def __init__(self, combo: QComboBox, completer: QCompleter) -> None:
+        super().__init__(combo)
+        self._combo = combo
+        self._completer = completer
+
+    def eventFilter(self, watched, event):
+        if not _alive(self._combo) or not _alive(self._completer):
+            return super().eventFilter(watched, event)
+        popup = self._completer.popup()
+        if (watched is self._combo.lineEdit()
+                and event.type() == QEvent.KeyPress
+                and event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                and popup is not None and popup.isVisible()):
+            completion = self._completer.currentCompletion()
+            if completion:
+                self._combo.setEditText(completion)
+            popup.hide()
+            return True
+        return super().eventFilter(watched, event)
+
+
 def _configure_tag_combo(combo) -> None:
     """Make one tag field an editable combo that suggests from the vocabulary.
 
@@ -364,11 +404,24 @@ def _configure_tag_combo(combo) -> None:
     entry, which would quietly duplicate what the vocabulary file is for and
     leave the user scrolling through their own typos.
 
-    The completer is what makes this more than a list to scroll: it narrows as
-    you type, case-insensitively and by substring, so `toon` finds `Toonami`.
-    `UnfilteredPopupCompletion` is the part that matters for correctness -- the
-    default inline mode rewrites what you typed to match a completion, so
-    pressing Enter commits `Toonami Kids` when you wrote `Toonami`.
+    The completer is what makes this more than a list to scroll: with
+    `PopupCompletion` the popup prunes itself to the items matching what was just
+    typed, case-insensitively and by substring, so `toon` leaves only `Toonami`
+    in the list instead of highlighting one name in a field full of everything
+    else. That shrinking list is the only feedback you get while typing, and it
+    also ends the bottom-of-the-list scroll -- the match lands near the top of a
+    short list and so can be scrolled to the top of the available space, where
+    `UnfilteredPopupCompletion` could not.
+
+    That mode also leaves the popup view without a current index, so pressing
+    Enter on the line edit -- whose keys Qt forwards to the popup view -- has
+    nothing to activate and commits nothing. The completer still knows the best
+    match (`currentCompletion()`), so an event filter on the line edit commits it
+    on Enter and dismisses the popup: "type a prefix, press Enter, get the tag".
+    When nothing matches the popup is already gone, so Enter leaves what was
+    typed untouched -- the "no tags" signal becomes "commit this value as-is".
+    To keep a typed value that is only a prefix of another tag, dismiss the
+    popup first (Escape, or click away) so Enter no longer meets an open popup.
 
     The popup is opened by calling the completer on each keystroke rather than by
     `QComboBox.setCompleterPopupVisible(True)`, which PySide6 does not expose.
@@ -387,7 +440,9 @@ def _configure_tag_combo(combo) -> None:
     completer = combo.completer()
     completer.setCaseSensitivity(Qt.CaseInsensitive)
     completer.setFilterMode(Qt.MatchContains)
-    completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
+    completer.setCompletionMode(QCompleter.PopupCompletion)
     combo.lineEdit().textEdited.connect(
         lambda text: completer.complete() if text and combo.count() else None
     )
+    combo.lineEdit().installEventFilter(_EnterCommitsCompletion(combo, completer))
+

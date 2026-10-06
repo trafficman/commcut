@@ -227,9 +227,110 @@ def test_the_popup_reopens_when_typing_after_a_selection(form, qapp):
     qapp.processEvents()
     assert not popup.isVisible()
 
+    combo.lineEdit().clear()
     QTest.keyClicks(combo.lineEdit(), "C")
     qapp.processEvents()
     assert popup.isVisible()
+
+
+def test_the_popup_prunes_to_matching_tags_as_you_type(form, qapp):
+    """The dropdown narrows with what was typed instead of staying full and
+    scrolling to the best match: it shrinks toward one matching tag, or none."""
+    vocabulary = get_vocabulary(form.vocabulary_path)
+    vocabulary.record({"network": "Toonami"})
+    vocabulary.record({"network": "Toonami Kids"})
+    vocabulary.record({"network": "Nickelodeon"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    completer = combo.completer()
+    combo.show()
+    qapp.processEvents()
+
+    def visible_rows():
+        model = completer.completionModel()
+        return [model.index(row, 0).data()
+                for row in range(model.rowCount())]
+
+    QTest.keyClicks(combo.lineEdit(), "toon")
+    qapp.processEvents()
+    assert set(visible_rows()) == {"Toonami", "Toonami Kids"}
+
+    combo.lineEdit().clear()
+    QTest.keyClicks(combo.lineEdit(), "kids")
+    qapp.processEvents()
+    assert visible_rows() == ["Toonami Kids"]
+
+    combo.lineEdit().clear()
+    QTest.keyClicks(combo.lineEdit(), "zzz")
+    qapp.processEvents()
+    assert visible_rows() == []
+
+
+def test_enter_commits_the_matched_tag(form, qapp):
+    """A pruned popup with a single match commits it on Enter: the list is a
+    promise, and Enter keeps it."""
+    get_vocabulary(form.vocabulary_path).record({"network": "Toonami"})
+    get_vocabulary(form.vocabulary_path).record({"network": "Toonami Kids"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    completer = combo.completer()
+    combo.show()
+    qapp.processEvents()
+
+    QTest.keyClicks(combo.lineEdit(), "kids")
+    qapp.processEvents()
+    assert completer.popup().isVisible()
+
+    QTest.keyClick(combo.lineEdit(), Qt.Key_Return)
+    qapp.processEvents()
+
+    assert combo.currentText() == "Toonami Kids"
+    assert not completer.popup().isVisible()
+
+
+def test_enter_with_no_match_keeps_what_was_typed(form, qapp):
+    """When the popup is already gone there is nothing to commit, so a custom
+    value is staged as-is."""
+    get_vocabulary(form.vocabulary_path).record({"network": "Toonami"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    combo.show()
+    qapp.processEvents()
+
+    QTest.keyClicks(combo.lineEdit(), "zzz")
+    qapp.processEvents()
+    assert not combo.completer().popup().isVisible()
+
+    QTest.keyClick(combo.lineEdit(), Qt.Key_Return)
+    qapp.processEvents()
+
+    assert combo.currentText() == "zzz"
+
+
+def test_enter_commits_the_first_match_when_several_remain(form, qapp):
+    """With several matches left, Enter commits the first one the completer
+    detects -- narrow further, or click, to take a different one."""
+    get_vocabulary(form.vocabulary_path).record({"network": "Toonami"})
+    get_vocabulary(form.vocabulary_path).record({"network": "Toonami Kids"})
+    form.refresh_combos()
+
+    combo = form.field("network")
+    completer = combo.completer()
+    combo.show()
+    qapp.processEvents()
+
+    QTest.keyClicks(combo.lineEdit(), "toon")
+    qapp.processEvents()
+    assert completer.completionModel().rowCount() == 2
+
+    QTest.keyClick(combo.lineEdit(), Qt.Key_Return)
+    qapp.processEvents()
+
+    assert combo.currentText() == "Toonami"
+    assert not completer.popup().isVisible()
 
 
 # ---------------------------------------------------------------------------

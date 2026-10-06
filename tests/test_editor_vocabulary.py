@@ -176,14 +176,14 @@ def test_the_completer_narrows_by_substring_and_ignores_case(qapp, tmp_path):
     assert completer.caseSensitivity() == Qt.CaseInsensitive
 
 
-def test_the_completer_does_not_rewrite_what_was_typed(qapp, tmp_path):
-    """The default inline completion mode commits the completion rather than the
-    text, so typing `Toonami` would silently stage `Toonami Kids`."""
+def test_the_completer_uses_a_filtered_popup(qapp, tmp_path):
+    """The popup prunes itself to matching tags as you type (PopupCompletion),
+    rather than showing the whole list and scrolling to the best match."""
     editor = editor_with(tmp_path)
 
     completer = editor.combo_for("block").completer()
 
-    assert completer.completionMode() == QCompleter.UnfilteredPopupCompletion
+    assert completer.completionMode() == QCompleter.PopupCompletion
 
 
 def test_the_required_field_outline_names_the_widget_it_is_actually_on(qapp,
