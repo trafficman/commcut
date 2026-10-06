@@ -68,7 +68,8 @@ commcut/
 └── prototypes/              # historical; the active code is editor/ and scanner/
 ```
 
-`shared/` in one line each: `environment` (roots, binaries, `mpv_import_context`),
+`shared/` in one line each: `environment` (roots, binaries,
+`mpv_import_context`, the XWayland switch),
 `session` (the `QApplication` and the one visible window), `version` (the release
 number the two build scripts check a tag against), `diagnostics`
 (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, `MpvBridge.shutdown`),

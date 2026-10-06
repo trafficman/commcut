@@ -458,8 +458,10 @@ The full vision in `README.md` has three pieces; two are not started:
   the launchers running are now checked on the platforms they are for. That is
   still not a rendering test, because `FakeBridge` stands in for libmpv by
   design. The open assumptions are the two that remain: whether `vo=gpu` renders
-  into an `NSView*` on macOS, and, on Linux, whether `wid` embedding works at
-  all under Wayland. A person on each machine is the only oracle for both. See
+  into an `NSView*` on macOS, and, on Linux, whether the XWayland switch
+  (`force_xcb_on_wayland`) lands on every compositor a user might run —
+  including one with no XWayland, where the player floats by design.
+  A person on each machine is the only oracle for both. See
   [source-install.md](source-install.md#what-has-not-been-verified).
 - **A record that cannot be read was reported as a corrupt one.**
   `shared/records.py:load_record` reports every read failure as a `RecordError`,

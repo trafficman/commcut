@@ -692,6 +692,60 @@ def video_output():
     return MPV_VIDEO_OUTPUT[key]
 
 
+def force_xcb_on_wayland():
+    """Run the app on XWayland when the session is Wayland.
+
+    mpv embeds its video through ``wid`` -- an X11 window ID -- and
+    Wayland has no equivalent: a client cannot reparent another
+    client's surface, so under the Wayland QPA ``winId()`` is not an
+    XID, mpv cannot embed, and the player comes up as its own
+    top-level window. Forcing the ``xcb`` plugin puts the whole app on
+    XWayland, where ``winId()`` is a real XID and the existing
+    embedding works unchanged.
+
+    Call before the ``QApplication`` is constructed: the platform is
+    chosen at construction and cannot be switched afterwards.
+
+    Three things keep this from being a blind override:
+
+    - **Linux only.** Windows and macOS embed through an HWND and an
+      NSView* and have no Wayland to work around.
+    - **A platform chosen by hand is respected.** ``QT_QPA_PLATFORM``
+      set by the user -- or by the test suite, which sets
+      ``offscreen`` -- is never overridden, so the escape hatch stays
+      an escape hatch.
+    - **XWayland has to be there.** ``xcb`` needs ``DISPLAY``; without
+      it the plugin fails to initialize and the app would not start at
+      all, so a Wayland session with no X server is logged and left on
+      Wayland rather than switched into a startup failure.
+    """
+    # Deferred: diagnostics imports this module at load time, so a
+    # module-level import here would be a cycle.
+    from shared.diagnostics import log
+
+    if _os_key() != 'linux':
+        return
+    if os.environ.get('QT_QPA_PLATFORM'):
+        return
+    session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+    if session_type != 'wayland' and not os.environ.get('WAYLAND_DISPLAY'):
+        return
+    if not os.environ.get('DISPLAY'):
+        log(
+            "commcut is on Wayland with no X server (DISPLAY is unset), "
+            "so it cannot switch to the XWayland backend that mpv's "
+            "embedded video needs: the player will open as its own "
+            "window. Installing XWayland (the xwayland package on most "
+            "distributions) embeds it."
+        )
+        return
+    os.environ['QT_QPA_PLATFORM'] = 'xcb'
+    log(
+        "Wayland session detected; running on XWayland "
+        "(QT_QPA_PLATFORM=xcb) so mpv can embed its video."
+    )
+
+
 def no_console_kwargs():
     """Extra ``subprocess`` kwargs that keep a child off the screen on Windows.
 

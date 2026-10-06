@@ -939,6 +939,123 @@ def test_video_output_raises_for_an_unsupported_os(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Wayland session detection
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def qt_platform_env():
+    """Snapshot QT_QPA_PLATFORM around a test.
+
+    force_xcb_on_wayland writes the variable directly -- it has to,
+    since the QApplication reads it at construction -- so monkeypatch
+    cannot undo it, and a leaked `xcb` would take every later widget
+    test to a real display instead of the offscreen platform those
+    tests set for themselves.
+    """
+    saved = os.environ.get("QT_QPA_PLATFORM")
+    yield
+    if saved is None:
+        os.environ.pop("QT_QPA_PLATFORM", None)
+    else:
+        os.environ["QT_QPA_PLATFORM"] = saved
+
+
+def _pretend_to_be_linux(monkeypatch):
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+
+
+def _a_wayland_session(monkeypatch):
+    """The environment a Wayland compositor sets, with XWayland up."""
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+
+
+def test_a_wayland_session_runs_on_xwayland(monkeypatch, qt_platform_env):
+    """The fix itself: `wid` is an X11 window ID, so the app has to be
+    on the xcb plugin -- XWayland -- for mpv to embed at all."""
+    _pretend_to_be_linux(monkeypatch)
+    _a_wayland_session(monkeypatch)
+
+    environment.force_xcb_on_wayland()
+
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+
+
+def test_a_wayland_session_without_an_x_server_is_left_alone(
+        monkeypatch, qt_platform_env):
+    """xcb cannot initialize without DISPLAY, and an app that cannot
+    construct its QApplication does not start -- so the switch refuses
+    rather than trading a floating player window for a startup failure."""
+    _pretend_to_be_linux(monkeypatch)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+
+    environment.force_xcb_on_wayland()
+
+    assert "QT_QPA_PLATFORM" not in os.environ
+
+
+def test_a_wayland_session_named_only_by_wayland_display_is_caught(
+        monkeypatch, qt_platform_env):
+    """Nested compositors do not always set XDG_SESSION_TYPE; the
+    WAYLAND_DISPLAY variable is the other half of the detection."""
+    _pretend_to_be_linux(monkeypatch)
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+
+    environment.force_xcb_on_wayland()
+
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+
+
+def test_an_x11_session_is_not_switched(monkeypatch, qt_platform_env):
+    """No Wayland, no problem: the embedding already works, and forcing
+    xcb would be a no-op at best."""
+    _pretend_to_be_linux(monkeypatch)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+
+    environment.force_xcb_on_wayland()
+
+    assert "QT_QPA_PLATFORM" not in os.environ
+
+
+def test_a_platform_chosen_by_hand_is_respected(
+        monkeypatch, qt_platform_env):
+    """QT_QPA_PLATFORM is the user's -- and the test suite's -- override.
+    The suite sets `offscreen`; a switch that clobbered it would take
+    every widget test to a real display."""
+    _pretend_to_be_linux(monkeypatch)
+    _a_wayland_session(monkeypatch)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    environment.force_xcb_on_wayland()
+
+    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+
+
+@pytest.mark.parametrize("system", ["Windows", "Darwin"])
+def test_only_linux_switches(monkeypatch, qt_platform_env, system):
+    """Windows embeds through an HWND and macOS through an NSView*;
+    neither has a Wayland session to work around, and neither should
+    ever see the variable set."""
+    monkeypatch.setattr(environment.platform, "system", lambda: system)
+    _a_wayland_session(monkeypatch)
+
+    environment.force_xcb_on_wayland()
+
+    assert "QT_QPA_PLATFORM" not in os.environ
+
+
+# ---------------------------------------------------------------------------
 # Window building
 # ---------------------------------------------------------------------------
 

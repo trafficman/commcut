@@ -56,7 +56,7 @@ commcut/
 │   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
 ├── shared/                  # Cross-module library (editor + scanner + settings)
-│   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context
+│   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context, XWayland switch
 │   ├── session.py           # the QApplication's one visible window: Shell, _BUILDERS
 │   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
 │   ├── mpv.py               # MpvBridge + its shutdown, create_mpv_player, scan_keyframes
@@ -401,8 +401,12 @@ The shared modules are:
   `get_binary_path(name)` (per-platform resolution: `bin/<os>/` first, then the
   system prefixes on platforms that do not bundle),   `resolve_mpv_library()` / `load_mpv_library()` / `mpv_import_context()` (resolve
   libmpv by absolute path, map it, and answer python-mpv's own lookup for it
-  before `import mpv`), `video_output()` (per-OS mpv `vo`), and
-  `ensure_app_folders()`. This is the cross-platform binary resolution that
+  before `import mpv`), `video_output()` (per-OS mpv `vo`),
+  `force_xcb_on_wayland()` (a Wayland session has no X11 window ID for mpv's
+  `wid` embedding, so `main.py` calls it before the `QApplication` is
+  constructed to run the app on XWayland instead — see
+  [source-install.md](source-install.md#wayland-sessions-run-on-xwayland)),
+  and `ensure_app_folders()`. This is the cross-platform binary resolution that
   used to live in `core.py`. It used to also own `launch_command()` and
   `WINDOW_NAMES`; both went with the process model.
 

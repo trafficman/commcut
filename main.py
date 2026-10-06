@@ -23,7 +23,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from shared import diagnostics
-from shared.environment import ensure_app_folders, setup_environment
+from shared.environment import (
+    ensure_app_folders, force_xcb_on_wayland, setup_environment,
+)
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
@@ -40,6 +42,9 @@ def run_main_menu(argv):
     # High-DPI scaling on modern Windows displays. Set before the QApplication
     # exists, which is why it is here and not in a window.
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # The platform plugin is chosen when the QApplication is constructed,
+    # so the Wayland-to-XWayland switch has to run before it too.
+    force_xcb_on_wayland()
     app = QApplication(argv)
     install_app_icon(app)
     diagnostics.install_excepthook(app)
