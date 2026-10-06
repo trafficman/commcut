@@ -514,3 +514,10 @@ The full vision in `README.md` has three pieces; two are not started:
   message recommended a step that could not work. `system_lib_dirs()` now
   appends the multiarch directory on Linux, reading the triplet from `sysconfig`
   so an aarch64 host names its own. → [source-install.md](source-install.md#the-multiarch-directory-and-why-it-is-in-the-list)
+- **`dnf install mpv` did not produce a findable libmpv either.** The Red Hat
+  family puts its libraries in `/usr/lib64` with no multiarch triplet, so a
+  Fedora install landed in a directory the search never named — the same
+  command-and-search disagreement as the multiarch bug, one package manager
+  over. The Linux row of `_SYSTEM_LIB_DIRS` now carries `/usr/lib64` and
+  `/lib64`, and the error message names `dnf install mpv`. →
+  [source-install.md](source-install.md#usr-lib64-and-why-it-is-in-the-list)

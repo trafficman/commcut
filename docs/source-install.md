@@ -299,7 +299,7 @@ machines install mpv successfully and then cannot start commcut.
    too.
 2. `bin/<os>/`, for the platform's known filenames.
 3. `system_lib_dirs()`: the `lib/` subdirectory of each system prefix, **plus,
-   on Linux, `/usr/lib/<multiarch>`**.
+   on Linux, `/usr/lib64` and `/usr/lib/<multiarch>`**.
 
 ```bash
 ls /opt/homebrew/lib/libmpv*
@@ -338,6 +338,16 @@ The triplet is read from `sysconfig.get_config_var('MULTIARCH')` rather than
 written out, so an aarch64 host names its own, and it is appended only on Linux
 — the multiarch layout is a dpkg convention, and adding it to macOS would put a
 path that never exists into the error message's search list.
+
+### `/usr/lib64`, and why it is in the list
+
+The multiarch layout is a dpkg convention. The Red Hat family puts its
+libraries in `/usr/lib64` with no triplet at all, so `dnf install mpv`
+installs `/usr/lib64/libmpv.so.2` — which is none of the prefix directories
+either, and the same command-and-search disagreement the multiarch directory
+exists to prevent. `/usr/lib64` and `/lib64` (its symlink on a usr-merged
+system, the real directory on an older Red Hat) are therefore in the table,
+and the error message names `dnf install mpv` next to `apt install libmpv2`.
 
 ### Why it is loaded *and named*, not just found
 

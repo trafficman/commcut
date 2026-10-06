@@ -68,6 +68,7 @@ it will not ask for your password. It prints the exact command to run:
 ```bash
 brew install ffmpeg mpv                  # macOS
 sudo apt install ffmpeg libmpv2          # Debian, Ubuntu
+sudo dnf install ffmpeg mpv              # Fedora, RHEL
 ```
 
 Then re-run `./install_deps.sh` to confirm, and `./run.sh` to start. On macOS

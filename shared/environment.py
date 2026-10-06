@@ -79,8 +79,9 @@ package). That is a policy difference, not an implementation one, so it is data:
     in ``/opt/homebrew/lib``.
 ``system_lib_dirs()``
     ``_SYSTEM_LIB_DIRS`` for this platform, plus the multiarch directory on
-    Linux -- where ``apt install libmpv2`` puts libmpv, which no entry in that
-    table contains.
+    Linux -- where ``apt install libmpv2`` puts libmpv, which no entry in
+    that table contains. The Linux row also names ``/usr/lib64``, where the
+    Red Hat family puts it.
 
 The directories are an explicit list rather than ``shutil.which`` on purpose: a
 bare name resolves through a mutated ``PATH`` and picks up whatever happens to
@@ -227,6 +228,7 @@ _SYSTEM_LIB_DIRS = {
     'darwin': ('/opt/homebrew/lib', '/usr/local/lib', '/usr/lib'),
     'linux': (
         '/home/linuxbrew/.linuxbrew/lib', '/usr/local/lib', '/usr/lib',
+        '/usr/lib64', '/lib64',
     ),
 }
 
@@ -449,6 +451,13 @@ def system_lib_dirs():
     read from ``sysconfig`` rather than written out, so an aarch64 host resolves
     its own name instead of a hardcoded one.
 
+    **And on Linux, the Red Hat family's ``lib64``.** Fedora and RHEL put
+    their libraries in ``/usr/lib64`` with no multiarch triplet at all, so
+    ``dnf install mpv`` installs ``/usr/lib64/libmpv.so.2``, which none of
+    the prefix directories contain. ``/lib64`` is the same directory on a
+    usr-merged system and the real one on an older Red Hat, so both are
+    listed.
+
     Nothing is filtered on existence here. The caller reports every directory it
     looked in, and a list that silently dropped the ones not present would be a
     worse error message than a longer one.
@@ -506,7 +515,8 @@ def get_binary_path(binary_name):
         f"commcut uses the system's ffmpeg on this platform. Install it and "
         f"make sure it is on PATH:\n\n"
         f"  brew install ffmpeg        # macOS, or Linux with Linuxbrew\n"
-        f"  apt install ffmpeg         # Debian, Ubuntu"
+        f"  apt install ffmpeg         # Debian, Ubuntu\n"
+        f"  dnf install ffmpeg         # Fedora, RHEL"
     )
 
 
@@ -597,7 +607,8 @@ def resolve_mpv_library():
         f"commcut needs the libmpv client library, which is a different thing "
         f"from the mpv player:\n\n"
         f"  brew install mpv                # macOS, or Linux with Linuxbrew\n"
-        f"  apt install libmpv2             # Debian, Ubuntu\n\n"
+        f"  apt install libmpv2             # Debian, Ubuntu\n"
+        f"  dnf install mpv                 # Fedora, RHEL\n\n"
         f"If your mpv ships one somewhere else, point "
         f"{MPV_LIBRARY_ENV_VAR} at it:\n\n"
         f"  {MPV_LIBRARY_ENV_VAR}=/full/path/to/libmpv.2.dylib"

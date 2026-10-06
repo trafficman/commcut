@@ -860,6 +860,10 @@ def test_the_library_directories_are_where_a_package_manager_actually_installs(
     succeeded, which is indistinguishable from a broken install unless you read
     the paths, and those are the paths.
 
+    The Linux leg holds the same rule down for the Red Hat family: Fedora
+    installs libmpv into `/usr/lib64`, which a Debian-shaped search misses
+    exactly the way the Homebrew one was missed.
+
     Written against the real tables rather than a substitute, so it runs on the
     Windows leg too and holds the data down everywhere.
     """
@@ -876,6 +880,8 @@ def test_the_library_directories_are_where_a_package_manager_actually_installs(
     linux = environment.system_lib_dirs()
 
     assert "/home/linuxbrew/.linuxbrew/lib" in linux, "Linuxbrew libmpv"
+    assert "/usr/lib64" in linux, "Fedora and RHEL libmpv"
+    assert "/lib64" in linux, "older Red Hat libmpv"
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])
