@@ -459,8 +459,11 @@ The full vision in `README.md` has three pieces; two are not started:
   still not a rendering test, because `FakeBridge` stands in for libmpv by
   design. The open assumptions are the two that remain: whether `vo=gpu` renders
   into an `NSView*` on macOS, and, on Linux, whether the XWayland switch
-  (`force_xcb_on_wayland`) lands on every compositor a user might run —
-  including one with no XWayland, where the player floats by design.
+  (`force_xcb_on_wayland`) and the mpv context force (`mpv_gpu_context`, which
+  names mpv's X11 backend so libmpv's own auto-selection does not prefer
+  Wayland) land on every compositor and every mpv build a user might run —
+  including one with no XWayland, where the player floats by design, and one
+  whose mpv lacks GLX, where the force fails loudly rather than floating.
   A person on each machine is the only oracle for both. See
   [source-install.md](source-install.md#what-has-not-been-verified).
 - **A record that cannot be read was reported as a corrupt one.**

@@ -69,7 +69,7 @@ commcut/
 ```
 
 `shared/` in one line each: `environment` (roots, binaries,
-`mpv_import_context`, the XWayland switch),
+`mpv_import_context`, the XWayland switch and the mpv context force),
 `session` (the `QApplication` and the one visible window), `version` (the release
 number the two build scripts check a tag against), `diagnostics`
 (log/excepthook/fatal), `mpv` (MpvBridge, `BoundaryPreview`, `MpvBridge.shutdown`),

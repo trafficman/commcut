@@ -8,9 +8,10 @@ handle the test wants.
 
 This is the only coverage the embedding path has. Nothing else in the suite
 constructs a real player -- `tests/editor_stub.py`'s `FakeBridge` stands in for
-one by design -- so the two things that are easy to get wrong here, and that
+one by design -- so the things that are easy to get wrong here, and that
 fail silently when wrong, are asserted here: the libmpv load happening *before*
-the import that depends on it, and a zero handle never being handed to mpv.
+the import that depends on it, a zero handle never being handed to mpv, and
+the GL context backend being forced exactly where the embedding needs it.
 """
 
 import contextlib
@@ -154,6 +155,33 @@ def test_the_platform_video_output_is_requested(prepared, fake_mpv):
     create_mpv_player(FakeFrame())
 
     assert fake_mpv["vo"] == video_output()
+
+
+def test_the_x11_context_is_forced_on_xwayland(
+        prepared, fake_mpv, monkeypatch):
+    """The second half of the Wayland embedding fix. mpv picks its GL
+    context by itself, independently of Qt's platform plugin, and
+    prefers Wayland when it can see the session -- under which wid is
+    meaningless and the player opens its own window. On XWayland the
+    X11 backend, the only one that implements wid embedding, has to be
+    named in the construction."""
+    monkeypatch.setattr("shared.mpv.mpv_gpu_context", lambda: "x11")
+
+    create_mpv_player(FakeFrame())
+
+    assert fake_mpv["gpu_context"] == "x11"
+
+
+def test_no_context_is_forced_when_mpv_chooses(
+        prepared, fake_mpv, monkeypatch):
+    """Off XWayland the backend is mpv's to pick, and an option naming
+    one would override that choice -- so the key is absent from the
+    construction entirely, not set to None."""
+    monkeypatch.setattr("shared.mpv.mpv_gpu_context", lambda: None)
+
+    create_mpv_player(FakeFrame())
+
+    assert "gpu_context" not in fake_mpv
 
 
 def test_the_player_options_are_the_documented_set(prepared, fake_mpv):

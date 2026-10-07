@@ -28,7 +28,8 @@ from PySide6.QtCore import QObject, QTimer, Signal, Qt
 
 from shared.diagnostics import log, log_exception
 from shared.environment import (
-    get_binary_path, mpv_import_context, no_console_kwargs, video_output,
+    get_binary_path, mpv_gpu_context, mpv_import_context,
+    no_console_kwargs, video_output,
 )
 
 
@@ -93,6 +94,13 @@ def create_mpv_player(video_frame):
     being hardcoded: 'direct3d' is a Windows path, and the other platforms use
     mpv's generic GPU output.
 
+    The GL context backend comes from shared.environment.mpv_gpu_context().
+    mpv selects that backend itself, independently of Qt's platform plugin,
+    and its auto-selection prefers Wayland when the session says Wayland --
+    under which `wid` is meaningless and the player opens its own window
+    beside the one it was asked to embed in. On XWayland the X11 backend is
+    forced so the embedding holds; everywhere else mpv chooses for itself.
+
     libmpv is loaded, and python-mpv's own import-time lookup for it is
     answered from the same path, before `import mpv` runs. That ordering is why
     the import is deferred at all: python-mpv resolves libmpv for itself the
@@ -117,15 +125,20 @@ def create_mpv_player(video_frame):
             "missing video file."
         )
 
-    return mpv.MPV(
-        wid=str(handle),
-        vo=video_output(),
-        osc=False,
-        input_default_bindings=False,
-        input_vo_keyboard=False,
-        keep_open=True,
-        hr_seek="always",
-    )
+    options = {
+        'wid': str(handle),
+        'vo': video_output(),
+        'osc': False,
+        'input_default_bindings': False,
+        'input_vo_keyboard': False,
+        'keep_open': True,
+        'hr_seek': 'always',
+    }
+    gpu_context = mpv_gpu_context()
+    if gpu_context is not None:
+        options['gpu_context'] = gpu_context
+
+    return mpv.MPV(**options)
 
 
 class MpvBridge(QObject):

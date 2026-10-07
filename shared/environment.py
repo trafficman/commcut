@@ -281,11 +281,21 @@ _MPV_LOOKUP_NAMES = {
 # hardcoded at the call site so the next port does not have to rediscover it.
 # The macOS and Linux entries are unverified: mpv is embedded through an
 # NSView* on macOS and an X11/Wayland window on Linux, and neither path has
-# been exercised on this machine. See docs/source-install.md.
+# been exercised on this machine. On Linux the GL context backend is forced
+# to match -- see MPV_GPU_CONTEXT below. See docs/source-install.md.
 MPV_VIDEO_OUTPUT = {
     'windows': 'direct3d',
     'linux': 'gpu',
     'darwin': 'gpu',
+}
+
+# The GL context backend forced on mpv's generic GPU output, per platform.
+# None leaves mpv's own auto-selection alone. Only Linux has a backend to
+# force; mpv_gpu_context() below says why, and gates when the force applies.
+MPV_GPU_CONTEXT = {
+    'windows': None,
+    'linux': 'x11',
+    'darwin': None,
 }
 
 #: The mpv video encoder this app hardcodes, checked at first use so a source
@@ -690,6 +700,48 @@ def video_output():
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
     return MPV_VIDEO_OUTPUT[key]
+
+
+def mpv_gpu_context():
+    """The mpv GL context backend to force, or None to let mpv choose.
+
+    Qt's platform plugin and libmpv's GL context are two independent
+    selections, and ``force_xcb_on_wayland`` fixes only the first one.
+    libmpv picks its backend when the player is constructed, and its
+    auto-selection prefers Wayland whenever ``WAYLAND_DISPLAY`` is set
+    -- which the switch deliberately leaves set, because it describes
+    the session, not the app. Under mpv's Wayland backend ``wid`` is
+    meaningless (Wayland clients cannot reparent each other's surfaces),
+    so mpv ignores the XID ``create_mpv_player`` hands it and comes up
+    as its own top-level window: the app on XWayland, the video floating
+    on Wayland. Naming the X11 backend (GLX, the one that implements
+    ``wid`` embedding) removes that choice.
+
+    The force is gated on the app actually running on XWayland --
+    ``QT_QPA_PLATFORM`` being ``xcb``, whether the switch chose it or
+    the user set it by hand. On a genuine Wayland session (the wayland
+    plugin chosen by hand, or no XWayland so the switch declined) the
+    player floats by design, and forcing the X11 backend there would
+    turn a floating player into a video-output initialization failure.
+    On a plain X11 session the gate is false and mpv's auto-selection
+    picks the X11 backend anyway, so nothing is lost.
+
+    A build without the named backend fails loudly ("Error initializing
+    selected gpu context") rather than silently floating; ``mpv
+    --gpu-context=help`` lists what a build supports, and ``x11egl`` is
+    the alternative X11 backend. See docs/source-install.md.
+    """
+    key = _os_key()
+    if key not in MPV_GPU_CONTEXT:
+        raise EnvironmentError(
+            f"Unsupported operating system: {platform.system()}")
+
+    forced = MPV_GPU_CONTEXT[key]
+    if forced is None:
+        return None
+    if os.environ.get('QT_QPA_PLATFORM') != 'xcb':
+        return None
+    return forced
 
 
 def force_xcb_on_wayland():

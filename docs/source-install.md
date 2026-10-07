@@ -168,15 +168,34 @@ the editor. `main.py` therefore detects a Wayland session
 the whole app on XWayland, where `wid` embedding works unchanged.
 `shared/environment.py:force_xcb_on_wayland` owns the switch.
 
-Three limits, all deliberate:
+The switch fixes only Qt's half of the problem. Qt's platform plugin and
+libmpv's GL context are two independent selections: libmpv picks its backend
+when the player is constructed, and its auto-selection prefers Wayland
+whenever `WAYLAND_DISPLAY` is set — which the switch deliberately leaves set,
+because it describes the session, not the app. Under mpv's Wayland backend
+`wid` is meaningless, so the player still floated even with the app on
+XWayland. `create_mpv_player` therefore also forces `--gpu-context=x11`
+(mpv's GLX backend, the one that implements `wid` embedding), through
+`shared/environment.py:mpv_gpu_context`, and only while the app is actually
+on XWayland (`QT_QPA_PLATFORM=xcb`, whether the switch chose it or the user
+set it by hand).
+
+Four limits, all deliberate:
 
 - **A platform chosen by hand wins.** Set `QT_QPA_PLATFORM=wayland` yourself
   and commcut respects it — and the player floats, because that is what
-  Wayland does to an embedder.
+  Wayland does to an embedder. The context force is gated the same way, so
+  it never fights the choice.
 - **XWayland must be present.** `xcb` needs `DISPLAY`; a Wayland session with
   no X server is logged and left on Wayland rather than switched into an app
-  that cannot start. Most compositors ship XWayland (the `xwayland` package
-  on most distributions).
+  that cannot start — and with no XWayland there is no XID to embed into, so
+  the player floats by design instead of the forced backend turning it into
+  a video-output failure. Most compositors ship XWayland (the `xwayland`
+  package on most distributions).
+- **The backend has to exist.** A build without GLX fails loudly ("Error
+  initializing selected gpu context") rather than silently floating;
+  `mpv --gpu-context=help` lists the backends a build supports, and `x11egl`
+  is the alternative X11 backend.
 - **Windows and macOS are untouched.** They embed through an HWND and an
   NSView* and have no Wayland to work around.
 
@@ -498,12 +517,15 @@ What none of that establishes is that a video **renders**:
   Linux. `WA_NativeWindow` is required on every platform, since `winId()` is
   what produces the handle. If the video area is black on macOS, the first
   thing to try is `vo=libmpv` (`MPV_VIDEO_OUTPUT` in `shared/environment.py`).
-- **Wayland on Linux.** The app switches itself to XWayland (see
+- **Wayland on Linux.** The app switches itself to XWayland and forces
+  mpv's X11 GL context (see
   [Wayland sessions run on XWayland](#wayland-sessions-run-on-xwayland)),
   so the open question is no longer whether `wid` embedding works at all —
   it is whether XWayland is present and renders acceptably on a given
-  compositor, and what a session without XWayland, where the player floats
-  by design, reads like. A person on such a machine is the only oracle.
+  compositor, whether the machine's mpv has the GLX backend the force
+  names (a build without it fails loudly rather than floating), and what
+  a session without XWayland, where the player floats by design, reads
+  like. A person on such a machine is the only oracle.
 - **The Dock icon.** Whether Qt's application icon reaches the macOS Dock tile is
   the one claim in [The icon, and what each platform shows](#the-icon-and-what-each-platform-shows)
   no machine has checked. It is cosmetic, and it is a two-second look.

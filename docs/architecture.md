@@ -56,7 +56,7 @@ commcut/
 │   ├── marker_timeline.py   # MarkerTimelineWidget (playhead + vertical marker lines)
 │   └── scannerwindow.ui     # Qt Designer file; promoted MarkerTimelineWidget
 ├── shared/                  # Cross-module library (editor + scanner + settings)
-│   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context, XWayland switch
+│   ├── environment.py       # frozen-aware roots, per-OS binaries, mpv_import_context, XWayland switch, mpv context force
 │   ├── session.py           # the QApplication's one visible window: Shell, _BUILDERS
 │   ├── diagnostics.py       # log file, excepthook, fatal() startup reporting
 │   ├── mpv.py               # MpvBridge + its shutdown, create_mpv_player, scan_keyframes
@@ -406,6 +406,10 @@ The shared modules are:
   `wid` embedding, so `main.py` calls it before the `QApplication` is
   constructed to run the app on XWayland instead — see
   [source-install.md](source-install.md#wayland-sessions-run-on-xwayland)),
+  `mpv_gpu_context()` (the same session as libmpv sees it: on XWayland
+  it forces mpv's X11 GL context, the only backend that implements
+  `wid` embedding, so libmpv's own auto-selection cannot prefer
+  Wayland and float the player beside the app that embeds it),
   and `ensure_app_folders()`. This is the cross-platform binary resolution that
   used to live in `core.py`. It used to also own `launch_command()` and
   `WINDOW_NAMES`; both went with the process model.

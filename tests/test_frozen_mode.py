@@ -20,6 +20,7 @@ import shared.environment as environment
 from shared.environment import (
     APP_FOLDERS,
     IMPORT_FOLDER_NAME,
+    MPV_GPU_CONTEXT,
     MPV_VIDEO_OUTPUT,
     SETTINGS_FILENAME,
     ensure_app_folders,
@@ -1053,6 +1054,104 @@ def test_only_linux_switches(monkeypatch, qt_platform_env, system):
     environment.force_xcb_on_wayland()
 
     assert "QT_QPA_PLATFORM" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# mpv's GL context backend
+# ---------------------------------------------------------------------------
+
+def test_every_platform_has_a_gpu_context_row():
+    """The table is keyed like MPV_VIDEO_OUTPUT, so a platform added to
+    one and missed from the other is a missing row, not a silent default."""
+    for system in environment._OS_BIN_FOLDERS:
+        assert system in environment.MPV_GPU_CONTEXT, system
+
+
+def test_linux_forces_an_x11_backend():
+    """`wid` embedding is implemented by mpv's X11 backends only, so the
+    forced backend has to be one of the two."""
+    assert MPV_GPU_CONTEXT["linux"] in ("x11", "x11egl")
+
+
+def test_a_wayland_session_on_xwayland_forces_the_x11_context(
+        monkeypatch, qt_platform_env):
+    """The second half of the embedding fix. Qt on xcb makes winId() an
+    XID, but mpv chooses its GL context by itself and prefers Wayland
+    when it can see the session, so the backend has to be named too --
+    or mpv ignores the wid and opens its own window."""
+    _pretend_to_be_linux(monkeypatch)
+    _a_wayland_session(monkeypatch)
+    environment.force_xcb_on_wayland()
+
+    assert environment.mpv_gpu_context() == "x11"
+
+
+def test_a_wayland_session_without_an_x_server_forces_nothing(
+        monkeypatch, qt_platform_env):
+    """No XWayland means no XID to embed into, so the player floats by
+    design; forcing the X11 backend there would turn a floating player
+    into a video-output failure."""
+    _pretend_to_be_linux(monkeypatch)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    environment.force_xcb_on_wayland()
+
+    assert environment.mpv_gpu_context() is None
+
+
+def test_a_hand_chosen_wayland_platform_forces_nothing(
+        monkeypatch, qt_platform_env):
+    """The escape hatch stays an escape hatch: the user asked for the
+    Wayland plugin, so the player floats rather than being forced onto
+    a backend that cannot embed."""
+    _pretend_to_be_linux(monkeypatch)
+    _a_wayland_session(monkeypatch)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")
+
+    assert environment.mpv_gpu_context() is None
+
+
+def test_a_hand_chosen_xcb_platform_forces_the_context(
+        monkeypatch, qt_platform_env):
+    """Setting QT_QPA_PLATFORM=xcb by hand puts the app on XWayland just
+    as the switch does, so the backend is forced too."""
+    _pretend_to_be_linux(monkeypatch)
+    _a_wayland_session(monkeypatch)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "xcb")
+
+    assert environment.mpv_gpu_context() == "x11"
+
+
+def test_an_x11_session_lets_mpv_choose(monkeypatch, qt_platform_env):
+    """No Wayland in the session means mpv's auto-selection already picks
+    the X11 backend, so there is nothing to force."""
+    _pretend_to_be_linux(monkeypatch)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+
+    assert environment.mpv_gpu_context() is None
+
+
+@pytest.mark.parametrize("system", ["Windows", "Darwin"])
+def test_only_linux_forces_a_context(monkeypatch, qt_platform_env, system):
+    """Windows embeds through an HWND and macOS through an NSView*;
+    neither selects a GL context backend the way Linux does, and neither
+    should see the option at all -- even with the platform variable set."""
+    monkeypatch.setattr(environment.platform, "system", lambda: system)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "xcb")
+
+    assert environment.mpv_gpu_context() is None
+
+
+def test_mpv_gpu_context_raises_for_an_unsupported_os(monkeypatch):
+    monkeypatch.setattr(environment.platform, "system", lambda: "Plan9")
+
+    with pytest.raises(EnvironmentError):
+        environment.mpv_gpu_context()
 
 
 # ---------------------------------------------------------------------------
