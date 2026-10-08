@@ -40,7 +40,7 @@ So, **what is CommCut**? In short, it is **a suite of tools to manage, rename, o
 
 # Install
 
-### Windows
+## Windows
 
 Download `commcut-<version>-windows-x64.zip` from the
 [releases page](https://github.com/trafficman/commcut/releases), extract it
@@ -79,6 +79,38 @@ where commcut reads and writes, and it needs to stay writable.
 
 Full detail, including the one thing about this platform that is not yet
 verified, is in [docs/source-install.md](docs/source-install.md).
+
+## Updating
+
+There is no auto-updater, a new version is a new download from the
+[releases page](https://github.com/trafficman/commcut/releases/latest)
+(that link always points at the newest). Each release extracts into its
+own versioned folder, so updating is side-by-side: the old version keeps
+working until you delete it, and nothing is overwritten.
+
+**Windows**
+
+1. Download the newest `commcut-<version>-windows-x64.zip` and extract
+   it **next to** your current folder, not into it.
+2. If you customized anything in Settings, copy `settings.json` (and
+   `vocabulary.json`, if you have vocabulary entries) from the old
+   folder into the new one. If you have any in-progress imports, also copy/move
+   the contents of the `/import/` folder over (along with `/export/` if you have
+   not changed your export location from the default). 
+3. Run the new `commcut.exe`.
+4. Once it works, delete the old folder.
+
+**macOS and Linux**
+
+Same, except after extracting the new tarball, run `./install_deps.sh`
+in the new folder (it rebuilds the Python environment there) before
+`./run.sh`. ffmpeg, mpv and libmpv are system packages you already
+installed, they are shared, no need to reinstall. Copy `settings.json`
+and `vocabulary.json` over if you customized anything, `/import/` and 
+`/export/` if they are currently in use, then delete the old folder.
+
+To be told when there's a new version: in the upper right of the repo, 
+use the **Watch** dropdown → **Custom** → **Releases**.
 
 # Usage
 
