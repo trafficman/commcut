@@ -1,6 +1,8 @@
 import os
 import subprocess
 import sys
+import tempfile
+import time
 
 # Make the project root importable so 'shared' resolves.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -10,8 +12,8 @@ from shared.environment import (
 )
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from shared.diagnostics import log
-from shared.ffmpeg import clip_to_temp
+from shared.diagnostics import log, log_exception
+from shared.ffmpeg import clip_to_temp, ExportCancelled
 from shared.mpv import MpvBridge, create_mpv_player, scan_keyframes
 from shared.segments import (
     sidecar_path, probe_duration,
@@ -23,8 +25,8 @@ from shared.sources import validate_source_video
 from shared.splash import show_splash
 from shared.ui_loader import UiLoader, adopt_title
 
-from PySide6.QtWidgets import QMainWindow, QStyle
-from PySide6.QtCore import QFile
+from PySide6.QtWidgets import QMainWindow, QStyle, QProgressDialog, QMessageBox
+from PySide6.QtCore import QFile, QObject, QThread, Signal, Slot
 
 # Seconds of test footage the scanner works on (stream-copied to temp/).
 CLIP_DURATION = 120
@@ -68,6 +70,91 @@ def _model_from_midpoints(midpoints, duration, source_name):
     starts = sorted({0.0, *(m for m in midpoints if 0.0 < m < duration)})
     segments = [{"start": s, "ignored": False, "tags": {}} for s in starts]
     return SegmentModel(source=source_name, duration=duration, segments=segments)
+
+
+class FinishedScanWorker(QObject):
+    """Runs blackdetect on the full source video off the GUI thread.
+
+    Emits ``scanned(midpoints)`` with the list of boundary timestamps once the
+    full-source ffmpeg pass is done, or ``failed(reason)`` if the scan could not
+    run. The window disables its controls while this runs and re-enables them in
+    either case — the same pattern ``ExportWorker`` uses for the main export.
+    """
+    scanned = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, source, min_sec, pix_th, duration, parent=None):
+        super().__init__(parent)
+        self.source = source
+        self.min_sec = min_sec
+        self.pix_th = pix_th
+        self.duration = duration
+        self._cancelled = False
+
+    @Slot()
+    def run(self):
+        cmd = [
+            get_binary_path("ffmpeg"), "-y", "-v", "info",
+            "-i", self.source,
+            "-vf", f"blackdetect=d={self.min_sec:.3f}:pix_th={self.pix_th:.4f}",
+            "-an", "-f", "null", "-",
+        ]
+        try:
+            stderr = self._run_ffmpeg_with_cancel(cmd)
+        except ExportCancelled:
+            self.failed.emit("Scan was cancelled.")
+            return
+        except Exception as error:
+            log_exception("Finished scan blackdetect failed", error)
+            self.failed.emit(
+                f"The scan could not run: {type(error).__name__}: {error}"
+            )
+            return
+
+        midpoints = [
+            (t1 + t2) / 2.0
+            for t1, t2 in ScannerWindow._parse_blackdetect_runs(stderr)
+        ]
+        self.scanned.emit(midpoints)
+
+    def _run_ffmpeg_with_cancel(self, command):
+        """Run ffmpeg, draining stderr while polling for cancellation.
+
+        Mirrors the cancel pattern in ``shared.ffmpeg._run_ffmpeg``: stderr goes
+        to a temp file (nothing drains it while the encode runs, and a full pipe
+        buffer stalls ffmpeg to death), and ``cancel`` terminates the child
+        immediately on Windows / sends SIGTERM on macOS+Linux.
+        """
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=errors,
+                **no_console_kwargs(),
+            )
+            try:
+                while process.poll() is None:
+                    if self._cancelled:
+                        process.terminate()
+                        process.wait()
+                        raise ExportCancelled()
+                    time.sleep(0.05)
+                process.wait()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+            errors.seek(0)
+            return errors.read().decode("utf-8", "replace")
+
+    @Slot()
+    def cancel(self):
+        """Terminate the running ffmpeg process.
+
+        Called when the user cancels the progress dialog. The ``Popen``
+        reference is checked because the process may have already exited.
+        """
+        self._cancelled = True
 
 
 class ScannerWindow(QMainWindow):
@@ -171,6 +258,14 @@ class ScannerWindow(QMainWindow):
         )
         self.bridge.load_file(self.clip_path)
 
+        # --- full-source scan state ---
+        # None when no Finished scan is running; set when one starts so the
+        # window can refuse to close mid-scan and tear the thread down safely.
+        self._scan_thread = None
+        self._scan_worker = None
+        self._scan_dialog = None
+        self._close_after_scan = False
+
     def _on_position_changed(self, position):
         self.current_position = position
 
@@ -257,9 +352,8 @@ class ScannerWindow(QMainWindow):
         return runs
 
     def on_finished(self):
-        """Run blackdetect on the FULL source video, write the resulting
-        midpoint boundaries to a .cmct sidecar, then open the Video Editor
-        for manual fixes + tags.
+        """Run blackdetect on the FULL source video off the GUI thread, then
+        write the midpoint boundaries to a .cmct sidecar and open the editor.
 
         Each black run [t1, t2] contributes one boundary at its midpoint
         ``(t1 + t2) / 2`` — the same rule Test Scan uses for the preview
@@ -285,31 +379,102 @@ class ScannerWindow(QMainWindow):
         min_sec = frames / fps if frames > 0 else 0.0
         pix_th = level / 100.0
 
-        cmd = [
-            get_binary_path("ffmpeg"), "-y", "-v", "info",
-            "-i", source,
-            "-vf", f"blackdetect=d={min_sec:.3f}:pix_th={pix_th:.4f}",
-            "-an", "-f", "null", "-",
-        ]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, **no_console_kwargs())
-        midpoints = [(t1 + t2) / 2.0 for t1, t2 in self._parse_blackdetect_runs(proc.stderr)]
+        self._start_scan(source, min_sec, pix_th, duration)
 
-        model = _model_from_midpoints(midpoints, duration, os.path.basename(source))
+    def _start_scan(self, source, min_sec, pix_th, duration):
+        """Launch the full-source blackdetect on a worker thread.
+
+        The window is disabled for the duration so the user cannot trigger a
+        second run, close the window, or issue transport commands while ffmpeg
+        is decoding the entire compilation. A modal progress dialog makes the
+        freeze explicit and offers a cancel that terminates the scan cleanly.
+        """
+        if self._scan_thread is not None:
+            return
+
+        worker = FinishedScanWorker(source, min_sec, pix_th, duration)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.scanned.connect(self._on_scan_complete)
+        worker.failed.connect(self._on_scan_failed)
+        # The worker is a one-shot: it runs once and the thread exits.
+        worker.scanned.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_scan_stopped)
+        self._scan_worker = worker
+        self._scan_thread = thread
+
+        self.setEnabled(False)
+        dialog = QProgressDialog("Scanning full source video…", "Cancel", 0, 0, self)
+        dialog.setWindowTitle("Finished scan")
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._on_scan_cancel_requested)
+        dialog.show()
+        self._scan_dialog = dialog
+
+        thread.start()
+
+    def _on_scan_cancel_requested(self):
+        """Cancel requested: stop the ffmpeg process inside the worker thread.
+
+        The worker checks its ``_cancelled`` flag every 50 ms while polling the
+        subprocess; setting the flag and signalling ``cancel`` terminates ffmpeg
+        on the next poll, which unblocks ``run()`` so the thread can finish.
+        """
+        if self._scan_worker is not None:
+            self._scan_worker.cancel()
+        dialog = self._scan_dialog
+        if dialog is not None:
+            dialog.setCancelButton(None)
+            dialog.setLabelText("Cancelling…")
+
+    def _on_scan_complete(self, midpoints):
+        """Worker finished: write the .cmct, then hand off to the editor.
+
+        Re-enables the window first so a refusal from the sidecar write or the
+        editor hand-off can prompt the user without the window looking dead.
+        """
+        source = self.source_path
+        model = _model_from_midpoints(midpoints, self._scan_worker.duration, os.path.basename(source))
         sidecar = sidecar_path(source)
         model.save(sidecar)
         log(f"Finished: wrote {model.segment_count()} segments to {sidecar}")
 
-        # Open the editor to review the .cmct we just wrote, then close the
-        # scanner. The source travels with it as a constructor argument: the
-        # editor works on this video, not on a default one.
-        #
-        # This used to start a process and then quit this one. Both halves
-        # change here: the editor is opened through the shell rather than
-        # launched, and "quit" becomes "close this window", which returns the
-        # user to the menu that is still running underneath.
+        self.setEnabled(True)
         shell().open_safely('editor', source=source)
         self.close()
+
+    def _on_scan_failed(self, reason):
+        """Worker could not run: log and report, then re-enable the window."""
+        log(f"Finished: scan failed — {reason}")
+        QMessageBox.warning(self, "Scan failed", reason)
+
+    def _on_scan_stopped(self):
+        """Tear the thread down after it has actually stopped."""
+        dialog = self._scan_dialog
+        if dialog is not None:
+            dialog.reset()
+            dialog.deleteLater()
+        thread = self._scan_thread
+        if thread is not None:
+            thread.deleteLater()
+        worker = self._scan_worker
+        if worker is not None:
+            worker.deleteLater()
+        self._scan_dialog = None
+        self._scan_thread = None
+        self._scan_worker = None
+
+        if self._close_after_scan:
+            self._close_after_scan = False
+            self.setEnabled(True)
+            self.bridge.shutdown()
+            self.close()
+            return
+        self.setEnabled(True)
 
     def on_play_pause(self):
         self.bridge.toggle_play()
@@ -318,12 +483,35 @@ class ScannerWindow(QMainWindow):
         """Shut the mpv player down before this window -- and its native video
         handle -- is destroyed.
 
-        The same rule the editor follows, for the same reason: the player is
-        embedded into the video frame's HWND, so a player still running when
-        that handle dies leaves libmpv rendering into a window that no longer
-        exists, and joining its threads blocks the GUI thread. See
+        Refuses to close while a full-source scan is running, because a
+        QThread destroyed while still executing aborts the process. The user is
+        asked whether to cancel the scan and close; if so, the flag
+        ``_close_after_scan`` is set so ``_on_scan_stopped`` closes the window
+        once the worker has actually quit, and this close is ignored for now.
+
+        The same mpv teardown rule the editor follows, for the same reason: the
+        player is embedded into the video frame's HWND, so a player still running
+        when that handle dies leaves libmpv rendering into a window that no
+        longer exists, and joining its threads blocks the GUI thread. See
         ``MpvBridge.shutdown``.
         """
+        if self._scan_thread is not None:
+            answer = QMessageBox.question(
+                self,
+                "Scan in progress",
+                "A full-source scan is in progress.\n\nCancel it and close?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                self._close_after_scan = True
+                self._on_scan_cancel_requested()
+                # The close happens again from _on_scan_stopped, once the thread
+                # has finished — that second pass is the one that shuts the
+                # player down and accepts.
+            event.ignore()
+            return
+
         self.bridge.shutdown()
         super().closeEvent(event)
 
