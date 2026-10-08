@@ -142,20 +142,20 @@ class FinishedScanWorker(QObject):
 
     @Slot()
     def run(self):
-        duration = probe_duration(self.source)
-        if duration is None:
-            self.failed.emit(
-                "The scan could not determine the source duration."
-            )
-            return
-
-        cmd = [
-            get_binary_path("ffmpeg"), "-y", "-v", "info",
-            "-i", self.source,
-            "-vf", f"blackdetect=d={self.min_sec:.3f}:pix_th={self.pix_th:.4f}",
-            "-an", "-f", "null", "-",
-        ]
         try:
+            duration = probe_duration(self.source)
+            if duration is None:
+                self.failed.emit(
+                    "The scan could not determine the source duration."
+                )
+                return
+
+            cmd = [
+                get_binary_path("ffmpeg"), "-y", "-v", "info",
+                "-i", self.source,
+                "-vf", f"blackdetect=d={self.min_sec:.3f}:pix_th={self.pix_th:.4f}",
+                "-an", "-f", "null", "-",
+            ]
             _, stderr = _run_ffmpeg(
                 cmd, should_cancel=lambda: self._cancelled
             )
@@ -202,13 +202,13 @@ class TestScanWorker(QObject):
 
     @Slot()
     def run(self):
-        cmd = [
-            get_binary_path("ffmpeg"), "-y", "-v", "info",
-            "-i", self.clip_path,
-            "-vf", f"blackdetect=d={self.min_sec:.3f}:pix_th={self.pix_th:.4f}",
-            "-an", "-f", "null", "-",
-        ]
         try:
+            cmd = [
+                get_binary_path("ffmpeg"), "-y", "-v", "info",
+                "-i", self.clip_path,
+                "-vf", f"blackdetect=d={self.min_sec:.3f}:pix_th={self.pix_th:.4f}",
+                "-an", "-f", "null", "-",
+            ]
             returncode, stderr = _run_ffmpeg(
                 cmd, should_cancel=lambda: self._cancelled)
             midpoints = [

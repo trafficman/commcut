@@ -108,6 +108,13 @@ follow the same shape documented in [architecture.md](architecture.md#ending-a-w
    `deleteLater()` on the dialog, thread, and worker, and re-enables the
    disabled controls.
 
+Everything `run()` does sits inside that `try` — including resolving
+the ffmpeg and ffprobe binaries through `get_binary_path` — so a
+machine without them reports `failed` (the dialog closes with the
+error) instead of raising mid-thread, which would leave the thread's
+event loop running, the loading dialog up, and the window unable to
+close.
+
 The window's `closeEvent` refuses to close while either thread is active
 (`_scan_thread` or `_test_scan_thread` is not `None`), asking the user to
 cancel. If they agree, `_close_after_worker` is set and both workers are

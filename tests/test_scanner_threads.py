@@ -10,6 +10,10 @@ Covers four changes in scanner/scanner.py:
      scan no longer blocks the GUI thread to measure the video.
   D. ScannerWindow.__init__ — no longer builds its own preview clip; accepts
      clip_path and keyframes as constructor arguments.
+  E. Both scan workers resolve the ffmpeg/ffprobe binary inside run()'s
+     try, so a machine without the binaries reports failed() instead of
+     dying mid-thread — and the tests stub get_binary_path, which the
+     workers call before the stubbed _run_ffmpeg.
 
 The ScannerWindow itself needs libmpv and a .ui file, so a ScannerStub mirrors
 its lifecycle methods (close to EditorStub's pattern) without constructing a
@@ -184,6 +188,8 @@ def stub(qapp, monkeypatch):
     monkeypatch.setattr(scanner_module, "LoadingDialog", FakeLoadingDialog)
     monkeypatch.setattr(scanner_module, "QMessageBox", _FakeMessageBox)
     monkeypatch.setattr(scanner_module, "log", lambda *a: None)
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_model_from_midpoints",
                         lambda midpoints, duration, name: _FakeModel())
     monkeypatch.setattr(scanner_module, "TestScanWorker", StubTestScanWorker)
@@ -263,6 +269,8 @@ def test_test_scan_worker_emits_midpoints(monkeypatch, qapp):
     """blackdetect stderr is parsed and midpoints emitted via result."""
     fake_stderr = ("[blackdetect @ 0x1] black_start:1.000000 black_end:2.000000\n"
                    "[blackdetect @ 0x2] black_start:5.000000 black_end:7.000000\n")
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_run_ffmpeg",
                         lambda cmd, should_cancel=None: (0, fake_stderr))
 
@@ -280,6 +288,8 @@ def test_test_scan_worker_fails_on_cancel(monkeypatch, qapp):
     def raises(*a, **k):
         raise ExportCancelled()
 
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_run_ffmpeg", raises)
 
     worker = TestScanWorker("/clip.mp4", min_sec=0.5, pix_th=0.10)
@@ -297,6 +307,8 @@ def test_test_scan_worker_fails_on_exception(monkeypatch, qapp):
     def boom(*a, **k):
         raise RuntimeError("ffprobe broke")
 
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_run_ffmpeg", boom)
 
     worker = TestScanWorker("/clip.mp4", min_sec=0.5, pix_th=0.10)
@@ -309,6 +321,23 @@ def test_test_scan_worker_fails_on_exception(monkeypatch, qapp):
     assert "RuntimeError" in received[0]
 
 
+def test_test_scan_worker_fails_when_ffmpeg_missing(monkeypatch, qapp):
+    """A machine without ffmpeg reports failed, not a dead thread."""
+    def missing(name):
+        raise FileNotFoundError(f"no {name}")
+
+    monkeypatch.setattr(scanner_module, "get_binary_path", missing)
+
+    worker = TestScanWorker("/clip.mp4", min_sec=0.5, pix_th=0.10)
+    received = []
+    worker.failed.connect(lambda r: received.append(r))
+
+    worker.run()
+
+    assert len(received) == 1
+    assert "FileNotFoundError" in received[0]
+
+
 # ---------------------------------------------------------------------------
 # FinishedScanWorker unit tests
 # ---------------------------------------------------------------------------
@@ -317,6 +346,8 @@ def test_finished_scan_worker_probes_duration_and_emits_scanned(monkeypatch, qap
     """probe_duration runs inside run() and its result travels with midpoints."""
     fake_stderr = "[blackdetect @ 0x1] black_start:10.000000 black_end:12.000000\n"
     monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(
         scanner_module, "_run_ffmpeg",
         lambda cmd, should_cancel=None: (0, fake_stderr))
@@ -343,6 +374,41 @@ def test_finished_scan_worker_fails_when_duration_unknown(monkeypatch, qapp):
 
     assert len(received) == 1
     assert "duration" in received[0].lower()
+
+
+def test_finished_scan_worker_fails_when_ffmpeg_missing(monkeypatch, qapp):
+    """A machine without ffmpeg reports failed, not a dead thread."""
+    def missing(name):
+        raise FileNotFoundError(f"no {name}")
+
+    monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
+    monkeypatch.setattr(scanner_module, "get_binary_path", missing)
+
+    worker = FinishedScanWorker("/source.mp4", min_sec=0.5, pix_th=0.10)
+    received = []
+    worker.failed.connect(lambda r: received.append(r))
+
+    worker.run()
+
+    assert len(received) == 1
+    assert "FileNotFoundError" in received[0]
+
+
+def test_finished_scan_worker_fails_when_ffprobe_missing(monkeypatch, qapp):
+    """A machine without ffprobe reports failed, not a dead thread."""
+    def missing(name):
+        raise FileNotFoundError(f"no {name}")
+
+    monkeypatch.setattr(scanner_module, "probe_duration", missing)
+
+    worker = FinishedScanWorker("/source.mp4", min_sec=0.5, pix_th=0.10)
+    received = []
+    worker.failed.connect(lambda r: received.append(r))
+
+    worker.run()
+
+    assert len(received) == 1
+    assert "FileNotFoundError" in received[0]
 
 
 def test_finished_scan_worker_no_longer_takes_duration_arg():
@@ -665,6 +731,8 @@ def test_test_scan_worker_not_blocking_gui(monkeypatch, qapp):
         release.wait(10)
         return (0, "[blackdetect @ 0x1] black_start:1.000000 black_end:2.000000\n")
 
+    monkeypatch.setattr(scanner_module, "get_binary_path",
+                        lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_run_ffmpeg", slow_run_ffmpeg)
 
     worker = TestScanWorker("/clip.mp4", min_sec=0.5, pix_th=0.10)

@@ -104,7 +104,7 @@ state.
 | `test_exporting.py` | export settings, destination planning, preflight, resume skips, the export folder, and the two destination helpers the importer shares |
 | `test_ffmpeg.py` | plan-based ffmpeg execution: progress, cancel, partial-failure reporting, the encoder probe, and the no-console flag reaching `Popen` (`Popen` mocked) |
 | `test_editor_export.py` | the export worker thread, progress dialog, cancel, resume, close-mid-run, and the summary screen (window wiring with a substituted dialog, plus the shipped dialog itself) |
-| `test_scanner_threads.py` | the scanner's three worker threads: ScannerPreScanWorker (pre-scan clip + keyframes behind a modal LoadingDialog), TestScanWorker (blackdetect on the preview off the GUI thread), FinishedScanWorker (probe_duration folded into run()); the closeEvent guard that refuses to close while any scan is active; and real-thread responsiveness tests proving each worker does not block the event loop |
+| `test_scanner_threads.py` | the scanner's three worker threads: ScannerPreScanWorker (pre-scan clip + keyframes behind a modal LoadingDialog), TestScanWorker (blackdetect on the preview off the GUI thread), FinishedScanWorker (probe_duration folded into run()); a missing ffmpeg/ffprobe binary surfacing as `failed` rather than killing the worker thread; the closeEvent guard that refuses to close while any scan is active; and real-thread responsiveness tests proving each worker does not block the event loop |
 | `test_settings.py` | the Settings window: defaults, previews, atomic save, help panels, and the vocabulary sync button (thread, worker, progress dialog, and result dialog substituted) |
 | `test_release_build.py` | the Windows release archive: what goes in it, the required entries, the sha256 sidecar, the tag-must-match rule, and `_verify_payload` driven against two synthetic roots — which is the only place the *bundled* side of the icon's two-directional rule can be observed |
 | `test_source_release.py` | the macOS/Linux source release: that the manifest covers every module in the app folders and every `resource_path` payload file, that **nothing the app owns at runtime reaches the archive** (the leak test, which plants a developer's `export/`, a `.venv/` and a `settings.json` in a scratch tree and requires none of it ships), that every markdown file is included and no link inside the archive dangles, the tar member modes, byte-identical rebuilds, the sidecar, and the three launchers — including running `install_deps.sh`'s embedded check against a stubbed `shared` package, which is what covers a script nothing else executes |
@@ -228,6 +228,13 @@ state.
     one file on Windows and two elsewhere, so a test written against Windows
     encodes the collapse. If a test builds real files, no two of them may differ
     only in case, or it is asserting the filesystem.
+- **A stub seam covers only what it replaces.** The scanner workers
+  resolve the ffmpeg binary through `get_binary_path` *before* calling
+  the `_run_ffmpeg` the tests stub, so stubbing the runner alone left
+  the real resolution in play — which passed on Windows (the bundled
+  `bin/win/ffmpeg.exe`) and failed on the macOS/Linux runners, where
+  no ffmpeg is installed at test time. Stub every external dependency
+  the code under test reaches, not just the one it is named after.
 - **A test that can skip may be hiding something.** The one test guarding
   `record_error_reason`'s read-failure branch used `chmod 000`, which does not
   stop the owner reading on Windows — so it skipped on every platform the suite
