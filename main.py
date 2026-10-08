@@ -49,6 +49,18 @@ def run_main_menu(argv):
     install_app_icon(app)
     diagnostics.install_excepthook(app)
 
+    # Show the loading splash for a fixed delay so the user sees the app respond
+    # immediately. The splash is closed before any window is constructed, per
+    # invariant 6 — MainWindow has no mpv player, but the rule stands.
+    from shared.loading import LoadingSplash
+    import time as _time
+    splash = LoadingSplash(app, "Starting commcut…")
+    deadline = _time.monotonic() + 2.0
+    while _time.monotonic() < deadline:
+        app.processEvents()
+        _time.sleep(0.05)
+    splash.finish(None)
+
     # The menu is the window the shell starts from and returns to. It is
     # hidden while another window is up rather than closed, so returning to it
     # is instant and there is only ever one menu. The separate-process
