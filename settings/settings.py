@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressDialog,
     QVBoxLayout,
 )
 from shared.catalog import VocabularySync, sync_vocabulary
@@ -44,6 +43,7 @@ from shared.exporting import (
     export_folder,
     export_folder_setting_error,
 )
+from shared.loading import LoadingDialog
 from shared.naming import (
     DEFAULT_FILE_NAMING_SCHEME,
     FilenameSchemeError,
@@ -323,7 +323,7 @@ class SettingsWindow(QMainWindow):
         #: destroying a running QThread aborts the process.
         self._sync_thread: QThread | None = None
         self._sync_worker: SyncWorker | None = None
-        self._sync_dialog: QProgressDialog | None = None
+        self._sync_dialog: LoadingDialog | None = None
         self._sync_cancel = threading.Event()
         self._sync_result = None
         self._sync_close_after = False
@@ -702,21 +702,9 @@ class SettingsWindow(QMainWindow):
         self._sync_result = None
         self._sync_close_after = False
 
-        progress = QProgressDialog("Reading the export library...", None, 0, 0, self)
-        progress.setWindowTitle("Tag Vocabulary Sync")
-        # Parentless: setEnabled(False) below cascades to child widgets, and a
-        # disabled dialog's Cancel button does nothing -- `self._sync_dialog`
-        # keeps it alive instead. Deliberately not application modal either, so
-        # this window's own close button still reaches closeEvent and can ask
-        # about cancelling. Both are the export dialog's reasoning, for the same
-        # reason.
-        progress.setParent(None)
-        progress.setModal(False)
-        progress.setMinimumDuration(0)
-        # An indeterminate dialog closes itself on reaching its maximum, which
-        # would read as a cancel of a sync that had nothing to cancel.
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
+        progress = LoadingDialog("Reading the export library...", cancellable=False,
+                                 modal=False, title="Tag Vocabulary Sync")
+        progress.set_range(0, 0)
         progress.canceled.connect(self.request_vocabulary_sync_cancel)
         self._sync_dialog = progress
 
@@ -746,7 +734,7 @@ class SettingsWindow(QMainWindow):
         dialog counts clips and names the record being read."""
         if self._sync_dialog is None:
             return
-        self._sync_dialog.setLabelText(
+        self._sync_dialog.set_message(
             f"Read {clips_found} clip(s)\n{relative_path}")
 
     def request_vocabulary_sync_cancel(self):

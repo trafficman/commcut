@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QMessageBox,
-    QProgressDialog,
     QRadioButton,
     QVBoxLayout,
 )
@@ -51,6 +50,7 @@ from shared.importing import (
     execute_import,
     plan_import,
 )
+from shared.loading import LoadingDialog
 
 def leftover_count(root: str) -> int:
     """Clips in `root` whose record is still missing a tag they need.
@@ -256,13 +256,8 @@ def confirm_and_import(parent, root: str, library_root: str, settings_path: str)
     if transfer is None:
         return None
 
-    progress = QProgressDialog("Importing...", None, 0, 0, parent)
-    progress.setWindowTitle("Import")
-    progress.setParent(None)
-    progress.setModal(False)
-    progress.setMinimumDuration(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
+    progress = LoadingDialog("Importing...", cancellable=False, modal=False,
+                             title="Import")
     try:
         plan = plan_import(
             candidates_from_catalog(catalog),
@@ -282,7 +277,7 @@ def confirm_and_import(parent, root: str, library_root: str, settings_path: str)
             return None
         result = execute_import(
             plan,
-            on_progress=lambda done, path: progress.setLabelText(
+            on_progress=lambda done, path: progress.set_message(
                 f"Imported {done} clip(s)\n{path}"),
         )
     except Exception as error:  # noqa: BLE001 - reported, never raised

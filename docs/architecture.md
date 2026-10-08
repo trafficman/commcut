@@ -74,7 +74,8 @@ commcut/
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
 │   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
 │   ├── values.py            # ValueSession: the tag-value model, and the value table
-│   ├── splash.py            # show_splash: the banner on the loading screen
+│   ├── splash.py            # show_splash, the banner pixmap: the loading screen
+│   ├── loading.py           # LoadingSplash + LoadingDialog: the unified indicators
 │   ├── icons.py             # app_icon: the one icon every window inherits
 │   └── ui_loader.py         # UiLoader subclass for promoted custom widgets
 ├── importer/                # The Library Importer's windows
@@ -566,24 +567,19 @@ that records the seek sequence.
 
 ## Splash flow (pre-work before the window appears)
 
-`__main__` in both the editor and the scanner calls `shared/splash.py:show_splash`,
-which puts a `QSplashScreen` up with the project's banner and the message
-underneath it, then runs `scan_keyframes` (via ffprobe) while it's up. The scan is
-currently synchronous on the GUI thread — it's typically sub-second for a 2-minute
-preview. `PreScanWorker` is scaffolding in the editor for future off-thread
-stages, not yet wired into `__main__`. The editor's other worker,
-`ExportWorker`, is the pattern to follow: it holds plain data, emits
-`planned`/`advanced`/`finished` signals, and wraps its body so an exception
-becomes a reported outcome rather than PySide6's abort path. See
-[naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
+`__main__` in both the editor and the scanner uses `shared/loading.py:LoadingSplash`,
+which wraps the banner pixmap and `processEvents` pump from `shared/splash.py`
+behind a `with` block. The splash shows, then `scan_keyframes` (via ffprobe) runs
+while it's up — typically sub-second for a 2-minute preview. The `with` block ends
+before any mpv-backed widget is constructed, closing the splash first (invariant 6).
 
-Both windows used to build this by hand and identically — a filled pixmap, a
-`QSplashScreen`, `showMessage`, `processEvents`, `close()` — which is one rule with
-two copies of it, and a banner on one screen and not the other is exactly what two
-copies produce. `show_splash` is the one copy. It returns the splash rather than
-being a context manager **on purpose**: the caller closes it immediately before
-constructing its mpv-backed widget, which is the next paragraph, and a `with`
-block would end at the end of the scan instead.
+The startup splash in `main.py` uses `shared/splash.py:show_splash` directly —
+that one is outside any window constructor and has no mpv widget to race.
+
+Both windows used to build their splash by hand and identically — a filled
+pixmap, a `QSplashScreen`, `showMessage`, `processEvents`, `close()` — which is
+one rule with two copies of it, and a banner on one screen and not the other is
+exactly what two copies produce. `LoadingSplash` is the one copy.
 
 Three decisions inside it are worth stating:
 
@@ -611,9 +607,10 @@ directions of the aspect ratio rather than the calls.
 **Hard-won gotcha:** mpv's Direct3D device initialization hangs when
 another top-level window (the splash) is the active window at construction
 time. Close the splash *before* constructing the mpv-backed widget.
-`show_splash` pumps `app.processEvents()` once before returning, which is what
-makes the splash actually paint — without it the user sees the previous window for
-the length of the ffprobe run, which is the thing it exists to hide.
+`show_splash` (and `LoadingSplash`, which wraps it) pumps
+`app.processEvents()` once before returning, which is what makes the splash
+actually paint — without it the user sees the previous window for the length of
+the ffprobe run, which is the thing it exists to hide.
 
 ## The application icon
 

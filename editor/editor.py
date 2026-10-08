@@ -39,10 +39,10 @@ from shared.ffmpeg import (
 # Qt libs
 from PySide6.QtWidgets import (
     QMainWindow, QDialog, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QProgressDialog, QPushButton, QStyle,
+    QPlainTextEdit, QPushButton, QStyle,
     QVBoxLayout, QComboBox, QCompleter,
 )
-from shared.splash import show_splash
+from shared.loading import LoadingSplash, LoadingDialog
 from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
 from shared.tag_form import (
@@ -962,22 +962,14 @@ class MediaPlayer(QMainWindow):
 
         self.setEnabled(False)
         # Deliberately parentless: setEnabled(False) above cascades to child
-        # widgets, and a disabled QProgressDialog's Cancel button does nothing.
+        # widgets, and a disabled dialog's Cancel button does nothing.
         # self._export_dialog keeps it alive instead. The freeze, not the
         # dialog's modality, is what blocks input -- it is left non-modal so the
         # window's own close button still reaches closeEvent and can ask about
         # cancelling the run.
-        dialog = QProgressDialog()
-        dialog.setWindowTitle("Exporting clips")
-        dialog.setLabelText("Planning destinations…")
-        dialog.setRange(0, 0)
-        dialog.setCancelButtonText("Cancel")
-        dialog.setMinimumDuration(0)
-        # Both default to closing (and emitting canceled) the moment the value
-        # reaches the maximum, which would read as the user cancelling a
-        # successful export.
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
+        dialog = LoadingDialog("Planning destinations…", cancellable=True,
+                               modal=False, title="Exporting clips")
+        dialog.set_range(0, 0)
         dialog.canceled.connect(self._on_export_cancel_requested)
         dialog.show()
         self._export_dialog = dialog
@@ -988,26 +980,26 @@ class MediaPlayer(QMainWindow):
         dialog = self._export_dialog
         if dialog is None:
             return
-        dialog.setRange(0, max(total, 1))
-        dialog.setValue(0)
+        dialog.set_range(0, max(total, 1))
+        dialog.set_value(0)
         if skipped:
-            dialog.setLabelText(
+            dialog.set_message(
                 f"Skipping {skipped} already-written clip(s). "
                 f"Exporting 0 of {total}…"
             )
         else:
-            dialog.setLabelText(f"Clip 1 of {total}…")
+            dialog.set_message(f"Clip 1 of {total}…")
 
     def _on_export_advanced(self, clips_done, total, current):
         dialog = self._export_dialog
         if dialog is None:
             return
         if not current:
-            dialog.setValue(total)
-            dialog.setLabelText(f"Wrote {total} of {total} clip(s).")
+            dialog.set_value(total)
+            dialog.set_message(f"Wrote {total} of {total} clip(s).")
             return
-        dialog.setValue(clips_done)
-        dialog.setLabelText(
+        dialog.set_value(clips_done)
+        dialog.set_message(
             f"Clip {min(clips_done + 1, total)} of {total} — {current}"
         )
 
@@ -1017,10 +1009,7 @@ class MediaPlayer(QMainWindow):
             self._export_cancel.set()
         dialog = self._export_dialog
         if dialog is not None:
-            # The button has already done its job; leaving it looking live is how
-            # a cancel turns into "did that work?".
-            dialog.setCancelButton(None)
-            dialog.setLabelText("Cancelling…")
+            dialog.set_message("Cancelling…")
 
     def _on_export_finished(self, outcome):
         """Log the batch and stash what a resume would need. One code path."""
@@ -1058,7 +1047,6 @@ class MediaPlayer(QMainWindow):
         """
         dialog = self._export_dialog
         if dialog is not None:
-            dialog.reset()
             dialog.deleteLater()
         thread = self._export_thread
         if thread is not None:
@@ -1238,14 +1226,13 @@ def create(app, source):
     media_path = validate_source_video(source)
     log(f"editor working on {media_path}")
 
-    splash = show_splash(app, f"Now loading {os.path.basename(media_path)}…")
+    with LoadingSplash(app, f"Now loading {os.path.basename(media_path)}…") as splash:
+        keyframes = scan_keyframes(media_path)
 
-    keyframes = scan_keyframes(media_path)
-
-    sidecar = sidecar_path(media_path)
-    if not os.path.exists(sidecar):
-        duration = probe_duration(media_path) or 0.0
-        SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
+        sidecar = sidecar_path(media_path)
+        if not os.path.exists(sidecar):
+            duration = probe_duration(media_path) or 0.0
+            SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
 
     # The splash is closed BEFORE MediaPlayer() constructs the mpv player. That
     # hazard was never reproduced -- experiments/mpv_foreground/ ran the splash
@@ -1254,7 +1241,6 @@ def create(app, source):
     # unnecessary, and it is the only thing standing between a driver update
     # and a frozen window. Kept until the packaged build has run on hardware
     # nobody here has tested.
-    splash.close()
     window = MediaPlayer(media_path)
     window.bridge.set_keyframes(keyframes)
     window.segment_model = SegmentModel.load(sidecar_path(media_path))

@@ -1,7 +1,8 @@
 """Universal loading indicator for CPU-intensive work.
 
 Applies to: ``shared/loading.py``, ``main.py``, ``scanner/scanner.py``,
-``editor/editor.py``, ``shared/splash.py``, ``importer/queue.py``.
+``editor/editor.py``, ``shared/splash.py``, ``settings/settings.py``,
+``importer/importrun.py``, ``importer/values.py``.
 
 Provides two interchangeable indicators:
 
@@ -11,11 +12,10 @@ Provides two interchangeable indicators:
   The caller must close it before constructing any mpv-backed widget, per
   invariant 6 in AGENTS.md.
 
-- ``LoadingDialog`` is a modal dialog with a progress bar and an optional
-  cancel button. It is for work running on a worker ``QThread`` where the GUI
-  thread is free (e.g. the editor's batch export, the scanner's full-source
-  blackdetect scan). It stays up for the duration of the task and reports
-  progress via signals.
+- ``LoadingDialog`` is a dialog with a progress bar and an optional cancel link.
+  It is for work running on a worker ``QThread`` where the GUI thread is free
+  (e.g. the editor's batch export, the scanner's full-source blackdetect scan).
+  It stays up for the duration of the task and reports progress via signals.
 
 Both share the same visual language: the commcut banner centered above a
 status message. The goal is that every long-running operation in the app
@@ -26,15 +26,26 @@ Usage (splash):
     with LoadingSplash(app, "Scanning keyframes…") as splash:
         keyframes = scan_keyframes(path)
 
-Usage (dialog):
+Usage (modal dialog, exec):
     dialog = LoadingDialog("Scanning full source…", cancellable=True)
     worker.scanned.connect(dialog.accept)
     worker.failed.connect(lambda reason: (log(reason), dialog.reject()))
+    dialog.canceled.connect(worker.cancel)
     thread.start()
-    if dialog.exec() == QDialog.Accepted:
+    result = dialog.exec()
+    if result == QDialog.Accepted:
         # success
     else:
         # cancelled or failed
+
+Usage (modeless dialog, show):
+    dialog = LoadingDialog("Scanning full source…", cancellable=True, modal=False)
+    worker.scanned.connect(lambda: dialog.deleteLater())
+    worker.failed.connect(lambda reason: (log(reason), dialog.deleteLater()))
+    dialog.canceled.connect(worker.cancel)
+    thread.start()
+    dialog.show()
+    # teardown via deleteLater() when the worker finishes
 """
 
 from __future__ import annotations
@@ -94,13 +105,18 @@ class LoadingSplash:
 
 
 class LoadingDialog(QDialog):
-    """A modal dialog with a progress bar and optional cancel button.
+    """A dialog with a progress bar and optional cancel link.
 
     Mirrors the visual language of the splash — the commcut banner above a
     status message — but adds a progress bar so it can cover a worker
     thread's lifetime and a Cancel link when the operation is cancellable.
 
-    Typical wiring:
+    By default the dialog is modal and meant to be driven with ``exec()``.
+    Pass ``modal=False`` for modeless use: the dialog is shown with ``show()``
+    and stays visible (showing "Cancelling…") while the worker shuts down,
+    matching the pattern of a non-modal progress indicator.
+
+    Typical wiring (modal):
 
     ::
 
@@ -110,15 +126,28 @@ class LoadingDialog(QDialog):
         dialog.canceled.connect(worker.cancel)
         thread.start()
         result = dialog.exec()
+
+    Typical wiring (modeless):
+
+    ::
+
+        dialog = LoadingDialog("Scanning full source…", cancellable=True,
+                               modal=False)
+        worker.scanned.connect(lambda: dialog.deleteLater())
+        worker.failed.connect(lambda r: (log(r), dialog.deleteLater()))
+        dialog.canceled.connect(worker.cancel)
+        thread.start()
+        dialog.show()
     """
 
     #: Standard width, the same as the splash so both feel like the same screen.
     WIDTH = SPLASH_WIDTH
 
-    def __init__(self, message: str, cancellable: bool = False, parent=None):
-        super().__init__(parent, Qt.WindowTitleOnly | Qt.WindowCloseButtonHint)
-        self.setWindowTitle("commcut")
-        self.setModal(True)
+    def __init__(self, message: str, cancellable: bool = False,
+                 parent=None, modal: bool = True, title: str = "commcut"):
+        super().__init__(parent, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.setWindowTitle(title)
+        self.setModal(modal)
         self.setFixedWidth(self.WIDTH)
 
         layout = QVBoxLayout(self)
@@ -164,7 +193,8 @@ class LoadingDialog(QDialog):
     def _on_cancel_clicked(self):
         self.setEnabled(False)
         self.canceled.emit()
-        self.reject()
+        if self.isModal():
+            self.reject()
 
     @property
     def progress_bar(self) -> QProgressBar:

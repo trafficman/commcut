@@ -763,44 +763,32 @@ class FakeSignal:
             slot()
 
 
-class FakeProgressDialog:
-    """The QProgressDialog surface `_on_sync_advanced` and the teardown drive."""
+class FakeLoadingDialog:
+    """The LoadingDialog surface `_on_sync_advanced` and the teardown drive."""
 
     instances = []
 
-    def __init__(self, *args, **kwargs):
-        self.title = ""
-        self.label = ""
-        self.parent = kwargs.get("parent")
-        self.modal = None
-        self.auto_close = None
-        self.auto_reset = None
-        self.minimum_duration = None
+    def __init__(self, message: str = "", cancellable: bool = False,
+                 parent=None, modal: bool = True, title: str = "commcut"):
+        self.message = message
+        self.title = title
+        self.parent = parent
+        self.modal = modal
+        self.cancellable = cancellable
         self.shown = False
         self.deleted = False
         self.canceled = FakeSignal()
-        FakeProgressDialog.instances.append(self)
+        FakeLoadingDialog.instances.append(self)
 
-    def setWindowTitle(self, title):
-        self.title = title
+    @property
+    def label(self):
+        return self.message
 
-    def setLabelText(self, text):
-        self.label = text
+    def set_message(self, text):
+        self.message = text
 
-    def setParent(self, parent):
-        self.parent = parent
-
-    def setModal(self, modal):
-        self.modal = modal
-
-    def setMinimumDuration(self, duration):
-        self.minimum_duration = duration
-
-    def setAutoClose(self, auto):
-        self.auto_close = auto
-
-    def setAutoReset(self, auto):
-        self.auto_reset = auto
+    def set_range(self, minimum, maximum):
+        pass
 
     def show(self):
         self.shown = True
@@ -929,7 +917,7 @@ def sync_harness(qapp, window_factory, monkeypatch, tmp_path):
                         lambda: str(tmp_path / "import"))
     monkeypatch.setattr(settings_module, "QThread", FakeThread)
     monkeypatch.setattr(settings_module, "SyncWorker", FakeSyncWorker)
-    monkeypatch.setattr(settings_module, "QProgressDialog", FakeProgressDialog)
+    monkeypatch.setattr(settings_module, "LoadingDialog", FakeLoadingDialog)
     monkeypatch.setattr(settings_module, "VocabularySyncDialog", RecordedDialog)
 
     class MessageBox:
@@ -945,7 +933,7 @@ def sync_harness(qapp, window_factory, monkeypatch, tmp_path):
             return MessageBox.No
 
     monkeypatch.setattr(settings_module, "QMessageBox", MessageBox)
-    FakeProgressDialog.instances = []
+    FakeLoadingDialog.instances = []
     FakeThread.instances = []
     FakeSyncWorker.instances = []
     RecordedDialog.instances = []
@@ -1181,7 +1169,7 @@ def test_the_run_is_torn_down_and_the_dialog_released(sync_harness):
     assert window._sync_worker is None
     assert window._sync_dialog is None
     assert FakeThread.instances[-1].deleted is True
-    assert FakeProgressDialog.instances[-1].deleted is True
+    assert FakeLoadingDialog.instances[-1].deleted is True
     assert last_dialog().deleted is True
 
 
@@ -1195,21 +1183,20 @@ def test_pressing_the_button_twice_does_not_start_two_runs(sync_harness):
     assert len(FakeThread.instances) == 1
 
 
-def test_the_progress_dialog_is_parentless_and_does_not_auto_close(sync_harness):
+def test_the_progress_dialog_is_parentless_and_non_modal(sync_harness):
     """Parentless so `setEnabled(False)` on the window does not disable the
-    Cancel button, non-modal so the window's own close button still reaches
-    closeEvent, and autoClose off because an indeterminate dialog that reached its
-    maximum would read as a cancel of a sync with nothing to cancel."""
+    Cancel link, and non-modal so the window's own close button still reaches
+    closeEvent. The dialog does not auto-close on its own — that is baked into
+    LoadingDialog's lifecycle, which is driven by the worker thread's finish
+    signal rather than by the value reaching its maximum."""
     window, library, _ = sync_harness
     make_library(library, library_clip())
 
     start_sync(window, library)
 
-    dialog = FakeProgressDialog.instances[-1]
+    dialog = FakeLoadingDialog.instances[-1]
     assert dialog.parent is None
     assert dialog.modal is False
-    assert dialog.auto_close is False
-    assert dialog.auto_reset is False
     assert dialog.shown is True
 
 
@@ -1222,7 +1209,7 @@ def test_progress_is_shown_without_a_total(sync_harness):
 
     start_sync(window, library, run=True)
 
-    dialog = FakeProgressDialog.instances[-1]
+    dialog = FakeLoadingDialog.instances[-1]
     assert "Read 1 clip(s)" in dialog.label
     assert "Second.cnfo" in dialog.label
 

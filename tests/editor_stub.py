@@ -190,63 +190,55 @@ class FakeThread(QThread):
         self.deleted = True
 
 
-class FakeDialog:
-    """The QProgressDialog surface the export handlers drive."""
+class FakeLoadingDialog:
+    """The LoadingDialog surface the export handlers drive."""
 
-    def __init__(self, *args, **kwargs):
-        self.title = ""
-        self.label = ""
+    def __init__(self, message: str = "", cancellable: bool = False,
+                 parent=None, modal: bool = True, title: str = "commcut"):
+        self.message = message
+        self.title = title
+        self.parent = parent
+        self.modal = modal
+        self.cancellable = cancellable
         self.minimum = 0
         self.maximum = 0
         self.value = 0
-        self.cancel_button = "Cancel"
-        self.reset_calls = 0
-        self.deleted = False
         self.shown = False
+        self.deleted = False
+        self.cancel_disabled = False
         self.canceled = FakeSignal()
 
-    def setWindowTitle(self, title):
-        self.title = title
+    @property
+    def progress_bar(self):
+        return self
 
-    def setLabelText(self, text):
-        self.label = text
+    @property
+    def label(self):
+        return self.message
 
-    def setRange(self, minimum, maximum):
+    def set_message(self, text):
+        self.message = text
+
+    def set_range(self, minimum, maximum):
         self.minimum = minimum
         self.maximum = maximum
 
-    def setValue(self, value):
+    def set_value(self, value):
         self.value = value
 
-    def setCancelButtonText(self, text):
-        self.cancel_button = text
-
-    def setCancelButton(self, button):
-        self.cancel_button = button
-
-    def setMinimumDuration(self, _milliseconds):
-        pass
-
-    def setAutoClose(self, _enabled):
-        pass
-
-    def setAutoReset(self, _enabled):
-        pass
-
-    def setWindowModality(self, _modality):
-        pass
+    def setEnabled(self, enabled):
+        if not enabled:
+            self.cancel_disabled = True
 
     def show(self):
         self.shown = True
-
-    def reset(self):
-        self.reset_calls += 1
 
     def deleteLater(self):
         self.deleted = True
 
     def press_cancel(self):
-        """What clicking Cancel does."""
+        """What clicking the Cancel link does."""
+        self.cancel_disabled = True
         self.canceled.emit()
 
 
@@ -403,7 +395,7 @@ class EditorStub:
         self._last_export_outcome = None
         # What the summary screen was shown, what it answered, and the dialogs
         # themselves so a test can assert on their lifecycle. The dialog is the
-        # one substituted widget, for the same reason QProgressDialog is:
+        # one substituted widget, for the same reason LoadingDialog is:
         # exec() would block the run.
         self.summaries_seen = []
         self.summary_dialogs_seen = []

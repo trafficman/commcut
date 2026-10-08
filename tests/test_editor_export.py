@@ -2,7 +2,7 @@
 
 These drive the shipped `MediaPlayer` export methods through `EditorStub`, with
 three things substituted and nothing else: `QThread` (so the batch is
-synchronous and the suite cannot wait on an event loop), `QProgressDialog` (so
+synchronous and the suite cannot wait on an event loop), `LoadingDialog` (so
 the bar's state is inspectable), and `QMessageBox` (so a dialog cannot block
 the run). The one exception is `test_the_gui_thread_is_not_blocked_by_the_batch`,
 which uses a real QThread, because that is the whole point of the change.
@@ -32,8 +32,8 @@ from editor.editor import (
 )
 from editor_stub import (
     EditorStub,
-    FakeDialog,
     FakeExportWorker,
+    FakeLoadingDialog,
     FakeSummaryDialog,
     FakeThread,
     ensure_qapp,
@@ -215,7 +215,7 @@ def export_editor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(editor_module, "QThread", make_thread)
     monkeypatch.setattr(editor_module, "ExportWorker", FakeExportWorker)
-    monkeypatch.setattr(editor_module, "QProgressDialog", FakeDialog)
+    monkeypatch.setattr(editor_module, "LoadingDialog", FakeLoadingDialog)
     monkeypatch.setattr(editor_module, "PROJECT_ROOT", str(tmp_path))
     return editor, threads
 
@@ -431,9 +431,9 @@ def test_cancel_asks_the_worker_to_stop_and_kills_the_button(export_editor, monk
     dialog.press_cancel()
 
     assert editor._export_cancel.is_set()
-    # A Cancel button that stays on screen after it was pressed is how a cancel
+    # A Cancel link that stays active after it was pressed is how a cancel
     # turns into "did that even work?".
-    assert dialog.cancel_button is None
+    assert dialog.cancel_disabled is True
     assert dialog.label == "Cancelling…"
 
 
@@ -908,7 +908,7 @@ plan=ExportPlan(
                for line in lines)
 
 
-def test_the_dialog_is_reset_and_released_when_the_batch_ends(
+def test_the_dialog_is_released_when_the_batch_ends(
     export_editor,
     monkeypatch,
 ):
@@ -922,7 +922,6 @@ def test_the_dialog_is_reset_and_released_when_the_batch_ends(
     run_batch(threads)
 
     assert thread.quit_calls == 1
-    assert dialog.reset_calls == 1
     assert dialog.deleted is True
     assert thread.deleted is True
     assert editor._export_worker is None

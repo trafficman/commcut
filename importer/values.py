@@ -46,11 +46,12 @@ from shared.environment import (
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QProgressDialog
+from PySide6.QtWidgets import QMainWindow, QMessageBox
 
 from shared.catalog import build_catalog, problem_summary
 from shared.diagnostics import log_exception
 from shared.exporting import export_folder
+from shared.loading import LoadingDialog
 from shared.session import shell
 from shared.ui_loader import UiLoader, adopt_title
 from shared.values import (
@@ -454,17 +455,12 @@ class ValuesWindow(QMainWindow):
             self._show_done(0, ())
             return
 
-        progress = QProgressDialog("Rewriting records...", None, 0, 0, self)
-        progress.setWindowTitle("Tagged Library Mesh")
-        progress.setParent(None)
-        progress.setModal(False)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
+        progress = LoadingDialog("Rewriting records...", cancellable=False,
+                                 modal=False, title="Tagged Library Mesh")
         try:
             result = execute_translation(
                 plan,
-                on_progress=lambda done, path: progress.setLabelText(
+                on_progress=lambda done, path: progress.set_message(
                     f"Rewrote {done} record(s)\n{path}"),
             )
         except Exception as error:  # noqa: BLE001 - reported, never raised

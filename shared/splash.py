@@ -1,13 +1,13 @@
-"""The loading splash the scanner and the editor show while they work.
+"""Low-level splash screen building blocks: the banner pixmap and ``show_splash``.
 
-Applies to: `shared/splash.py`, `scanner/scanner.py`, `editor/editor.py`,
-`assets/commcut_banner.png`, `packaging/commcut.spec` (`UI_DATAS`).
+Applies to: `shared/splash.py`, `shared/loading.py` (`LoadingSplash` re-exports
+from here), `assets/commcut_banner.png`, `packaging/commcut.spec` (`UI_DATAS`).
 
-Both windows did this by hand and identically: a filled pixmap, a `QSplashScreen`,
-`showMessage`, `processEvents`, and a `close()` on the far side of a synchronous
-ffprobe call. That is one rule with two copies of it, and a banner on one screen
-and not the other is exactly what two copies produce — so it lives here, and the
-call sites are a single line each.
+The two windows that need a splash — the scanner and the editor — now build one
+through `LoadingSplash` in `shared/loading.py`, which wraps the pixmap painter
+and `processEvents` pump defined here. ``show_splash`` is retained for the
+startup splash in `main.py` and for `tests/test_splash.py`, which measures the
+painted pixels directly.
 
 **The splash is decoration, and it is not allowed to become a dependency.** A
 banner that cannot be read leaves a plain splash and a log line; the window still
@@ -36,7 +36,7 @@ from shared.environment import resource_path
 #: expression resolves the same way frozen and unfrozen.
 BANNER = ("assets", "commcut_banner.png")
 
-#: The splash's size. Unchanged from the pixmap the two call sites filled by
+#: The splash's size. Unchanged from the pixmap the call sites used to fill by
 #: hand, so the window that opens afterwards is not a different size than before.
 SPLASH_WIDTH = 480
 SPLASH_HEIGHT = 270

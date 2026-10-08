@@ -22,10 +22,10 @@ from shared.segments import (
 from scanner.marker_timeline import MarkerTimelineWidget
 from shared.session import OpenInstead, shell
 from shared.sources import validate_source_video
-from shared.splash import show_splash
+from shared.loading import LoadingSplash, LoadingDialog
 from shared.ui_loader import UiLoader, adopt_title
 
-from PySide6.QtWidgets import QMainWindow, QStyle, QProgressDialog, QMessageBox
+from PySide6.QtWidgets import QMainWindow, QStyle, QMessageBox
 from PySide6.QtCore import QFile, QObject, QThread, Signal, Slot
 
 # Seconds of test footage the scanner works on (stream-copied to temp/).
@@ -406,11 +406,9 @@ class ScannerWindow(QMainWindow):
         self._scan_thread = thread
 
         self.setEnabled(False)
-        dialog = QProgressDialog("Scanning full source video…", "Cancel", 0, 0, self)
-        dialog.setWindowTitle("Finished scan")
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
+        dialog = LoadingDialog("Scanning full source video…", cancellable=True,
+                               modal=False, parent=self, title="Finished scan")
+        dialog.set_range(0, 0)
         dialog.canceled.connect(self._on_scan_cancel_requested)
         dialog.show()
         self._scan_dialog = dialog
@@ -428,8 +426,7 @@ class ScannerWindow(QMainWindow):
             self._scan_worker.cancel()
         dialog = self._scan_dialog
         if dialog is not None:
-            dialog.setCancelButton(None)
-            dialog.setLabelText("Cancelling…")
+            dialog.set_message("Cancelling…")
 
     def _on_scan_complete(self, midpoints):
         """Worker finished: write the .cmct, then hand off to the editor.
@@ -456,7 +453,6 @@ class ScannerWindow(QMainWindow):
         """Tear the thread down after it has actually stopped."""
         dialog = self._scan_dialog
         if dialog is not None:
-            dialog.reset()
             dialog.deleteLater()
         thread = self._scan_thread
         if thread is not None:
@@ -582,11 +578,9 @@ def create(app, source):
     # this exact case 20 times with no hang), but closing a splash is three
     # lines and costs nothing when it turns out to be unnecessary, so it stays
     # until the packaged build has run on untested hardware.
-    splash = show_splash(app, f"Loading {os.path.basename(media_path)}…")
+    with LoadingSplash(app, f"Loading {os.path.basename(media_path)}…") as splash:
+        keyframes = scan_keyframes(media_path)
 
-    keyframes = scan_keyframes(media_path)
-
-    splash.close()
     window = ScannerWindow(source_path)
     window.bridge.set_keyframes(keyframes)
     window.resize(1024, 768)
