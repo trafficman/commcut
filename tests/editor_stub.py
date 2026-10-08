@@ -237,7 +237,7 @@ class FakeLoadingDialog:
         self.deleted = True
 
     def press_cancel(self):
-        """What clicking the Cancel link does."""
+        """What clicking the Cancel button does."""
         self.cancel_disabled = True
         self.canceled.emit()
 

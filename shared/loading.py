@@ -53,7 +53,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QLabel, QProgressBar,
-    QSplashScreen, QVBoxLayout,
+    QSplashScreen, QPushButton, QVBoxLayout,
 )
 
 from shared.splash import (
@@ -182,7 +182,21 @@ class LoadingDialog(QDialog):
         layout.addSpacing(12)
 
         if cancellable:
-            self._cancel_link = _CancelLink()
+            self._cancel_link = QPushButton("Cancel")
+            self._cancel_link.setFlat(True)
+            self._cancel_link.setStyleSheet(
+                "QPushButton {"
+                "  color: #0066cc;"
+                "  background: transparent;"
+                "  border: none;"
+                "}"
+                "QPushButton:hover {"
+                "  color: #0055aa;"
+                "}"
+                "QPushButton:disabled {"
+                "  color: #888;"
+                "}"
+            )
             self._cancel_link.clicked.connect(self._on_cancel_clicked)
             layout.addWidget(self._cancel_link, alignment=Qt.AlignHCenter)
         else:
@@ -208,37 +222,3 @@ class LoadingDialog(QDialog):
 
     def set_value(self, value: int):
         self._progress.setValue(int(value))
-
-
-class _CancelLink(QLabel):
-    """A small "Cancel" text link.
-
-    Lighter than a button for a modal dialog — it reads as a link rather than
-    another action button, and matches the app's minimal chrome.
-    """
-
-    clicked = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__("Cancel", parent)
-        self.setTextFormat(Qt.RichText)
-        self.setCursor(Qt.PointingHandCursor)
-        self._refresh(False)
-
-    def _refresh(self, hovered: bool):
-        color = "#0066cc" if hovered else "#333"
-        self.setText(
-            f'<a href="#" style="color:{color};text-decoration:none">Cancel</a>'
-        )
-
-    def enterEvent(self, event):
-        self._refresh(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._refresh(False)
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        self.clicked.emit()
-        super().mousePressEvent(event)
