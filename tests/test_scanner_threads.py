@@ -318,8 +318,8 @@ def test_finished_scan_worker_probes_duration_and_emits_scanned(monkeypatch, qap
     fake_stderr = "[blackdetect @ 0x1] black_start:10.000000 black_end:12.000000\n"
     monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
     monkeypatch.setattr(
-        scanner_module.FinishedScanWorker, "_run_ffmpeg_with_cancel",
-        lambda self, cmd: fake_stderr)
+        scanner_module, "_run_ffmpeg",
+        lambda cmd, should_cancel=None: (0, fake_stderr))
 
     worker = FinishedScanWorker("/source.mp4", min_sec=0.5, pix_th=0.10)
     received = []
@@ -395,8 +395,8 @@ def test_finished_scan_thread_quits_and_tears_down_on_scanned(stub, monkeypatch)
     fake_stderr = "[blackdetect @ 0x1] black_start:10.000000 black_end:12.000000\n"
     monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
     monkeypatch.setattr(
-        scanner_module.FinishedScanWorker, "_run_ffmpeg_with_cancel",
-        lambda self, cmd: fake_stderr)
+        scanner_module, "_run_ffmpeg",
+        lambda cmd, should_cancel=None: (0, fake_stderr))
 
     stub._close_after_worker = False
 
@@ -415,9 +415,10 @@ def test_finished_scan_thread_quits_and_tears_down_on_scanned(stub, monkeypatch)
 def test_finished_scan_thread_quits_and_tears_down_on_failed(stub, monkeypatch):
     """A failed full scan also quits the thread and re-enables the window."""
     monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
-    monkeypatch.setattr(
-        scanner_module.FinishedScanWorker, "_run_ffmpeg_with_cancel",
-        lambda self, cmd: (_ for _ in ()).throw(ExportCancelled()))
+    def raises(cmd, should_cancel=None):
+        raise ExportCancelled()
+
+    monkeypatch.setattr(scanner_module, "_run_ffmpeg", raises)
 
     stub._start_scan("/source.mp4", 0.5, 0.10)
 

@@ -1370,13 +1370,12 @@ def test_the_console_scan_actually_finds_the_app_spawn_sites():
     assert "shared/ffmpeg.py" in found
     assert "shared/mpv.py" in found
     assert "shared/segments.py" in found
-    assert "scanner/scanner.py" in found
-    # mainwindow.py used to be here too, launching the other windows as child
-    # processes; picker/picker.py launched the scanner the same way. Both are
-    # gone or converted, so neither may spawn: a subprocess in a window would
-    # mean the process model is not actually gone. The check names the windows
-    # that exist rather than the one that was deleted, so that adding a window
-    # without thinking about it is a visible gap rather than a silent pass.
+    # scanner/scanner.py used to be here too, spawning ffmpeg and
+    # ffprobe itself; the worker-thread refactor moved every spawn into
+    # the shared helpers above (clip_to_temp, _run_ffmpeg,
+    # scan_keyframes, probe_duration), so the scanner no longer spawns
+    # directly. The modules it delegates to are the ones named here, so
+    # a spawn reappearing in a window module is still a visible gap.
     assert "mainwindow.py" not in found
     assert "settings/settings.py" not in found
     assert "editor/editor.py" not in found
