@@ -13,4 +13,4 @@ suffix -- and a tag is valid when it is ``v`` followed by it. The prefix is a
 tag convention, not part of the version, so it is stripped rather than stored.
 """
 
-VERSION = "0.2.11-alpha"
+VERSION = "0.2.12-alpha"

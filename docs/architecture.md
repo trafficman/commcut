@@ -567,11 +567,20 @@ that records the seek sequence.
 
 ## Splash flow (pre-work before the window appears)
 
-`__main__` in both the editor and the scanner uses `shared/loading.py:LoadingSplash`,
-which wraps the banner pixmap and `processEvents` pump from `shared/splash.py`
-behind a `with` block. The splash shows, then `scan_keyframes` (via ffprobe) runs
-while it's up — typically sub-second for a 2-minute preview. The `with` block ends
-before any mpv-backed widget is constructed, closing the splash first (invariant 6).
+`__main__` in the editor uses `shared/loading.py:LoadingSplash`, which wraps
+the banner pixmap and `processEvents` pump from `shared/splash.py` behind a
+`with` block. The splash shows while the editor pre-loads its video, then the
+`with` block ends before any mpv-backed widget is constructed, closing the
+splash first (invariant 6).
+
+The scanner pre-scan is different: it runs off the GUI thread.
+`scanner.create()` builds the preview clip and scans keyframes on
+`ScannerPreScanWorker` (a `QThread`), behind a modal `LoadingDialog.exec()`
+in `shared/loading.py`. `exec()` blocks `create()` synchronously — preserving
+the shell's contract that `create()` returns the window — while pumping the
+event loop so the worker runs. The dialog closes before `ScannerWindow` is
+constructed, so no top-level window is foreground when the mpv player is built
+(the splash/mpv hazard that invariant 6 guards against).
 
 The startup splash in `main.py` uses `shared/splash.py:show_splash` directly —
 that one is outside any window constructor and has no mpv widget to race.
@@ -579,7 +588,8 @@ that one is outside any window constructor and has no mpv widget to race.
 Both windows used to build their splash by hand and identically — a filled
 pixmap, a `QSplashScreen`, `showMessage`, `processEvents`, `close()` — which is
 one rule with two copies of it, and a banner on one screen and not the other is
-exactly what two copies produce. `LoadingSplash` is the one copy.
+exactly what two copies produce. `LoadingSplash` is the one copy for the editor;
+the scanner uses `LoadingDialog` for its modal worker.
 
 Three decisions inside it are worth stating:
 

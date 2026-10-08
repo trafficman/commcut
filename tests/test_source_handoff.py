@@ -42,6 +42,10 @@ def test_the_scanner_window_takes_its_source_as_an_argument():
     parameters = list(inspect.signature(ScannerWindow.__init__).parameters)
 
     assert parameters[:2] == ["self", "source_path"]
+    # The preview clip and keyframe list are now built on a worker thread in
+    # create() and passed to the constructor, rather than ScannerWindow building
+    # its own preview via clip_to_temp.
+    assert parameters[2:4] == ["clip_path", "keyframes"]
 
 
 @pytest.mark.parametrize("module_name,builder_name", [

@@ -36,18 +36,28 @@ Related: [architecture.md](architecture.md), [segment-model.md](segment-model.md
   transport + frame/keyframe stepping, Place Boundary + Undo on the User Marked
   timeline (in-memory, no `.cmct`), and two marker timelines driven by the
   bridge.
+- Pre-scan runs off the GUI thread: `ScannerPreScanWorker` does the stream
+  copy and ffprobe keyframe scan behind a modal `LoadingDialog.exec()` in
+  `create()`, so the splash/mpv hazard is avoided (the dialog closes before
+  `ScannerWindow` constructs its player).
 - Automated boundary detection (Test Scan): `ffmpeg blackdetect` on the
-  2-minute preview, slider-mapped to `d = frames / fps` and
-  `pix_th = level / 100`; skips `black_end:N/A` runs; stamps one midpoint
-  `(T1 + T2) / 2` per black run into the upper Scanner Preview timeline.
+  2-minute preview via `TestScanWorker`, off the GUI thread; slider-mapped to
+  `d = frames / fps` and `pix_th = level / 100`; skips
+  `black_end:N/A` runs; stamps one midpoint `(T1 + T2) / 2` per black run into
+  the upper Scanner Preview timeline.
 - Finished (full-source scan): the same detector run against the full source
-  video (not the 2-minute preview); midpoint boundaries are written as `.cmct`
+  video (not the 2-minute preview) via `FinishedScanWorker`, off the GUI
+  thread; `probe_duration` runs inside the worker so duration detection is not
+  on the main thread either; midpoint boundaries are written as `.cmct`
   segment starts via `SegmentModel` and the Video Editor is launched
   automatically.
 - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the scanner
   launches the editor and exits, so an existing `.cmct` is never overwritten (the
-  source used is `shared.segments.source_video_path()`, the single definition
-  both the scanner and the editor go through).
+  source used is the one handed to the scanner by the menu or a drop, not a
+  re-resolved default).
+- `closeEvent` refuses to close while either thread is active (`_scan_thread`
+  or `_test_scan_thread`), cancelling both on Yes and closing once both have
+  stopped.
 
 Detail in [scanner.md](scanner.md).
 
@@ -378,9 +388,6 @@ The full vision in `README.md` has three pieces; two are not started:
   per-clip failure recoverable: the preflight refuses a destination that exists,
   so a retry needs the clips the run already wrote skipped — see
   [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
-  The remaining threading work is the scanner's
-  `scan_keyframes` pre-pass, which is still called inline from `__main__` in
-  `editor/editor.py` (the `PreScanWorker` next to it is scaffolding, unwired).
 - The boundary peek has no settings toggle; it is always on at 15 frames /
   450ms.
 - `End Seg` only works forward. Moving the *previous* segment's end back to the

@@ -883,9 +883,8 @@ def test_two_sources_with_the_same_name_get_different_previews(tmp_path,
     different boundaries, and keying the preview on the basename alone gave them
     one file. Previously masked by `scanner.create()` clearing `temp/` before
     every run and only one scanner existing at a time — which is a precondition
-    this function never stated and `ScannerWindow.__init__` did not honour, since
-    it builds a second preview for the same source and relies on the name
-    agreeing.
+    this function never stated and `create()` no longer relies on, since the
+    preview is built once in the pre-scan worker and passed to ScannerWindow.
     """
     from shared.ffmpeg import clip_to_temp
 
@@ -903,8 +902,8 @@ def test_two_sources_with_the_same_name_get_different_previews(tmp_path,
 
 def test_the_same_source_gets_the_same_preview_name(tmp_path, monkeypatch):
     """The other half, and the one that would break if the digest were taken
-    from anything volatile: the scanner and its window both build a preview for
-    one source and they have to land on the same file."""
+    from anything volatile: ``create()`` builds a preview for one source and
+    passes it to ScannerWindow, so the name must be deterministic across calls."""
     from shared.ffmpeg import clip_to_temp
 
     _fake_ffmpeg(monkeypatch, tmp_path)
