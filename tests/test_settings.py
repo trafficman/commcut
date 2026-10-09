@@ -13,6 +13,7 @@ import settings.settings as settings_module
 from shared import environment, exporting
 from shared.paths import DEFAULT_FOLDER_SCHEME
 from shared.records import ClipRecord, write_record
+from shared.version import VERSION
 from shared.vocabulary import (
     DEFAULT_VALUES,
     Vocabulary,
@@ -298,6 +299,22 @@ def test_malformed_stored_folder_scheme_disables_only_folder_editor(
     assert not window.ui.lineEditFolderScheme.isEnabled()
     assert window.ui.lineEditFolderPreview.text() == ""
     assert messages
+
+
+# ---------------------------------------------------------------------------
+# The version label
+# ---------------------------------------------------------------------------
+
+def test_the_version_is_shown_at_the_top_of_the_window(window_factory):
+    """The version is how a user tells whether they are current, so it is
+    on screen rather than only in the archive's filename -- and it is set
+    from `shared/version.py`, the one owner the release tag is checked
+    against, rather than a second copy of the number baked into the `.ui`."""
+    window = window_factory(base_settings())
+
+    assert window.ui.labelVersion.text() == f"commcut v{VERSION}"
+    assert window.ui.verticalLayout_2.itemAt(0).widget() \
+        is window.ui.labelVersion
 
 
 # ---------------------------------------------------------------------------

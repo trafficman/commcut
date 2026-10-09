@@ -59,6 +59,7 @@ from shared.paths import (
     render_folder_components,
 )
 from shared.ui_loader import UiLoader, adopt_title
+from shared.version import VERSION
 from shared.vocabulary import get_vocabulary, vocabulary_path
 
 DEFAULT_FILE_SCHEME = DEFAULT_FILE_NAMING_SCHEME
@@ -341,6 +342,7 @@ class SettingsWindow(QMainWindow):
                 f"Failed to load the settings UI: {ui_file.fileName()}")
         adopt_title(self, self.ui)
         self.setCentralWidget(self.ui)
+        self.ui.labelVersion.setText(f"commcut v{VERSION}")
 
         try:
             settings = self._read_settings()

@@ -590,10 +590,16 @@ editor for folder schemes:
   destroys stays inside the program root where a single mis-click cannot reach
   it. A **source video** is not a folder choice either — the main menu's file
   dialog takes any video from anywhere.
-  `tests/test_settings.py::test_the_import_folder_has_no_row_and_the_export_folder_does`
-  guards both halves, because the mistake is symmetric: a leftover disabled row
-  reads as "coming soon", and a re-enabled export row in the `.ui` alone would
-  imply a setting nothing saves.
+   `tests/test_settings.py::test_the_import_folder_has_no_row_and_the_export_folder_does`
+   guards both halves, because the mistake is symmetric: a leftover disabled row
+   reads as "coming soon", and a re-enabled export row in the `.ui` alone would
+   imply a setting nothing saves.
+- The window shows the running version at the top (`labelVersion`), set
+  from `shared/version.py:VERSION` — the same single owner the release
+  tag is checked against — so a user can tell whether they are current
+  without reading the folder the app lives in. The `.ui` places the
+  label; the text is set in code, so the number has no second copy to
+  drift.
 
 ## Coverage
 
