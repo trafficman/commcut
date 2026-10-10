@@ -90,6 +90,7 @@ state.
 | `test_editor_required_tags.py` | front-end enforcement of the four required fields, including refusal to write |
 | `test_end_boundary.py` | `place_end_boundary` — insert vs. move, and the refusal guards |
 | `test_timeline_zoom.py` | zoom state surviving a resize, and the editor toggle agreeing with the widget |
+| `test_marker_timeline.py` | the scanner's marker timelines: the empty-state track (the grey band that makes an empty timeline read as a timeline), its geometry matching the editor's segment band, and the markers and playhead drawing over it |
 | `test_sources.py` | which videos may be opened: a real video from any folder is accepted, a missing file / a folder / a non-video is refused in words, and the writable-folder rule behind the `.cmct` written beside the source — including the probe itself |
 | `test_source_handoff.py` | the chosen source surviving every window-to-window hand-off, and both builders requiring it |
 | `test_main_window.py` | the main menu: the native file dialog (filter, native-ness, cancel), the drop target (what a drag accepts, which file in a multi-file drop wins, the refusals, and the not-a-local-file case), the launcher, and the failure paths |

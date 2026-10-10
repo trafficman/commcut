@@ -57,10 +57,15 @@ span that runs to the end of the clip) are skipped, since there is no boundary
 to take a midpoint of. Previous markers are cleared first so re-scanning reflects
 the current slider settings.
 
-The two timelines are separate on purpose: scanner-detected markers land on
-the upper timeline, and the user's own Place Boundary presses land on the
-lower **User Marked** timeline, which is in-memory only — no `.cmct` is
+The two timelines are separate on purpose: scanner-detected markers land
+on the upper timeline, and the user's own Place Boundary presses land on
+the lower **User Marked** timeline, which is in-memory only — no `.cmct` is
 written until Finished.
+
+Both timelines paint a grey track (`TRACK_COLOR` in
+`scanner/marker_timeline.py`) in the band the editor's segment rectangles
+occupy, so they read as timelines even while empty — before a Test Scan
+or a Place Boundary press, the track is all that is on them.
 
 ## Finished, and the hand-off to the editor
 

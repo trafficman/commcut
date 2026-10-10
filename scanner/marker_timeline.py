@@ -8,13 +8,22 @@ MARKER_COLOR = QColor(220, 220, 220)
 PLAYHEAD_COLOR = QColor(230, 80, 80)
 BACKGROUND_COLOR = QColor(30, 30, 30)
 
+# The empty track behind the markers, so the widget reads as a
+# timeline before anything is on it. It fills the same band the
+# editor's segment rectangles occupy (shared/timeline.py draws them
+# TRACK_INSET from each edge), so the two timelines share one look.
+TRACK_COLOR = QColor(60, 60, 60)
+TRACK_INSET = 10
+
 
 class MarkerTimelineWidget(QWidget):
     """A simple timeline that draws a playhead and vertical lines at marker times.
 
-    Unlike the editor's TimelineWidget, this has no zoom/scroll state and no
-    segment rendering — the full duration is always mapped to the widget width.
-    Clicking seeks the playhead.
+    A grey track fills the band the editor's segment rectangles occupy,
+    so the widget reads as a timeline even while it is empty. Unlike
+    the editor's TimelineWidget, this has no zoom/scroll state and no
+    segment rendering — the full duration is always mapped to the
+    widget width. Clicking seeks the playhead.
     """
 
     seekRequested = Signal(float)
@@ -87,6 +96,9 @@ class MarkerTimelineWidget(QWidget):
         height = self.height()
 
         painter.fillRect(0, 0, width, height, BACKGROUND_COLOR)
+
+        painter.fillRect(
+            0, TRACK_INSET, width, height - 2 * TRACK_INSET, TRACK_COLOR)
 
         if self.duration <= 0:
             return
