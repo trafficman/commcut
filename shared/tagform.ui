@@ -36,8 +36,11 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Required, the title of the clip, unique, and should be descriptive enough to tell what the clip is at a glance</string>
+       </property>
        <property name="text">
-        <string>Title</string>
+        <string>Title*</string>
        </property>
       </widget>
      </item>
@@ -52,8 +55,11 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Filler Type, required, the category of this particular filler clip</string>
+       </property>
        <property name="text">
-        <string>Type</string>
+        <string>Type*</string>
        </property>
       </widget>
      </item>
@@ -78,6 +84,9 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Lock the currently entered tag: It will be carried forward so you don't have to retype it</string>
+       </property>
        <property name="text">
         <string>Lock/Unlock</string>
        </property>
@@ -94,8 +103,11 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Required, the television network which this filler clip aired on/you want it to appear on, I assign non-network specific commercials to &quot;General&quot;</string>
+       </property>
        <property name="text">
-        <string>Network</string>
+        <string>Network*</string>
        </property>
       </widget>
      </item>
@@ -136,8 +148,11 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Required, the time period (&quot;80s&quot; vs &quot;90s&quot;) or era (&quot;CN City&quot; vs &quot;Powerhouse&quot;) in which this filler aired, I use 5 year time periods</string>
+       </property>
        <property name="text">
-        <string>Time Period</string>
+        <string>Time Period*</string>
        </property>
       </widget>
      </item>
@@ -177,6 +192,9 @@
          <width>80</width>
          <height>16777215</height>
         </size>
+       </property>
+       <property name="toolTip">
+        <string>Optional, the year this filler clip aired, prime candidate for being locked</string>
        </property>
        <property name="text">
         <string>Year</string>
@@ -220,6 +238,9 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Optional, the programming block this filler clip aired in (e.g. &quot;Toonami&quot;, &quot;Cartoon Cartoon Fridays&quot;)</string>
+       </property>
        <property name="text">
         <string>Block</string>
        </property>
@@ -261,6 +282,9 @@
          <width>80</width>
          <height>16777215</height>
         </size>
+       </property>
+       <property name="toolTip">
+        <string>Optional, the show this filler clip is tied to, I recommend you only use this if it is schedule-tied to the show (i.e. a show Intro, a Be Right Back, etc, NOT just a Promo about the show)</string>
        </property>
        <property name="text">
         <string>Show</string>
@@ -304,6 +328,9 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Optional, this could be any number of organizational things, eg Holiday, Target Demographic (I use it on General Commercials for &quot;Kids&quot; vs &quot;Everyone&quot; vs &quot;Mature&quot;), etc</string>
+       </property>
        <property name="text">
         <string>Special</string>
        </property>
@@ -346,6 +373,9 @@
          <height>16777215</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Optional, the length of the filler clip, should ONLY be used when differentiation between clips is needed, e.g. two of the same promos but one is 60 Sec and the other is a 30 Sec</string>
+       </property>
        <property name="text">
         <string>Length</string>
        </property>
@@ -387,6 +417,9 @@
          <width>80</width>
          <height>16777215</height>
         </size>
+       </property>
+       <property name="toolTip">
+        <string>Optional, denotes something about a file, e.g. Upscale, Remastered, Low Quality, Left Only Audio, etc</string>
        </property>
        <property name="text">
         <string>Information</string>

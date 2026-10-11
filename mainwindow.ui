@@ -68,7 +68,7 @@
         <string>Scan a source video for clip boundaries, then edit and tag the resulting segments. A video can also be dropped on this window.</string>
        </property>
        <property name="text">
-        <string>Editor</string>
+        <string>Video Editor</string>
        </property>
       </widget>
      </item>
@@ -105,7 +105,7 @@
      <item>
       <widget class="QPushButton" name="importButton">
        <property name="text">
-        <string>Import</string>
+        <string>Library Import</string>
        </property>
       </widget>
      </item>

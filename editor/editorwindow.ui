@@ -59,6 +59,9 @@
       <layout class="QHBoxLayout" name="timelineControls">
        <item>
         <widget class="QCheckBox" name="clipIgnore">
+         <property name="toolTip">
+          <string>Mark the current segment to be Skipped/ignored, it will be excluded from Export</string>
+         </property>
          <property name="text">
           <string>Skip Cur Seg</string>
          </property>
@@ -69,6 +72,9 @@
        </item>
        <item>
         <widget class="QPushButton" name="clipStart">
+         <property name="toolTip">
+          <string>Used to quickly cut out part of the video: places a boundary to split the Active Segment, the left side will be Skipped, the right will stay Active</string>
+         </property>
          <property name="text">
           <string>Start Seg</string>
          </property>
@@ -143,6 +149,9 @@
        </item>
        <item>
         <widget class="QPushButton" name="clipEnd">
+         <property name="toolTip">
+          <string>Used to mark the end of the current clip: Inside the Active Segment, places a new boundary which splits it in two. Outside of the Active Segment, shifts the endpoint to the right.</string>
+         </property>
          <property name="text">
           <string>End Seg</string>
          </property>
@@ -150,6 +159,9 @@
        </item>
        <item>
         <widget class="QPushButton" name="mergeNext">
+         <property name="toolTip">
+          <string>Used to delete Segment Scanner false positives: Merge the next segment with the Active Segment</string>
+         </property>
          <property name="text">
           <string>Add Next Seg</string>
          </property>
@@ -161,6 +173,9 @@
       <layout class="QHBoxLayout" name="segmentControls">
        <item>
         <widget class="QPushButton" name="activeLeft">
+         <property name="toolTip">
+          <string>Move the Active Segment to the left</string>
+         </property>
          <property name="text">
           <string>&lt; Active Left</string>
          </property>
@@ -168,8 +183,11 @@
        </item>
        <item>
         <widget class="QPushButton" name="undoButton">
+         <property name="toolTip">
+          <string>Undo all unstaged changes, reverts to the last time you pressed Stage</string>
+         </property>
          <property name="text">
-          <string>Undo</string>
+          <string>Revert Unstaged</string>
          </property>
          <property name="checkable">
           <bool>true</bool>
@@ -178,6 +196,9 @@
        </item>
        <item>
         <widget class="QPushButton" name="stageButton">
+         <property name="toolTip">
+          <string>This clip is done: reviewed/edited and tagged, stage it and advance to the next segment</string>
+         </property>
          <property name="text">
           <string>Stage</string>
          </property>
@@ -188,6 +209,9 @@
        </item>
        <item>
         <widget class="QPushButton" name="activeRight">
+         <property name="toolTip">
+          <string>Move the Active Segment to the right</string>
+         </property>
          <property name="text">
           <string>Active Right &gt;</string>
          </property>
@@ -204,6 +228,9 @@
      </item>
      <item>
       <widget class="QPushButton" name="exportButton">
+       <property name="toolTip">
+        <string>Every segment accurately marks one clip and is properly tagged, Export them to the export folder</string>
+       </property>
        <property name="text">
         <string>Finished - Export</string>
        </property>

@@ -113,7 +113,7 @@
          </size>
         </property>
         <property name="toolTip">
-         <string>Drag across the part of the name that is the clip's title.</string>
+         <string>Drag across the part of the file name that is the clip's title.</string>
         </property>
         <property name="readOnly">
          <bool>true</bool>
@@ -138,7 +138,7 @@
         <item>
          <widget class="QPushButton" name="buttonManageRules">
           <property name="toolTip">
-           <string>Teach commcut that a piece of a file name means a tag, so it fills that tag in for you from now on.</string>
+           <string>Teach CommCut that a piece of a file name means a tag, so it fills that tag in for you from now on.</string>
           </property>
           <property name="text">
            <string>Manage Autofill Rules</string>

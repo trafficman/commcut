@@ -25,11 +25,11 @@
    </property>
    <item>
     <widget class="QLabel" name="labelTitle">
-     <property name="text">
-      <string>Tagged Library Mesh</string>
-     </property>
      <property name="styleSheet">
       <string notr="true">font-weight: bold;</string>
+     </property>
+     <property name="text">
+      <string>Tagged Library Mesh</string>
      </property>
     </widget>
    </item>
@@ -45,17 +45,17 @@
    </item>
    <item>
     <widget class="QLabel" name="labelQuestion">
+     <property name="frameShape">
+      <enum>QFrame::Shape::StyledPanel</enum>
+     </property>
      <property name="text">
       <string/>
-     </property>
-     <property name="wordWrap">
-      <bool>true</bool>
      </property>
      <property name="textFormat">
       <enum>Qt::TextFormat::RichText</enum>
      </property>
-     <property name="frameShape">
-      <enum>QFrame::Shape::StyledPanel</enum>
+     <property name="wordWrap">
+      <bool>true</bool>
      </property>
      <property name="margin">
       <number>6</number>
@@ -73,14 +73,14 @@
      </item>
      <item>
       <widget class="QComboBox" name="comboValue">
+       <property name="toolTip">
+        <string>The value your library should use for this tag. Pick one it already has, or type one of your own. Leaving it empty is not an answer — use Remove This Tag for that.</string>
+       </property>
        <property name="editable">
         <bool>true</bool>
        </property>
        <property name="insertPolicy">
         <enum>QComboBox::InsertPolicy::NoInsert</enum>
-       </property>
-       <property name="toolTip">
-        <string>The value your library should use for this tag. Pick one it already has, or type one of your own. Leaving it empty is not an answer — use Remove This Tag for that.</string>
        </property>
       </widget>
      </item>
@@ -115,7 +115,7 @@
      <item>
       <widget class="QPushButton" name="buttonKeep">
        <property name="toolTip">
-        <string>Your library already calls it this. Nothing is written for it.</string>
+        <string>Your library already calls it this, it doesn't need to be modified.</string>
        </property>
        <property name="text">
         <string>Keep As It Is</string>
@@ -125,7 +125,7 @@
      <item>
       <widget class="QPushButton" name="buttonDelete">
        <property name="toolTip">
-        <string>Your library has no equivalent for this tag, so it is removed from every clip that carries it. A clip left without a tag it needs will be sent to the Tag Editor.</string>
+        <string>Your library has no equivalent for this tag and you don't want to add it, so it is removed from every clip that carries it. A clip left without a required tag will be sent to the Tag Editor.</string>
        </property>
        <property name="text">
         <string>Remove This Tag</string>
@@ -169,11 +169,11 @@
    </item>
    <item>
     <widget class="QPlainTextEdit" name="textReport">
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
      <property name="visible">
       <bool>false</bool>
+     </property>
+     <property name="readOnly">
+      <bool>true</bool>
      </property>
     </widget>
    </item>
