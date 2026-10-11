@@ -4,8 +4,9 @@ Applies to: `shared/records.py`, `shared/naming.py`, `shared/exporting.py`,
 `shared/ffmpeg.py`.
 
 Every clip commcut exports gets a ``<stem>.cnfo`` beside its ``<stem>.mp4``. The
-record holds the clip's tags and the segment it was cut from; the filename and
-folder are a *projection* of those tags under the two schemes. That direction is
+record holds the clip's tags, the segment it was cut from, and the
+clip's own ID; the filename and folder are a *projection* of those
+tags under the two schemes. That direction is
 one-way on purpose. Sanitation, fallback expressions and OR groups all make
 rendering lossy, so nothing can recover a tag from a path. Whatever needs a
 clip's tags reads the record.
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -35,7 +37,7 @@ from shared.scheme import canonical_tag_name
 RECORD_EXTENSION = ".cnfo"
 
 #: The schema this module writes, and the newest one it can read.
-RECORD_SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 2
 
 #: The root element. Renaming it is a schema change.
 RECORD_ROOT_TAG = "commcut-clip"
@@ -118,6 +120,27 @@ def record_error_reason(error: RecordError) -> str:
     return REASON_INVALID
 
 
+def _is_canonical_clip_id(value: str) -> bool:
+    """Whether `value` is a UUID in exactly the form `str(uuid.UUID())`
+    hands back.
+
+    One expression rejects every other spelling -- uppercase, braces,
+    no hyphens, the `urn:` prefix -- because each of those parses to a
+    UUID whose canonical string differs from the input. The UUID's own
+    version nibble is deliberately *not* checked: the generator emits
+    v4, and the format guarantees a shape, not a particular version.
+    """
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def new_clip_id() -> str:
+    """A fresh clip ID: a UUID v4 in its canonical string form."""
+    return str(uuid.uuid4())
+
+
 @dataclass(frozen=True)
 class ClipRecord:
     """One exported clip's tags and provenance, as the record stores them.
@@ -133,6 +156,11 @@ class ClipRecord:
     start: float
     duration: float
     tags: tuple[tuple[str, str], ...]
+    #: The clip's own identity, as a canonical UUID string. Empty means
+    #: "unidentified", which is the state of a record read from a v1
+    #: document; every writer assigns one, so an empty ID never reaches
+    #: `render_record_xml`.
+    clip_id: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.source, str) or not self.source:
@@ -147,6 +175,10 @@ class ClipRecord:
                 raise RecordError(f"A clip record needs a numeric {field_name}")
         if not isinstance(self.tags, tuple):
             raise RecordError("A clip record's tags must be a tuple of pairs")
+        if not isinstance(self.clip_id, str):
+            raise RecordError("A clip record's clip ID must be a string")
+        if self.clip_id and not _is_canonical_clip_id(self.clip_id):
+            raise RecordError(f"{self.clip_id!r} is not a canonical clip ID")
 
         seen: set[str] = set()
         for pair in self.tags:
@@ -210,9 +242,16 @@ def render_record_xml(record: ClipRecord) -> str:
     deterministic, diffs readably, and two records of the same clip render
     identically. A missing tag and an empty one mean the same thing here, so
     dropping the empty case loses nothing.
+
+    Refuses a record with no clip ID: an empty one is the state of a v1
+    record read from disk, and writing it back out would publish a v2
+    document that cannot be read again. Every writer assigns an ID, so
+    this failing means a construction site forgot to.
     """
     if not isinstance(record, ClipRecord):
         raise TypeError("record must be a ClipRecord")
+    if not record.clip_id:
+        raise RecordError("A clip record needs a clip ID to be rendered")
 
     root = ET.Element(RECORD_ROOT_TAG, {"version": str(RECORD_SCHEMA_VERSION)})
     ET.SubElement(root, "source").text = record.source
@@ -225,6 +264,7 @@ def render_record_xml(record: ClipRecord) -> str:
             "duration": repr(float(record.duration)),
         },
     )
+    ET.SubElement(root, "clip_id").text = record.clip_id
     for key, value in sorted(record.tags):
         if not value:
             continue
@@ -274,10 +314,11 @@ def parse_record_xml(text: str) -> ClipRecord:
         raise RecordError(
             f"Record root is {root.tag!r}, expected {RECORD_ROOT_TAG!r}"
         )
-    _parse_version(root)
+    version = _parse_version(root)
 
     source = None
     segment: tuple[int, float, float] | None = None
+    clip_id: str | None = None
     tags: list[tuple[str, str]] = []
 
     for element in root:
@@ -294,6 +335,15 @@ def parse_record_xml(text: str) -> ClipRecord:
                 raise RecordError(
                     "A record's <segment> needs numeric index, start and duration"
                 ) from None
+        elif element.tag == "clip_id":
+            if version < 2:
+                # The element did not exist in the first schema, so a v1
+                # document carrying one is holding something this format
+                # never wrote -- the same wall as any other stranger.
+                raise RecordError(
+                    f"Record holds an unrecognized element {element.tag!r}"
+                )
+            clip_id = element.text or ""
         elif element.tag == "tag":
             key = element.get("key")
             if key is None or canonical_tag_name(key) is None:
@@ -309,12 +359,18 @@ def parse_record_xml(text: str) -> ClipRecord:
         raise RecordError("A record needs a <source> element")
     if segment is None:
         raise RecordError("A record needs a <segment> element")
+    if version < 2:
+        # A first-schema record predates the ID and reads as unidentified.
+        clip_id = ""
+    elif not clip_id:
+        raise RecordError("A version 2 record needs a <clip_id> element")
     return ClipRecord(
         source=source,
         segment_index=segment[0],
         start=segment[1],
         duration=segment[2],
         tags=tuple(sorted(tags)),
+        clip_id=clip_id,
     )
 
 

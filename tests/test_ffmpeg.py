@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -566,16 +567,21 @@ def test_a_successful_export_writes_a_record_beside_every_clip(
 
     execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
 
-    record = load_record(str(root / "Network" / "Promo" / "2000s" / "First.cnfo"))
-    assert record.tag_dict == {
+    first = load_record(str(root / "Network" / "Promo" / "2000s" / "First.cnfo"))
+    second = load_record(str(root / "Network" / "Promo" / "2000s" / "Second.cnfo"))
+    assert first.tag_dict == {
         "filler_type": "Promo",
         "network": "Cartoon Network",
         "time_period": "2000s",
         "title": "Toonami Worlds Finest",
     }
-    assert record.source == "source.mp4"
-    assert (record.segment_index, record.start, record.duration) == (0, 0.0, 4.5)
-    assert (root / "Network" / "Promo" / "2000s" / "Second.cnfo").exists()
+    assert first.source == "source.mp4"
+    assert (first.segment_index, first.start, first.duration) == (0, 0.0, 4.5)
+    for record in (first, second):
+        assert str(uuid.UUID(record.clip_id)) == record.clip_id, (
+            "every exported clip is identified, in the canonical form")
+    assert first.clip_id != second.clip_id, (
+        "one ID per clip: two clips in one batch are still two clips")
 
 
 def test_a_clip_the_encoder_failed_leaves_no_record(

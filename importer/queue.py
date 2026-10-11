@@ -81,6 +81,7 @@ from shared.records import (
     RECORD_EXTENSION,
     ClipRecord,
     load_record,
+    new_clip_id,
     write_record,
 )
 from shared.segments import probe_duration
@@ -171,6 +172,7 @@ class QueueClip:
             start=0.0,
             duration=float(self.duration or 0.0),
             tags=tuple(sorted(tags.items())),
+            clip_id=new_clip_id(),
         )
         write_record(_record_path(self.path), record)
 

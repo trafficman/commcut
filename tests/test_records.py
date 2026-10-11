@@ -1,6 +1,8 @@
 """Tests for the clip record: its format, its reader, and how it is published."""
 
 import os
+import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -16,11 +18,17 @@ from shared.records import (
     ClipRecord,
     RecordError,
     load_record,
+    new_clip_id,
     parse_record_xml,
     record_error_reason,
     render_record_xml,
     write_record,
 )
+
+#: One fixed ID, so records built in tests compare equal to the records
+#: their own rendering reads back as. It carries hex letters on purpose:
+#: a digits-only UUID would make the uppercase-spelling tests vacuous.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
 
 
 def make_record(**overrides):
@@ -34,6 +42,7 @@ def make_record(**overrides):
             ("network", "Cartoon Network"),
             ("title", "Worlds Finest"),
         ),
+        "clip_id": TEST_CLIP_ID,
     }
     values.update(overrides)
     return ClipRecord(**values)
@@ -124,6 +133,97 @@ def test_a_record_with_no_tags_is_still_a_record():
 
 
 # ---------------------------------------------------------------------------
+# The clip ID
+# ---------------------------------------------------------------------------
+
+def test_the_clip_id_survives_the_round_trip():
+    """The ID is part of the record, so reading back what was written
+    has to hand back the same one."""
+    record = make_record()
+
+    assert parse_record_xml(render_record_xml(record)).clip_id == TEST_CLIP_ID
+
+
+def test_new_clip_id_is_a_canonical_v4_uuid():
+    clip_id = new_clip_id()
+
+    assert str(uuid.UUID(clip_id)) == clip_id
+    assert uuid.UUID(clip_id).version == 4
+
+
+def test_a_first_schema_document_reads_as_unidentified():
+    """A v1 record has no ID, and reads as the empty one -- not as an
+    error, because v1 is readable forever."""
+    document = (
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+        '<tag key="title">A</tag></commcut-clip>'
+    )
+
+    assert parse_record_xml(document).clip_id == ""
+
+
+def test_a_first_schema_document_with_a_clip_id_is_refused():
+    """The element did not exist in the first schema, so a v1 document
+    carrying one holds something this format never wrote."""
+    document = (
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+        f"<clip_id>{TEST_CLIP_ID}</clip_id></commcut-clip>"
+    )
+
+    with pytest.raises(RecordError, match="unrecognized element"):
+        parse_record_xml(document)
+
+
+@pytest.mark.parametrize("clip_id_element", [
+    None,
+    "<clip_id />",
+    "<clip_id></clip_id>",
+    "<clip_id>not-a-uuid</clip_id>",
+    f"<clip_id>{TEST_CLIP_ID.upper()}</clip_id>",
+    f"<clip_id>{{{TEST_CLIP_ID}}}</clip_id>",
+    f"<clip_id>{TEST_CLIP_ID.replace('-', '')}</clip_id>",
+    f"<clip_id>urn:uuid:{TEST_CLIP_ID}</clip_id>",
+])
+def test_a_second_schema_document_without_a_usable_clip_id_is_refused(
+        clip_id_element):
+    """A v2 record must carry one canonical ID: missing, empty or
+    spelled some other way, it is a record this build cannot trust."""
+    document = (
+        '<commcut-clip version="2"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+    )
+    if clip_id_element is not None:
+        document += clip_id_element
+    document += "</commcut-clip>"
+
+    with pytest.raises(RecordError):
+        parse_record_xml(document)
+
+
+def test_rendering_a_record_with_no_clip_id_is_refused():
+    """An empty ID is the state of a v1 record read from disk; writing
+    it back out would publish a v2 document that cannot be read again."""
+    with pytest.raises(RecordError, match="clip ID"):
+        render_record_xml(make_record(clip_id=""))
+
+
+@pytest.mark.parametrize("value", [
+    "not-a-uuid",
+    TEST_CLIP_ID.upper(),
+    "{" + TEST_CLIP_ID + "}",
+    TEST_CLIP_ID.replace("-", ""),
+    f"urn:uuid:{TEST_CLIP_ID}",
+])
+def test_a_non_canonical_clip_id_is_refused_in_memory(value):
+    """The canonical rule has one owner, and it is the record itself:
+    a bad ID never becomes a ClipRecord, in memory or on disk."""
+    with pytest.raises(RecordError, match="canonical clip ID"):
+        make_record(clip_id=value)
+
+
+# ---------------------------------------------------------------------------
 # Values XML cannot hold
 # ---------------------------------------------------------------------------
 
@@ -165,9 +265,9 @@ def test_a_refused_value_names_the_offending_key_and_not_another():
 def test_a_record_with_no_version_attribute_reads_as_the_first_schema():
     document = render_record_xml(make_record()).replace(
         f' version="{RECORD_SCHEMA_VERSION}"', "", 1
-    )
+    ).replace(f"<clip_id>{TEST_CLIP_ID}</clip_id>", "", 1)
 
-    assert parse_record_xml(document) == make_record()
+    assert parse_record_xml(document) == replace(make_record(), clip_id="")
 
 
 def test_a_newer_schema_is_refused_by_version_number():
@@ -386,6 +486,15 @@ def test_a_reason_is_produced_for_every_kind_of_refusal():
         '<segment index="0" start="0" duration="1" />'
         "<mood>grumpy</mood></commcut-clip>"
     ) == REASON_UNKNOWN_ELEMENT
+    assert reason_for(
+        '<commcut-clip version="1"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" />'
+        f"<clip_id>{TEST_CLIP_ID}</clip_id></commcut-clip>"
+    ) == REASON_UNKNOWN_ELEMENT
+    assert reason_for(
+        '<commcut-clip version="2"><source>a.mp4</source>'
+        '<segment index="0" start="0" duration="1" /></commcut-clip>'
+    ) == REASON_INVALID
     assert reason_for(
         '<commcut-clip version="99"><source>a.mp4</source>'
         '<segment index="0" start="0" duration="1" /></commcut-clip>'

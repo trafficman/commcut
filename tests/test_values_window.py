@@ -30,6 +30,11 @@ from shared.records import ClipRecord, RECORD_EXTENSION, write_record
 from shared.values import ValueSession
 
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return ensure_qapp()
@@ -51,7 +56,7 @@ def put_clip(root, relative, tags):
         handle.write(b"\0" * 16)
     write_record(os.path.splitext(path)[0] + RECORD_EXTENSION, ClipRecord(
         source=relative, segment_index=0, start=0.0, duration=30.0,
-        tags=tuple(sorted(tags.items())),
+        tags=tuple(sorted(tags.items())), clip_id=TEST_CLIP_ID,
     ))
 
 

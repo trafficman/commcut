@@ -17,11 +17,12 @@ partly about which files exist afterwards. A fake catalog would agree with a bug
 """
 
 import os
+import uuid
 
 import pytest
 
 from shared.catalog import build_catalog
-from shared.records import ClipRecord, write_record
+from shared.records import ClipRecord, load_record, write_record
 from shared.values import (
     DELETED,
     KEPT,
@@ -33,6 +34,10 @@ from shared.values import (
     execute_translation,
     plan_translation,
 )
+
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
 
 #: The four tags an export requires, which is not the same four a value may be asked
 #: about — that asymmetry is several tests' whole point.
@@ -63,7 +68,7 @@ def write_sidecar(root, relative, tags):
     write_record(
         os.path.splitext(path)[0] + ".cnfo",
         ClipRecord(source=relative, segment_index=0, start=0.0, duration=30.0,
-                   tags=tuple(sorted(tags.items()))),
+                   tags=tuple(sorted(tags.items())), clip_id=TEST_CLIP_ID),
     )
 
 
@@ -448,6 +453,51 @@ def test_the_replaced_record_is_still_a_valid_record(foreign, session):
     assert tags["Toonami/B.mp4"]["filler_type"] == "Commercial"
     assert tags["Toonami/A.mp4"]["filler_type"] == "Promo", (
         "only the clips carrying `Ad` change")
+
+
+def test_a_first_schema_record_is_migrated_by_the_rewrite(tmp_path):
+    """The migration is lazy: rewrite-on-touch, with no sweep.
+
+    A v1 record — no version attribute, no `<clip_id>` — is readable
+    exactly as it is, forever. The moment a translation rewrites it,
+    it comes back as v2 carrying an ID, with every tag it had before.
+    """
+    root = tmp_path / "import"
+    path = os.path.join(str(root), "Toonami", "A.mp4")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\0" * 16)
+    record_path = os.path.splitext(path)[0] + ".cnfo"
+    with open(record_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            "<commcut-clip>\n"
+            "  <source>compilation.mp4</source>\n"
+            '  <segment index="0" start="0.0" duration="30.0" />\n'
+            '  <tag key="title">Some Title</tag>\n'
+            '  <tag key="network">CN</tag>\n'
+            '  <tag key="filler_type">Promo</tag>\n'
+            '  <tag key="time_period">2000s</tag>\n'
+            "</commcut-clip>\n"
+        )
+
+    session = ValueSession(str(root), build_catalog(str(root)))
+    session.translate("network", "CN", "Cartoon Network")
+    answer_everything(session)
+    execute_translation(plan_translation(session))
+
+    with open(record_path, encoding="utf-8") as handle:
+        document = handle.read()
+    assert 'version="2"' in document, "the rewrite wrote the new schema"
+    record = load_record(record_path)
+    assert str(uuid.UUID(record.clip_id)) == record.clip_id, (
+        "the rewrite assigned the ID the v1 record lacked")
+    assert record.tag_dict == {
+        "title": "Some Title",
+        "network": "Cartoon Network",
+        "filler_type": "Promo",
+        "time_period": "2000s",
+    }, "a migration changes the schema, not the tags"
 
 
 def test_a_deleted_tag_is_gone_from_the_record_and_the_record_still_reads(

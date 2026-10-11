@@ -20,6 +20,10 @@ from shared.vocabulary import (
     get_vocabulary,
 )
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
 VALID_FILE_SCHEME = settings_module.DEFAULT_FILE_SCHEME
 file_scheme_error = settings_module.file_scheme_error
 vocabulary_sync_summary = settings_module.vocabulary_sync_summary
@@ -757,7 +761,7 @@ def make_library(root, clips):
         (directory / f"{stem}.mp4").write_bytes(b"video")
         write_record(str(directory / f"{stem}.cnfo"), ClipRecord(
             source="compilation.mp4", segment_index=0, start=0.0, duration=1.0,
-            tags=tuple(tags),
+            tags=tuple(tags), clip_id=TEST_CLIP_ID,
         ))
     return str(root)
 
@@ -989,7 +993,7 @@ def make_library(root, clips):
         (directory / f"{stem}.mp4").write_bytes(b"video")
         write_record(str(directory / f"{stem}.cnfo"), ClipRecord(
             source="compilation.mp4", segment_index=0, start=0.0, duration=1.0,
-            tags=tuple(tags),
+            tags=tuple(tags), clip_id=TEST_CLIP_ID,
         ))
     return str(root)
 

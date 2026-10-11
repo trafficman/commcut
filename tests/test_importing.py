@@ -45,6 +45,11 @@ from shared.naming import DEFAULT_FILE_NAMING_SCHEME
 from shared.vocabulary import Vocabulary
 
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
+
 REQUIRED = {
     "title": "Worlds Finest", "network": "Cartoon Network",
     "filler_type": "Promo", "time_period": "2000s",
@@ -70,6 +75,7 @@ def clip_in(root, stem, tags=None, *, source="compilation.mp4", duration=30.0,
     write_record(os.path.splitext(video)[0] + RECORD_EXTENSION, ClipRecord(
         source=source, segment_index=2, start=61.5, duration=duration,
         tags=tuple(tags.items() if tags is not None else REQUIRED.items()),
+        clip_id=TEST_CLIP_ID,
     ))
     return video
 
@@ -743,7 +749,7 @@ def test_find_videos_ignores_a_record_with_no_video(tmp_path):
     directory.mkdir()
     write_record(str(directory / "Orphan.cnfo"), ClipRecord(
         source="theirs.mp4", segment_index=0, start=0.0, duration=30.0,
-        tags=tuple(REQUIRED.items())))
+        tags=tuple(REQUIRED.items()), clip_id=TEST_CLIP_ID))
 
     assert find_videos(str(tmp_path)) == ()
 

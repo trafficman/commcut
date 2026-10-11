@@ -71,7 +71,13 @@ from dataclasses import dataclass, replace
 from shared.catalog import Catalog
 from shared.diagnostics import log
 from shared.importing import ValueMatch, match_value
-from shared.records import ClipRecord, RecordError, render_record_xml, write_record
+from shared.records import (
+    ClipRecord,
+    RecordError,
+    new_clip_id,
+    render_record_xml,
+    write_record,
+)
 from shared.scheme import CANONICAL_TAG_KEYS
 from shared.vocabulary import value_dedup_key
 
@@ -431,7 +437,7 @@ class ValueSession:
         try:
             render_record_xml(ClipRecord(
                 source="value-mesh", segment_index=0, start=0.0, duration=0.0,
-                tags=((namespace, new_value),),
+                tags=((namespace, new_value),), clip_id=new_clip_id(),
             ))
         except (RecordError, ValueError) as error:
             raise ValueError(
@@ -674,6 +680,11 @@ def _validated_record(clip, tags: list[tuple[str, str]]) -> ClipRecord:
     Every field other than the tags is carried over from the record that was read, so
     a translation never invents provenance or a duration: it changes what the clip is
     *called*, and nothing else about where it came from.
+
+    The clip ID is carried over too, and this is the one place a missing
+    one is filled in: a v1 record rewritten here comes back as v2 with a
+    fresh ID and unchanged tags, which is the whole of the migration --
+    lazy, rewrite-on-touch, with no sweep.
     """
     return ClipRecord(
         source=clip.record.source,
@@ -681,6 +692,7 @@ def _validated_record(clip, tags: list[tuple[str, str]]) -> ClipRecord:
         start=clip.record.start,
         duration=clip.record.duration,
         tags=tuple(sorted(tags)),
+        clip_id=clip.record.clip_id or new_clip_id(),
     )
 
 

@@ -26,6 +26,11 @@ from shared.mesh import MESHED, REJECTED, MeshSession
 from shared.records import ClipRecord, RECORD_EXTENSION, write_record
 
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return ensure_qapp()
@@ -51,7 +56,7 @@ def library_with(*relative_paths):
         write_record(os.path.splitext(path)[0] + RECORD_EXTENSION, ClipRecord(
             source="theirs.mp4", segment_index=0, start=0.0, duration=30.0,
             tags=(("network", "Cartoon Network"), ("time_period", "2000s"),
-                  ("filler_type", "Promo")),
+                  ("filler_type", "Promo")), clip_id=TEST_CLIP_ID,
         ))
 
 
@@ -161,7 +166,8 @@ def build_tagged(wizard, relative, tags=(("network", "CN"), ("filler_type", "Ad"
     with open(path, "wb") as handle:
         handle.write(b"\0" * 8)
     write_record(os.path.splitext(path)[0] + RECORD_EXTENSION, ClipRecord(
-        source=relative, segment_index=0, start=0.0, duration=30.0, tags=tags))
+        source=relative, segment_index=0, start=0.0, duration=30.0,
+        tags=tags, clip_id=TEST_CLIP_ID))
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,13 @@ from shared.vocabulary import (
 )
 
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as. It carries hex letters
+#: on purpose: a digits-only UUID would make the uppercase-spelling
+#: tests vacuous.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
+
 DEFAULT_TAGS = (
     ("block", "Toonami"),
     ("filler_type", "Promo"),
@@ -53,6 +60,7 @@ def make_record(**overrides):
         "start": 314.2,
         "duration": 29.9,
         "tags": DEFAULT_TAGS,
+        "clip_id": TEST_CLIP_ID,
     }
     values.update(overrides)
     return ClipRecord(**values)
@@ -98,6 +106,31 @@ def test_a_record_with_a_sibling_video_is_a_clip(tmp_path):
         "Cartoon Network/Promo/Worlds Finest.mp4")
     assert catalog.clips[0].tags == tuple(sorted(DEFAULT_TAGS))
     assert catalog.clips[0].path.endswith("Worlds Finest.mp4")
+    assert catalog.problems == ()
+
+
+def test_a_first_schema_record_is_still_a_clip(tmp_path):
+    """v1 is readable forever: a record written before the ID existed
+    yields its clip, unidentified, exactly as it always did."""
+    directory = tmp_path / "Cartoon Network" / "Promo"
+    directory.mkdir(parents=True)
+    (directory / "Worlds Finest.mp4").write_bytes(b"video")
+    (directory / "Worlds Finest.cnfo").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        "<commcut-clip>\n"
+        "  <source>compilation.mp4</source>\n"
+        '  <segment index="3" start="314.2" duration="29.9" />\n'
+        + "".join(
+            f'  <tag key="{key}">{value}</tag>\n'
+            for key, value in sorted(DEFAULT_TAGS)
+        )
+        + "</commcut-clip>\n"
+    )
+
+    catalog = build_catalog(str(tmp_path))
+
+    assert relative_paths(catalog) == ["Cartoon Network/Promo/Worlds Finest.mp4"]
+    assert catalog.clips[0].record.clip_id == ""
     assert catalog.problems == ()
 
 

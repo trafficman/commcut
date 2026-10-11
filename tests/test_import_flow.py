@@ -25,6 +25,10 @@ from shared.mesh import MeshSession
 from shared.records import ClipRecord, load_record, write_record
 from shared.values import ValueSession, execute_translation, plan_translation
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
 #: The four tags an export requires. The foreign library does not use these words.
 FOREIGN = {
     "title": "Toonami Ep 12",
@@ -59,7 +63,8 @@ def untagged_clip(root, relative):
 def settle(absolute_path, relative_path, tags):
     """What `QueueWindow.on_next` does, at the level the next stage reads."""
     record = ClipRecord(source=relative_path, segment_index=0, start=0.0,
-                        duration=30.0, tags=tuple(sorted(tags.items())))
+                        duration=30.0, tags=tuple(sorted(tags.items())),
+                        clip_id=TEST_CLIP_ID)
     write_record(os.path.splitext(absolute_path)[0] + ".cnfo", record)
 
 
@@ -75,6 +80,7 @@ def library(tmp_path):
         source="Mine.mp4", segment_index=0, start=0.0, duration=30.0,
         tags=(("title", "Mine"), ("network", "Cartoon Network"),
               ("filler_type", "Promo"), ("time_period", "2000s")),
+        clip_id=TEST_CLIP_ID,
     ))
     return root
 
@@ -102,7 +108,7 @@ def test_a_mixed_folder_goes_through_both_halves_and_lands_in_the_library(
     write_record(os.path.splitext(tagged_path)[0] + ".cnfo", ClipRecord(
         source="B.mp4", segment_index=0, start=0.0, duration=30.0,
         tags=(("title", "B"), ("network", "CB"), ("filler_type", "Promo"),
-              ("time_period", "1990s"))))
+              ("time_period", "1990s")), clip_id=TEST_CLIP_ID))
 
     # --- 1. the untagged half only ---------------------------------------------
     videos = [FakeVideo("Cartoon Network/2000s/Promo/A.mp4", has_record=False)]
@@ -173,7 +179,8 @@ def test_the_flow_is_the_same_one_a_foreign_library_takes(tmp_path, library):
     write_record(os.path.splitext(video)[0] + ".cnfo", ClipRecord(
         source="Theirs.mp4", segment_index=0, start=0.0, duration=30.0,
         tags=(("title", "Theirs"), ("network", "Cartoon Network"),
-              ("filler_type", "Promo"), ("time_period", "2000s"))))
+              ("filler_type", "Promo"), ("time_period", "2000s")),
+        clip_id=TEST_CLIP_ID))
 
     tagged = build_catalog(str(root))
     values = ValueSession(str(root), tagged, library=build_catalog(str(library)))
@@ -202,7 +209,8 @@ def test_a_record_survives_the_round_trip_through_both_passes(tmp_path, library)
     record_path = os.path.splitext(video)[0] + ".cnfo"
     write_record(record_path, ClipRecord(
         source="A.mp4", segment_index=3, start=61.5, duration=30.25,
-        tags=(("title", "A"), ("network", "CN"), ("filler_type", "Promo"))))
+        tags=(("title", "A"), ("network", "CN"), ("filler_type", "Promo")),
+        clip_id=TEST_CLIP_ID))
     before = load_record(record_path)
 
     values = ValueSession(str(root), build_catalog(str(root)),
@@ -218,6 +226,8 @@ def test_a_record_survives_the_round_trip_through_both_passes(tmp_path, library)
     after = load_record(record_path)
     assert (after.source, after.segment_index, after.start, after.duration) == (
         before.source, before.segment_index, before.start, before.duration)
+    assert after.clip_id == before.clip_id, (
+        "the ID is the clip's identity: a translation may not change it")
     assert after.tag_dict["network"] == "Cartoon Network"
     assert after.tag_dict["title"] == "A"
     assert os.path.getsize(video) == 16, "the video is never opened or rewritten"

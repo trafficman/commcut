@@ -32,6 +32,7 @@ from shared.exporting import (
 from shared.records import (
     ClipRecord,
     RecordError,
+    new_clip_id,
     render_record_xml,
     write_record_document,
 )
@@ -404,6 +405,7 @@ def execute_export_plan(
                     start=clip.start,
                     duration=clip.duration,
                     tags=clip.tags,
+                    clip_id=new_clip_id(),
                 )
             )
         except RecordError as error:

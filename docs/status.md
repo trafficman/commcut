@@ -80,9 +80,13 @@ Detail in [scanner.md](scanner.md).
   (libx264/aac, not `-c copy`). Unique temporary files and no-clobber commits
   prevent overwrites; per-clip failures are returned as a partial result.
 - The clip record (`shared/records.py`): every exported clip gets a `<stem>.cnfo`
-  beside its video holding its raw tags and the segment it came from, rendered
+  beside its video holding its raw tags, the segment it came from, and a
+  clip ID (schema v2: a UUID v4 in `<clip_id>`, assigned at every
+  construction site), rendered
   between a successful encode and the commit of the video. The filename and
   folder are a projection of the tags, and nothing parses a filename back.
+  v1 records stay readable forever and gain an ID when a translation
+  rewrites them — the migration is lazy, rewrite-on-touch, with no sweep.
 - Tag suggestions (`shared/vocabulary.py`): nine of the ten tag fields are
   editable combos offering values the user has already used, drawn from
   `vocabulary.json`, leading with the most recently used ones for this source.

@@ -70,7 +70,12 @@ from shared.exporting import (
 )
 from shared.naming import compile_filename_scheme
 from shared.paths import compile_folder_scheme, normalized_validation_key
-from shared.records import RECORD_EXTENSION, ClipRecord, render_record_xml
+from shared.records import (
+    RECORD_EXTENSION,
+    ClipRecord,
+    new_clip_id,
+    render_record_xml,
+)
 from shared.scheme import CANONICAL_TAG_KEYS
 from shared.sources import is_video_file
 
@@ -273,6 +278,7 @@ class ImportPlan:
             start=0.0,
             duration=clip.duration,
             tags=clip.destination.tags,
+            clip_id=new_clip_id(),
         )
 
 

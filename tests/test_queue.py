@@ -30,6 +30,11 @@ from shared.records import ClipRecord, load_record, write_record
 from shared.vocabulary import Vocabulary, get_vocabulary
 
 
+#: One fixed ID, so records built in tests compare equal to the
+#: records their own rendering reads back as.
+TEST_CLIP_ID = "12345678-1234-4123-8123-123456789abc"
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return ensure_qapp()
@@ -232,7 +237,8 @@ def write_sidecar(root, relative, tags, source=None, duration=30.0):
                                + ".cnfo"),
                  ClipRecord(source=source or relative.split("/")[-1],
                             segment_index=0, start=0.0, duration=duration,
-                            tags=tuple(tags.items())))
+                            tags=tuple(tags.items()),
+                            clip_id=TEST_CLIP_ID))
 
 
 @pytest.fixture
