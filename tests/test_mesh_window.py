@@ -645,6 +645,25 @@ def test_a_clean_library_produces_no_problem_block():
     assert mesh_module.problem_summary(()) == ""
 
 
+def test_a_record_from_a_newer_build_says_to_check_for_an_update():
+    """The one problem whose fix is not the file: the summary names
+    the remedy, so the user is not left wondering why a record is
+    unreadable and what to do about it."""
+    from shared.catalog import CatalogProblem
+    from shared.records import REASON_UNSUPPORTED_VERSION
+    from shared.version import RELEASES_URL
+
+    text = mesh_module.problem_summary((
+        CatalogProblem("a.cnfo",
+                       "This commcut reads record schema version 2 and "
+                       "older; the record is version 3",
+                       REASON_UNSUPPORTED_VERSION),
+    ))
+
+    assert "check for an update" in text
+    assert RELEASES_URL in text
+
+
 def test_the_vocabulary_sync_is_summarised_before_the_first_question(wizard):
     """Whatever the sync did is on screen while the user answers, not afterwards."""
     window = build_wizard(wizard, "CN/A.mp4")

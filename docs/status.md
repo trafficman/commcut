@@ -87,6 +87,8 @@ Detail in [scanner.md](scanner.md).
   folder are a projection of the tags, and nothing parses a filename back.
   v1 records stay readable forever and gain an ID when a translation
   rewrites them — the migration is lazy, rewrite-on-touch, with no sweep.
+  A record from a future schema version is refused, and the problem
+  summary advises checking for an update (`shared/catalog.py:PROBLEM_ADVICE`).
 - Tag suggestions (`shared/vocabulary.py`): nine of the ten tag fields are
   editable combos offering values the user has already used, drawn from
   `vocabulary.json`, leading with the most recently used ones for this source.

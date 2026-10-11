@@ -36,12 +36,14 @@ from dataclasses import dataclass
 from shared.records import (
     RECORD_EXTENSION,
     REASON_UNREADABLE,
+    REASON_UNSUPPORTED_VERSION,
     ClipRecord,
     RecordError,
     load_record,
     record_error_reason,
 )
 from shared.sources import is_video_file
+from shared.version import RELEASES_URL
 from shared.vocabulary import PruneResult
 
 #: Re-exported so a caller scanning for records does not have to know where the
@@ -160,6 +162,20 @@ def _ignore_progress(_clips_found: int, _relative_path: str) -> None:
     return None
 
 
+#: What a user can *do* about a reason, for the one reason whose remedy is
+#: not "fix the file". Every other refusal is repairable by hand — an
+#: unknown tag key is a line to delete, a corrupt file is one to restore —
+#: but a record a future schema version wrote is not: the only move is a
+#: commcut that reads it. Keyed by reason so the advice is written once and
+#: every surface that groups problems by reason says the same thing.
+PROBLEM_ADVICE = {
+    REASON_UNSUPPORTED_VERSION: (
+        "a newer version of commcut wrote these records, so this build "
+        f"cannot read them — check for an update: {RELEASES_URL}"
+    ),
+}
+
+
 def problem_summary(problems, consequence: str = "so they were skipped:") -> str:
     """Records that could not be read, as one screen-sized block.
 
@@ -171,6 +187,10 @@ def problem_summary(problems, consequence: str = "so they were skipped:") -> str
     something specific: a friend's export using a tag this build does not know is a
     different problem from a corrupt file, and both are theirs to fix. Four hundred
     sentences that all say something is wrong is a screen nobody reads.
+
+    A reason with an entry in `PROBLEM_ADVICE` gets that advice under its
+    group, once per group rather than once per record: the one refusal whose
+    remedy is not in the file, but in a newer commcut.
 
     `consequence` is the one thing the callers disagree about, and it is a parameter
     rather than a rewording of this function's output: one window is reading the
@@ -185,6 +205,9 @@ def problem_summary(problems, consequence: str = "so they were skipped:") -> str
         lines.extend(f"    - {problem.path}" for problem in group[:8])
         if len(group) > 8:
             lines.append(f"    ... and {len(group) - 8} more")
+        advice = PROBLEM_ADVICE.get(reason)
+        if advice:
+            lines.append(f"    {advice}")
     return "\n".join(lines)
 
 

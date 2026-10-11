@@ -16,6 +16,7 @@ from shared.catalog import (
     CatalogClip,
     build_catalog,
     pending_record_tags,
+    problem_summary,
     sync_vocabulary,
 )
 from shared.records import (
@@ -35,6 +36,7 @@ from shared.vocabulary import (
     Vocabulary,
     get_vocabulary,
 )
+from shared.version import RELEASES_URL
 
 
 #: One fixed ID, so records built in tests compare equal to the
@@ -321,6 +323,44 @@ def test_a_record_from_a_newer_schema_is_reported_not_crashed_on(tmp_path):
     assert len(catalog.clips) == 1
     assert len(catalog.problems) == 1
     assert "version 99" in catalog.problems[0].message
+
+
+def test_a_record_from_a_newer_build_gets_update_advice(tmp_path):
+    """The one refusal whose remedy is not in the file: every other
+    problem can be fixed by editing or restoring the record, but a
+    future schema version can only be read by a newer commcut, so the
+    summary says so and names where to look."""
+    write_clip(tmp_path, "First")
+    newer = write_clip(tmp_path, "Second")
+    with open(newer, "w", encoding="utf-8") as handle:
+        handle.write(render_record_xml(make_record()).replace(
+            f'version="{RECORD_SCHEMA_VERSION}"', 'version="99"'))
+
+    text = problem_summary(build_catalog(str(tmp_path)).problems)
+
+    assert "check for an update" in text
+    assert RELEASES_URL in text
+
+
+def test_a_problem_with_no_advice_gets_none(tmp_path):
+    """Advice is the exception, not the decoration: a reason whose
+    remedy is the file itself must not be told to check for an
+    update, or every corrupt record in a library would advertise it."""
+    bad = write_clip(tmp_path, "Bad")
+    with open(bad, "w", encoding="utf-8") as handle:
+        handle.write(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<commcut-clip version="1">\n'
+            "  <source>compilation.mp4</source>\n"
+            '  <segment index="1" start="0.0" duration="1.0" />\n'
+            '  <tag key="colour">Red</tag>\n'
+            "</commcut-clip>\n"
+        )
+
+    text = problem_summary(build_catalog(str(tmp_path)).problems)
+
+    assert f"{REASON_UNKNOWN_TAG_KEY} (1)" in text
+    assert "check for an update" not in text
 
 
 def test_a_record_holding_an_unknown_tag_key_is_reported(tmp_path):

@@ -431,7 +431,10 @@ a constructor — the user opens a window to look around and must not lose a tag
 typed without being told. It runs when the Untagged Library Mesh opens, and its
 summary is shown while the user answers, together with any library records that
 could not be read, **grouped by reason**: a friend exporting with a tag this build
-does not know is a different problem from a corrupt file.
+does not know is a different problem from a corrupt file. The one reason whose
+remedy is not in the file — a record a future schema version wrote, which only a
+newer commcut can read — is told so, with where to check for an update
+(`shared/catalog.py:PROBLEM_ADVICE`).
 
 All of it — the sync, the import-folder walk and the library walk — is one worker,
 because the library is a network share as often as it is a local folder. The Tagged
