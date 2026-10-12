@@ -66,6 +66,7 @@ UI_FILES = (
     ("shared", "tagform.ui"),
     ("importer", "queuewindow.ui"),
     ("importer", "valueswindow.ui"),
+    ("library", "librarywindow.ui"),
 )
 
 # Read-only resources that are not .ui files. Deliberately a separate list: the

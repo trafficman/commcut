@@ -118,6 +118,7 @@ SOURCE_ENTRIES = (
     'scanner',
     'settings',
     'importer',
+    'library',
     'assets',
 
     # What it needs installed.

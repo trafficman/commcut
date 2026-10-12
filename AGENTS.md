@@ -21,7 +21,8 @@ vision, described in [README.md](README.md), has three pieces:
    the current focus.
 
 The tree holds the Editing Wizard (`editor/`), its Segment Scanner pre-process
-(`scanner/`), the Settings window, and the `shared/` library they build on. The
+(`scanner/`), the Settings window, the Library Manager (`library/`), and the
+`shared/` library they build on. The
 main menu names a source video with a file dialog, or takes one dropped on it,
 so a compilation can live anywhere. [docs/status.md](docs/status.md) says exactly
 what exists today and what is next — read it before building what may already exist.
@@ -61,7 +62,8 @@ commcut/
 ├── scanner/                 # Segment Scanner: detect boundaries, hand off
 ├── editor/                  # Editing Wizard: segments, tags, export
 ├── settings/                # file + folder scheme editors
-├── shared/                  # the library all three windows build on
+├── library/                 # Library Manager: browse export/, re-tag clips
+├── shared/                  # the library the windows build on
 ├── tests/                   # pytest suite (docs/testing.md)
 ├── docs/                    # the documents indexed below
 ├── experiments/             # never shipped; code answering what docs could not
@@ -77,7 +79,8 @@ number the two build scripts check a tag against), `diagnostics`
 videos may be opened), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
-(the `.cnfo`), `vocabulary`, `mesh`, `values`, `tag_form`, `splash`, `icons`,
+(the `.cnfo`), `retagging` (the re-tag plan and transaction), `vocabulary`,
+`mesh`, `values`, `tag_form`, `splash`, `icons`,
 `ui_loader`. `environment` also owns `settings_path()` and the fixed
 `import_folder()`. Per-module detail: [docs/architecture.md](docs/architecture.md).
 

@@ -179,6 +179,18 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   widget, promoted into both the editor and the queue, so there is one set of
   dropdown rules in the app rather than two that drift. →
   [tag-vocabulary.md](tag-vocabulary.md)
+- **Library Manager** (`library/manager.py`, `shared/retagging.py`): the
+  main menu's **Library Manager** button. Every clip the catalog finds in
+  `export/`, in a folder tree that mirrors the folder scheme, with the shared
+  tag form and an mpv preview beside it. The tree is derived state, rebuilt
+  from a walk on every open and after every save; a clip row loads the clip's
+  tags and video, and saving is the retagging transaction — the destination
+  planned through the same `plan_clip_destination` and `DestinationIndex` the
+  export and import planners use, so a destination another clip holds is
+  refused naming that clip, the record published before the video moves, and
+  the clip re-selected by its clip ID. The destination label renders live on
+  every keystroke. →
+  [architecture.md](architecture.md#the-library-manager)
 
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
@@ -276,8 +288,9 @@ The full vision in `README.md` has three pieces; two are not started:
   instead. See "Next" below.
 - The import and export folders: the **export folder is configurable** from
   Settings, `import/` is fixed beside the app on purpose (see "Next").
-- **Nothing displays the library.** The catalog and one button that reads it are
-  built; there is no browser, and the file dialog has no tags.
+- **The file dialog has no tags.** A source video is picked by name, not by
+  the tags a clip carries; the Library Manager is where a clip's tags are
+  seen and edited, once the clip is in the library.
 - **No recent sources.** A source video can be picked from anywhere, and a
   previously scanned rip is routed straight to the editor by its `.cmct` — but a
   native dialog cannot label a file the way the old picker did, so resuming one
@@ -342,18 +355,16 @@ The full vision in `README.md` has three pieces; two are not started:
   writes nothing, because pruning against half a library would delete every value
   the other half uses.
 
-  Still not built: **a library browser**. The walk exists and one button reads
-  it; nothing shows a user what is in `export/`. The **Rename Wizard** is the next
-  consumer — it reads tags from a record and rewrites the path, never the reverse.
-  Counts per value are derivable from `Catalog.clips` when something wants them,
-  and deliberately are not cached. →
+   The **library browser** is built — the Library Manager shows what is in
+   `export/`. The **Rename Wizard** is the next consumer of the same walk — it
+   reads tags from a record and rewrites the path, never the reverse. Counts per
+   value are derivable from `Catalog.clips` when something wants them,
+   and deliberately are not cached. →
   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
   [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
 - **The Library Importer's import window.** The backend, both meshes, the queue and
   the shared import screen are built, and **Import Now** runs the import from either
   ending, so a window that would join them is convenience rather than capability.
-  What is genuinely missing is a **library browser** — nothing shows a user what is
-  in `export/`.
 - **Routing the unresolved clips to a person.** A clip whose folder path claims
   one tag twice is flagged `needs_manual_edit`, and the queue still has no dedicated
   screen for those — it offers to reopen at the first unfinished clip instead. A
@@ -408,7 +419,7 @@ The full vision in `README.md` has three pieces; two are not started:
   heuristics for rapid concurrent detections or long spans without one.
 - **Exactly one window is visible at a time, and the main menu no longer sits
   open in the background.** `shared/session.py` shows one of {menu, scanner,
-  editor, settings, mesh, queue}; opening a window takes down the one it replaces
+  editor, settings, mesh, queue, values, library}; opening a window takes down the one it replaces
   and shows the new one, and a non-menu window closing brings the menu back. The
   menu is hidden and reused rather than rebuilt, so there is only ever one menu
   and one taskbar entry. This replaced a stack in which the menu stayed open

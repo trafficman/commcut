@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
         self.ui.editorButton.clicked.connect(self.open_editor)
         self.ui.importButton.clicked.connect(self.open_import)
         self.ui.settingsButton.clicked.connect(self.open_settings)
+        self.ui.libraryButton.clicked.connect(self.open_library)
 
     def open_editor(self):
         """Ask for a source video and open the scanner on it.
@@ -259,6 +260,22 @@ class MainWindow(QMainWindow):
         [docs/importing.md](docs/importing.md).
         """
         shell().open_safely('mesh')
+
+    def open_library(self):
+        """Open the Library Manager over the export library.
+
+        The export library is where finished clips live, and a
+        clip's tags are the one thing about it that can still be
+        wrong: its folder and file name are a projection of them,
+        so re-tagging a clip is how a clip that landed in the
+        wrong place is put right. This is the third destination
+        beside the wizard and the importer, and like the importer
+        it is opened with no arguments — the library is the
+        export folder, which Settings configures. See
+        [docs/naming-and-organization.md](docs/naming-and-organization.md)
+        and `library/manager.py`.
+        """
+        shell().open_safely('library')
 
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""

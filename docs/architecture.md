@@ -46,6 +46,9 @@ commcut/
 ├── settings/                # Standalone Settings window
 │   ├── settings.py          # Scheme persistence, validation, previews, atomic save
 │   └── settingswindow.ui    # File/folder scheme editors and live previews
+├── library/                 # The Library Manager (browse + re-tag)
+│   ├── manager.py           # Entry point: Library Manager window, the walk, the save
+│   └── librarywindow.ui     # Qt Designer file; promoted TagForm
 ├── editor/                  # The Editing Wizard (current focus)
 │   ├── editor.py            # Entry point: Editor window, editing state machine,
 │   │                        # splash flow, PreScanWorker scaffolding, ExportWorker
@@ -71,6 +74,7 @@ commcut/
 │   ├── paths.py             # Folder scheme validation, sanitization, safe components
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
+│   ├── retagging.py         # plan_retag / execute_retag: the re-tag plan and transaction
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
 │   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
 │   ├── values.py            # ValueSession: the tag-value model, and the value table
@@ -107,7 +111,8 @@ point: it builds the one `QApplication`, constructs `MainWindow`, installs a
 per-window script, and each window module exposes a `create(...)` builder rather
 than a `run()` entry point.
 
-`shared/session.py` shows **exactly one** of {menu, scanner, editor, settings, mesh, queue} at a time. Opening a window builds it, takes down whatever was on screen, and
+`shared/session.py` shows **exactly one** of {menu, scanner, editor,
+settings, mesh, queue, values, library} at a time. Opening a window builds it, takes down whatever was on screen, and
 shows the new one. When a non-menu window goes away the menu comes back; when the
 menu goes away the app quits. Modal dialogs are not part of this — the main menu's
 file dialog and the editor's export progress and summary dialogs are `QDialog`s
@@ -307,6 +312,50 @@ covers the file dialog, both ways into the wizard (button and drop), the three
 buttons, and the project-root resolution from every entry point;
 `tests/test_session.py` covers the navigation.
 
+## The Library Manager
+
+The Library Manager (`library/manager.py`) is the main menu's
+**Library Manager** button: every clip the catalog finds in the export
+library, in a folder tree that mirrors the folder scheme, with the shared
+tag form and an mpv preview beside it. Where the editor writes *new*
+clips, this window re-tags the clips that are already in the library.
+
+The tree is derived state, rebuilt from a walk on every open and after
+every save — a save changes what the walk would find, so it is never
+edited in place. The walk runs on a `CatalogWorker` behind a dialog:
+non-modal and cancellable on open (a cancelled walk has nothing to show,
+so the window closes once the thread it owns has really stopped), and
+modal and not cancellable on the rebuild after a save, which is already
+committed. Only folders that contain clips exist, and every level is
+sorted casefolded. A folder row expands and collapses on click; a clip
+row loads the clip — its tags into the form, its video into the preview.
+A record with no sibling video, or one that could not be read, is not a
+clip: it is reported in the problems area instead.
+
+Saving is the retagging transaction in `shared/retagging.py`. The form's
+tags are planned to a destination through the same `plan_clip_destination`
+and `DestinationIndex` the export and import planners use, so a
+destination another clip already holds is refused naming that clip, and a
+missing required tag is refused before anything moves. `execute_retag()`
+publishes the record at the new path before the video moves and cleans up
+after a failed move. The destination label renders live on every keystroke
+— in place while the tags are unchanged, the new path once they are not —
+so what saving would do is visible before it happens. A save rebuilds the
+walk and re-selects the clip by its **clip ID**, never by path, because
+the path just changed; the loaded clip is dropped before that re-selection,
+so the switch sees no clip to be dirty against and loads the clip outright
+instead of asking about edits that were just saved. Switching away from
+unsaved edits asks about them first, and a cancelled switch puts the
+selection back. The confirmed tags are recorded in the vocabulary — the
+same commit points an export is.
+
+`closeEvent` shuts the preview's player down while its video frame still
+has its native handle, and refuses to close while the walk's thread is
+still running — the same two rules as the scanner and the editor. The
+walk is
+[naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)'s;
+the form is [tag-vocabulary.md](tag-vocabulary.md)'s.
+
 ## The source video is picked from anywhere
 
 A source video can be any video file on any writable path, and there are two ways
@@ -501,9 +550,19 @@ The shared modules are:
    about to write into the same tree. `sync_vocabulary()` uses it to reconcile
    `vocabulary.json` against the library. It holds no Qt types; the Settings
    window's `SyncWorker` is the thin wrapper that runs it off the GUI thread. See
-   [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
-   and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
- - `shared/importing.py` — the Library Importer's backend. `plan_import()` resolves
+    [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
+    and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
+  - `shared/retagging.py` — the Library Manager's backend, with no Qt:
+    re-tagging a clip that is already in the library. `plan_retag()`
+    resolves a clip's edited tags to a destination through the same
+    `plan_clip_destination` and `DestinationIndex` the export and import
+    planners use, so a destination another clip holds is refused naming
+    that clip, and `retag_is_in_place()` answers whether the edit changes
+    the path at all. `execute_retag()` is the transaction: the record is
+    published at the new path before the video moves, a failed move cleans
+    up after itself, a v1 record gains the clip ID the re-select needs,
+    and a case-only change is a move on both kinds of volume.
+  - `shared/importing.py` — the Library Importer's backend. `plan_import()` resolves
    finished clips to destinations through the *same* `plan_clip_destination` and
    `DestinationIndex` the export planner uses, so a foreign clip cannot land
    somewhere an exported one would not; `execute_import()` copies, links or moves
@@ -646,7 +705,7 @@ paint on X11, where one `processEvents` is not enough.
 `main.py` calls `shared/icons.py:install_app_icon(app)` on the one line after
 `QApplication(argv)` and before `MainWindow()`, and that is the entire feature.
 Qt takes the application icon as the default for every widget constructed
-afterwards, so all seven windows and every modal dialog — including
+   afterwards, so all eight windows and every modal dialog — including
 `Shell.open_safely`'s `QMessageBox` — carry it without a line of their own. The
 order is load-bearing: an icon installed after the first window is that window's
 default no more, and the menu is the one window that is never rebuilt. It is the

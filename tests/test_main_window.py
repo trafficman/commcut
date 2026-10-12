@@ -442,6 +442,12 @@ def test_settings_button_opens_the_settings_window(menu):
     assert menu.opened == [("settings", {})]
 
 
+def test_library_button_opens_the_library_manager(menu):
+    menu.ui.libraryButton.click()
+
+    assert menu.opened == [("library", {})]
+
+
 def test_the_menu_does_not_start_processes(menu):
     """The process model is gone, and a subprocess here would mean it is not.
 

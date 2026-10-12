@@ -110,6 +110,7 @@ UI_DATAS = [
     ('shared/tagform.ui', 'shared'),
     ('importer/queuewindow.ui', 'importer'),
     ('importer/valueswindow.ui', 'importer'),
+    ('library/librarywindow.ui', 'library'),
     ('assets/commcut_banner.png', 'assets'),
     ('assets/commcut_icon.png', 'assets'),
     ('assets/commcut_icon.ico', 'assets'),
@@ -172,6 +173,7 @@ hiddenimports = [
     'settings.settings',
     'importer.mesh',
     'importer.queue',
+    'library.manager',
     'importer.values',
 ]
 
