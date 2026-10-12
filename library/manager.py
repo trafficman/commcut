@@ -581,10 +581,7 @@ class LibraryManagerWindow(QMainWindow):
     def on_play_pause(self):
         if self._bridge is None:
             return
-        if self._bridge.paused:
-            self._bridge.resume()
-        else:
-            self._bridge.pause()
+        self._bridge.toggle_play()
 
     def _on_scrub_began(self):
         self._scrubbing = True
@@ -595,7 +592,7 @@ class LibraryManagerWindow(QMainWindow):
     def _on_seek(self):
         if self._bridge is None:
             return
-        self._bridge.seek(self.ui.sliderPosition.value())
+        self._bridge.seek_exact(self.ui.sliderPosition.value())
 
     def _on_position_changed(self, seconds):
         if self._scrubbing:

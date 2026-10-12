@@ -88,19 +88,29 @@ class FakePlayer:
 
     `MpvBridge.__init__` only calls `observe_property`, and
     `load_file` only plays and pauses, so this does not have to
-    guess at the bridge's surface — which is the point.
+    guess at the bridge's surface — which is the point. The
+    command surface is here too: `toggle_play` reads
+    `idle_active`, `eof_reached` and `pause` and seeks, and
+    `seek_exact` seeks, so a call to a method the bridge does
+    not have fails against this exactly as it would against mpv.
     """
 
     def __init__(self):
         self.observed = {}
         self.played = []
+        self.seeks = []
         self.pause = True
+        self.idle_active = False
+        self.eof_reached = False
 
     def observe_property(self, name, callback):
         self.observed[name] = callback
 
     def play(self, path):
         self.played.append(path)
+
+    def seek(self, seconds, reference="absolute", precision="exact"):
+        self.seeks.append(seconds)
 
 
 class RecordingBridge(MpvBridge):
@@ -760,4 +770,46 @@ def test_closing_the_window_shuts_the_player_down(harness):
         window.close()
         assert bridge.shutdowns == 1
     finally:
+        window.deleteLater()
+
+
+def test_the_play_button_toggles_the_clip_through_the_bridge(harness):
+    """Play is the bridge's `toggle_play` — the one command the
+    scanner and the editor both use — not a pause and a resume
+    the bridge does not have."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+        bridge = window._bridge
+        assert bridge is not None
+        assert bridge.paused  # load_file pauses at the start
+
+        window.ui.buttonPlay.click()
+        assert not bridge.paused
+
+        window.ui.buttonPlay.click()
+        assert bridge.paused
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_releasing_the_transport_seeks_the_bridge(harness):
+    """The position slider seeks on release, through the bridge's
+    `seek_exact` — the frame-exact seek the scanner's timeline
+    uses."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+        player = window._bridge.player
+
+        window.ui.sliderPosition.setValue(7)
+        window.ui.sliderPosition.sliderReleased.emit()
+        assert player.seeks == [7]
+    finally:
+        window.close()
         window.deleteLater()
