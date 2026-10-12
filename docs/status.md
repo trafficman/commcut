@@ -29,6 +29,11 @@ Related: [architecture.md](architecture.md), [segment-model.md](segment-model.md
 - Tag form with lock system and dirty indicator.
 - Keyframe navigation via ffprobe-scanned I-frames, and silent frame-accurate
   stepping.
+- Pre-scan runs off the GUI thread: `PreScanWorker` does the keyframe
+  scan (and writes the placeholder `.cmct` when the source has none)
+  on a `QThread` while a local event loop keeps the `LoadingSplash`
+  repainting in `create()`, so the splash paints on X11 instead of
+  sitting as a black rectangle for the length of the ffprobe run.
 
 ### Scanner (`scanner/`, `shared/ffmpeg.py:clip_to_temp`)
 

@@ -116,7 +116,7 @@ def menu(qapp, monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_window_offers_both_destinations(menu):
-    assert menu.ui.editorButton.text() == "Editor"
+    assert menu.ui.editorButton.text() == "Video Editor"
     assert menu.ui.settingsButton.text() == "Settings"
 
 

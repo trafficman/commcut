@@ -69,11 +69,11 @@ class LoadingSplash:
     ``showMessage`` to it, so a caller gets the identical visual as the startup
     splash via a context manager instead of manual show/close calls.
 
-    If the GUI thread is blocked inside the ``with`` body (typical for truly
-    synchronous ffprobe/ffmpeg work), the splash will not repaint until the body
-    returns. Callers that run blocking work should call
-    ``app.processEvents()`` once after entering the block, as ``show_splash``
-    in ``shared/splash.py`` already does.
+    The work inside the ``with`` body must not block the GUI thread: a
+    blocked GUI thread cannot paint the splash, which on X11 leaves it a
+    black rectangle. The startup splash pumps the loop in a ``while``
+    loop; the editor's pre-scan runs on a worker ``QThread`` while a
+    local ``QEventLoop`` keeps the splash repainting.
     """
 
     def __init__(self, app, message: str):

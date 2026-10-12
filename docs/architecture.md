@@ -135,7 +135,13 @@ Two details are load-bearing:
   outgoing window from inside the button handler that opened the new one. Built
   second, `WA_DeleteOnClose` only posts a deferred delete, which cannot run until
   that handler has returned. The order also means a build that fails leaves the
-  user exactly where they were.
+  user exactly where they were. The outgoing window is disabled for the build,
+  because a build that pumps the event loop leaves it on screen and clickable
+  for the length of an ffprobe run — a click landing in the window being
+  replaced is a click on a window about to go away. The `finally` in
+  `Shell.open` hands it back enabled whether the build succeeded, failed or was
+  refused, so a failed open leaves the user where they were and able to keep
+  working.
 - **A window that refuses to close is not replaced.** `closeEvent` ignores the
   close while the window still owns a worker thread, and `close()` returns `False`
   when that happens. That return value used to be discarded: the shell set
@@ -568,19 +574,30 @@ that records the seek sequence.
 ## Splash flow (pre-work before the window appears)
 
 `__main__` in the editor uses `shared/loading.py:LoadingSplash`, which wraps
-the banner pixmap and `processEvents` pump from `shared/splash.py` behind a
-`with` block. The splash shows while the editor pre-loads its video, then the
-`with` block ends before any mpv-backed widget is constructed, closing the
-splash first (invariant 6).
+the banner pixmap from `shared/splash.py` behind a `with` block. The splash
+shows while the editor pre-loads its video, then the `with` block ends before
+any mpv-backed widget is constructed, closing the splash first (invariant 6).
 
-The scanner pre-scan is different: it runs off the GUI thread.
-`scanner.create()` builds the preview clip and scans keyframes on
-`ScannerPreScanWorker` (a `QThread`), behind a modal `LoadingDialog.exec()`
-in `shared/loading.py`. `exec()` blocks `create()` synchronously — preserving
-the shell's contract that `create()` returns the window — while pumping the
-event loop so the worker runs. The dialog closes before `ScannerWindow` is
-constructed, so no top-level window is foreground when the mpv player is built
-(the splash/mpv hazard that invariant 6 guards against).
+Both windows run their pre-work off the GUI thread. A blocked GUI thread
+cannot paint the splash that covers the work — on X11, a top-level window's
+first paint is not guaranteed within one `processEvents`, so a synchronous
+pre-scan left the splash a black rectangle for the length of the ffprobe run.
+The two differ only in the indicator they run it behind:
+
+- The editor scans keyframes (and writes the placeholder `.cmct`, when the
+  source has none yet) on `PreScanWorker` (a `QThread`), while
+  `editor.create()` runs a local `QEventLoop` that keeps the `LoadingSplash`
+  repainting. The loop quits on `QThread.finished`, so the thread has ended
+  by the time `create()` returns — preserving the shell's contract that
+  `create()` returns the window — and the splash closes before `MediaPlayer`
+  is constructed.
+- The scanner builds the preview clip and scans keyframes on
+  `ScannerPreScanWorker` (a `QThread`), behind a modal `LoadingDialog.exec()`
+  in `shared/loading.py`. `exec()` blocks `create()` synchronously while
+  pumping the event loop so the worker runs. The dialog closes before
+  `ScannerWindow` is constructed, so no top-level window is foreground when
+  the mpv player is built (the splash/mpv hazard that invariant 6 guards
+  against).
 
 The startup splash in `main.py` uses `shared/splash.py:show_splash` directly —
 that one is outside any window constructor and has no mpv widget to race.
@@ -619,8 +636,10 @@ another top-level window (the splash) is the active window at construction
 time. Close the splash *before* constructing the mpv-backed widget.
 `show_splash` (and `LoadingSplash`, which wraps it) pumps
 `app.processEvents()` once before returning, which is what makes the splash
-actually paint — without it the user sees the previous window for the length of
-the ffprobe run, which is the thing it exists to hide.
+actually paint when the work behind it is synchronous — the startup splash's
+case. The editor's pre-scan is not synchronous: it runs on a worker thread
+while a local event loop keeps the splash repainting, which is what makes it
+paint on X11, where one `processEvents` is not enough.
 
 ## The application icon
 

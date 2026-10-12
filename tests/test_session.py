@@ -94,9 +94,16 @@ def stack(qapp, monkeypatch):
     classes are substituted.
 
     Yields the shell; ``stack.calls`` is the list every builder appended to, so
-    a test can assert what a window was constructed with.
+    a test can assert what a window was constructed with, and
+    ``stack.probes`` is the menu's enabled state as each ``probing``
+    builder saw it, so a test can assert what the window being replaced
+    looked like while the next one was being built.
     """
+    menu = QMainWindow()
+    menu.setWindowTitle("menu")
+
     calls = []
+    probes = []
 
     def register(name, error=None, redirect=None):
         def builder(app, **kwargs):
@@ -117,6 +124,13 @@ def stack(qapp, monkeypatch):
             return StubbornWindow(name)
         setattr(sys.modules[__name__], name, builder)
 
+    def register_probing(name):
+        def builder(app, **kwargs):
+            calls.append((name, kwargs))
+            probes.append(menu.isEnabled())
+            return QMainWindow()
+        setattr(sys.modules[__name__], name, builder)
+
     for name in ("alpha", "beta", "gamma"):
         register(name)
     register("broken", error=FileNotFoundError("no source video found"))
@@ -124,17 +138,17 @@ def stack(qapp, monkeypatch):
     register("redirecting_missing", redirect=(("not-a-window",), {}))
     register_stubborn("stubborn")
     register_stubborn("stubborn_next")
+    register_probing("probing")
 
     monkeypatch.setattr(
         session_module, "_BUILDERS",
         {name: (__name__, name) for name in
          ("alpha", "beta", "gamma", "broken", "redirecting",
-          "redirecting_missing", "stubborn", "stubborn_next")})
+          "redirecting_missing", "stubborn", "stubborn_next", "probing")})
 
-    menu = QMainWindow()
-    menu.setWindowTitle("menu")
     shell = Shell(qapp, menu)
     shell.calls = calls
+    shell.probes = probes
     shell.menu_widget = menu
     set_shell(shell)
     try:
@@ -217,6 +231,40 @@ def test_a_failed_open_reports_rather_than_raises(stack, monkeypatch):
 
     assert warnings, "a failed launch must say so rather than raise"
     assert "no source video" in warnings[0][2]
+
+
+def test_the_window_being_replaced_is_disabled_while_the_next_one_builds(stack):
+    """A build that pumps the event loop — a splash over an ffprobe
+    run — leaves the window it replaces on screen for the length of
+    that run. Disabled for that stretch, so a click cannot land in the
+    window being replaced, the same inertness a modal dialog imposes
+    on the window behind it.
+    """
+    window = stack.open("probing")
+
+    assert stack.probes == [False], (
+        "the window being replaced was still enabled while the next "
+        "one was being built"
+    )
+    assert stack.menu_widget.isEnabled(), (
+        "the window being replaced must be enabled again once the "
+        "build is done"
+    )
+    close(window, _qapp())
+
+
+def test_a_failed_open_hands_the_menu_back_enabled(stack, monkeypatch):
+    """The disable is undone by the failure path too, not only the
+    success path — otherwise a refused video would leave the menu greyed
+    out with nothing on screen and no way to try again.
+    """
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a: None))
+    stack.menu_widget.show()
+
+    assert stack.open_safely("broken") is None
+
+    assert stack.menu_widget.isEnabled()
+    assert stack.menu_widget.isVisible()
 
 
 def test_a_window_that_will_not_close_is_not_replaced(stack, monkeypatch):

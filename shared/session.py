@@ -208,6 +208,15 @@ class Shell(QObject):
           WA_DeleteOnClose`` only posts a deferred delete, which cannot run
           until that handler has returned.
 
+        The outgoing window is disabled for the build. A build that pumps the
+        event loop — a splash over an ffprobe run — leaves the window it
+        replaces on screen and clickable for the length of that run, and a
+        click landing in the window being replaced is a click on a window
+        about to go away. Disabled, it is inert, the same way a modal dialog
+        leaves the window behind it; the ``finally`` hands it back enabled
+        whether the build succeeded, failed or was refused, so a failed open
+        leaves the user where they were and able to keep working.
+
         Closing it can still fail, because a window may refuse while it owns a
         worker thread. That is reported as :class:`WindowBusy` rather than
         ignored, and nothing is put on screen.
@@ -222,21 +231,27 @@ class Shell(QObject):
                 f"{', '.join(sorted(_BUILDERS))}"
             ) from None
 
-        window = self._build(name, kwargs)
-        self._adopt(window, destroy_on_close=True)
+        outgoing = self._current if self._current is not None else self._menu
+        outgoing.setEnabled(False)
+        try:
+            window = self._build(name, kwargs)
+            self._adopt(window, destroy_on_close=True)
 
-        busy = self._stand_down()
-        if busy is not None:
-            # The outgoing window is still up, so putting the new one on screen
-            # would break the one-visible-window rule and leave both alive. Give
-            # the new one back instead: its own `closeEvent` is what knows
-            # whether it is holding something that must outlive it.
-            window.close()
-            raise WindowBusy(name)
+            busy = self._stand_down()
+            if busy is not None:
+                # The outgoing window is still up, so putting the new one on
+                # screen would break the one-visible-window rule and leave both
+                # alive. Give the new one back instead: its own `closeEvent` is
+                # what knows whether it is holding something that must outlive
+                # it.
+                window.close()
+                raise WindowBusy(name)
 
-        self._current = window
-        self._present(window)
-        return window
+            self._current = window
+            self._present(window)
+            return window
+        finally:
+            outgoing.setEnabled(True)
 
     def open_safely(self, name, **kwargs):
         """Open a window, or tell the user it could not be opened. Never raises.

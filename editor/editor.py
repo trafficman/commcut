@@ -56,7 +56,7 @@ from shared.tag_form import (
     field_text,
     set_field_text,
 )
-from PySide6.QtCore import Qt, QFile, QObject, QUrl, Signal, Slot, QThread
+from PySide6.QtCore import Qt, QEventLoop, QFile, QObject, QUrl, Signal, Slot, QThread
 from PySide6.QtGui import QDesktopServices
 
 
@@ -64,22 +64,44 @@ from PySide6.QtGui import QDesktopServices
 
 
 class PreScanWorker(QObject):
-    """Runs per-file pre-work off the GUI thread, for the splash screen.
+    """Runs the editor's per-file pre-work off the GUI thread.
 
-    Emits finished(list) with the keyframe timestamps once scanning is done.
-    Extend run() with more scan stages (scene detection, waveform, ...) as the
-    project grows — emit a progress message between each stage.
+    The pre-work is two ffprobe subprocesses — the keyframe scan, and,
+    when the source has no ``.cmct`` sidecar yet, a duration probe for
+    the placeholder model. Both block, so they run here rather than on
+    the GUI thread: a blocked GUI thread cannot paint the splash that
+    covers them, which on X11 leaves the splash a black rectangle for
+    the length of the scan (a top-level window's first paint is not
+    guaranteed within one ``processEvents``).
+
+    Emits ``finished(list)`` with the keyframe timestamps on success, or
+    ``failed(str)`` with the reason on error, so ``create()`` can refuse
+    to open the window the way a missing binary already would.
     """
     finished = Signal(list)
+    failed = Signal(str)
 
-    def __init__(self, path):
-        super().__init__()
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
         self.path = path
+        self.keyframes = []
+        self.error = None
 
     @Slot()
     def run(self):
-        keyframes = scan_keyframes(self.path)
-        self.finished.emit(keyframes)
+        try:
+            self.keyframes = scan_keyframes(self.path)
+            sidecar = sidecar_path(self.path)
+            if not os.path.exists(sidecar):
+                duration = probe_duration(self.path) or 0.0
+                SegmentModel.placeholder(
+                    os.path.basename(self.path), duration).save(sidecar)
+        except Exception as error:
+            log_exception("Editor pre-scan failed", error)
+            self.error = f"{type(error).__name__}: {error}"
+            self.failed.emit(self.error)
+            return
+        self.finished.emit(self.keyframes)
 
 
 @dataclass(frozen=True)
@@ -1227,12 +1249,7 @@ def create(app, source):
     log(f"editor working on {media_path}")
 
     with LoadingSplash(app, f"Now loading {os.path.basename(media_path)}…") as splash:
-        keyframes = scan_keyframes(media_path)
-
-        sidecar = sidecar_path(media_path)
-        if not os.path.exists(sidecar):
-            duration = probe_duration(media_path) or 0.0
-            SegmentModel.placeholder(os.path.basename(media_path), duration).save(sidecar)
+        keyframes = _prescan(media_path)
 
     # The splash is closed BEFORE MediaPlayer() constructs the mpv player. That
     # hazard was never reproduced -- experiments/mpv_foreground/ ran the splash
@@ -1246,3 +1263,48 @@ def create(app, source):
     window.segment_model = SegmentModel.load(sidecar_path(media_path))
     window.resize(1024, 768)
     return window
+
+
+def _prescan(media_path):
+    """The editor's pre-work, off the GUI thread, behind the splash.
+
+    ``PreScanWorker`` runs the two ffprobe subprocesses on a worker
+    ``QThread`` while a local event loop keeps the splash repainting.
+    The GUI thread stays free, which is what makes the splash paint
+    at all on X11, where a top-level window's first paint is not
+    guaranteed within one ``processEvents`` — running the probes on
+    the GUI thread left the splash a black rectangle for the length
+    of the scan. Returns the keyframe timestamps, or raises on
+    failure so ``Shell.open_safely`` reports a window that could
+    not start.
+
+    The thread's teardown hangs off ``QThread.finished`` (invariant
+    14): a slot returning does not leave the thread's ``exec()``
+    loop, so the worker's own signal is what ends it. The loop quits
+    on ``thread.finished`` rather than on the worker's signal, so the
+    thread has finished by the time the loop returns — which is also
+    what makes the ``wait`` below return at once instead of after its
+    timeout.
+    """
+    worker = PreScanWorker(media_path)
+    thread = QThread()
+    worker.moveToThread(thread)
+
+    loop = QEventLoop()
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+    thread.finished.connect(loop.quit)
+    thread.finished.connect(thread.deleteLater)
+
+    thread.start()
+    loop.exec()
+    thread.wait(5000)
+
+    keyframes = worker.keyframes
+    error = worker.error
+    worker.deleteLater()
+
+    if error is not None:
+        raise RuntimeError(error)
+    return keyframes
