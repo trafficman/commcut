@@ -329,7 +329,14 @@ modal and not cancellable on the rebuild after a save, which is already
 committed. Only folders that contain clips exist, and every level is
 sorted casefolded. A folder row expands and collapses on click; a clip
 row loads the clip — its tags into the form, its video into the preview.
-A record with no sibling video, or one that could not be read, is not a
+A clip's row shows its filename with the folder values it leads with
+struck: the folder above the row is those same tags rendered again, so a
+`Cartoon Network` clip in a `Cartoon Network` folder shows as
+`Alpha.mp4`, not `Cartoon Network Promo 2000s - Alpha.mp4`. The row
+still carries the real path in its data, and the name label above the
+form shows the full path, so nothing is lost — the horizontal room the
+repetition was wasting is what the strike buys back. A record with no
+sibling video, or one that could not be read, is not a
 clip: it is reported in the problems area instead.
 
 Saving is the retagging transaction in `shared/retagging.py`. The form's

@@ -333,7 +333,7 @@ class LibraryManagerWindow(QMainWindow):
                     node.setFlags(node.flags() & ~Qt.ItemIsSelectable)
                     folders[key] = node
                 parent = node
-            leaf = QTreeWidgetItem(parent, [components[-1]])
+            leaf = QTreeWidgetItem(parent, [_leaf_display(components)])
             if parent is None:
                 self.ui.treeLibrary.addTopLevelItem(leaf)
             leaf.setData(0, Qt.UserRole, clip.record.clip_id)
@@ -666,6 +666,36 @@ def _format_time(seconds: float) -> str:
     """`m:ss`, the transport's clock."""
     total = max(0, int(seconds))
     return f"{total // 60}:{total % 60:02d}"
+
+
+def _leaf_display(components):
+    """The text a clip's row shows: its filename, with any
+    folder value it leads with struck from it.
+
+    A clip's filename is a projection of its tags, and the
+    folder above the row is those same tags rendered again,
+    so a `Cartoon Network` clip in a `Cartoon Network`
+    folder shows a name that starts with `Cartoon Network`
+    — the folder said twice. Striking the folder values
+    from the front of the name hands the horizontal room
+    back. The row still carries the real path in its
+    `Qt.UserRole + 1` data, so nothing that reads the tree
+    is affected, and the clip's full path is the name
+    label above the form.
+
+    Only a *leading* value is struck, and only when
+    something is left: a name that is nothing but its
+    folder values stays whole rather than showing an empty
+    row, and a value that appears mid-name is left alone.
+    """
+    stem, extension = os.path.splitext(components[-1])
+    for folder in components[:-1]:
+        if not stem.lower().startswith(folder.lower()):
+            continue
+        remainder = stem[len(folder):].lstrip(" -_.")
+        if remainder:
+            stem = remainder
+    return stem + extension
 
 
 def create(app):

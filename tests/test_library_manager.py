@@ -418,6 +418,46 @@ def test_the_tree_is_built_from_the_walk(harness):
         window.deleteLater()
 
 
+def test_the_leaf_display_strips_only_leading_folder_values():
+    """The row strikes the folder values its name leads
+    with, case-insensitively, and only while something is
+    left: a value that appears mid-name is kept, and a
+    name that is nothing but its folder values stays whole
+    rather than showing an empty row."""
+    assert manager_module._leaf_display(
+        ["Cartoon Network", "Promo", "2000s",
+         "Cartoon Network Promo 2000s - Alpha.mp4"]) == "Alpha.mp4"
+    assert manager_module._leaf_display(
+        ["CN", "Promo", "2000s",
+         "cn promo 2000s - alpha.mp4"]) == "alpha.mp4"
+    assert manager_module._leaf_display(
+        ["CN", "Promo", "2000s",
+         "Alpha - CN Promo.mp4"]) == "Alpha - CN Promo.mp4"
+    assert manager_module._leaf_display(
+        ["CN", "Promo", "2000s", "Alpha.mp4"]) == "Alpha.mp4"
+    assert manager_module._leaf_display(["CN", "CN.mp4"]) == "CN.mp4"
+
+
+def test_the_tree_strips_folder_values_the_name_repeats(harness):
+    """A clip's filename is its tags projected, and the
+    folder above the row is those tags again — so a name
+    that leads with a folder value shows it twice. The row
+    strikes the leading folder values, and still names the
+    clip it stands for."""
+    open_library, root = harness
+    window = open_library(tags_for("CN Promo 2000s - Alpha"))
+
+    try:
+        leaf = leaf_for(
+            window, "CN/Promo/2000s/CN Promo 2000s - Alpha.mp4")
+        assert leaf.text(0) == "Alpha.mp4"
+        assert leaf.data(0, Qt.UserRole + 1) == (
+            "CN/Promo/2000s/CN Promo 2000s - Alpha.mp4")
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_the_problems_area_shows_what_the_walk_found(harness):
     """A record with no video beside it is reported, not dropped,
     and the area is visible only when there is something to say."""
