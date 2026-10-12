@@ -263,9 +263,9 @@ window says so in a hint label and a tooltip, since "Editor" alone does not.
 **The menu is also a drop target.** A video dragged onto it and released opens the
 scanner exactly as the button does, because both entry points call one method,
 `MainWindow.open_source` — the dialog is an input, not the rule. The window calls
-`setAcceptDrops(True)` and implements `dragEnterEvent` and `dropEvent`; nothing
-inside it needs `acceptDrops`, because Qt hands a drag to the widget under the
-cursor and, if it will not take it, up to its parent.
+`setAcceptDrops(True)` and implements `dragEnterEvent`, `dragLeaveEvent` and
+`dropEvent`; nothing inside it needs `acceptDrops`, because Qt hands a drag to
+the widget under the cursor and, if it will not take it, up to its parent.
 
 Three decisions in there are the whole of it:
 
@@ -283,6 +283,19 @@ Three decisions in there are the whole of it:
   `validate_source_video` then refuses by name — the same refusal the dialog gives
   for the same file. Non-local URLs (a link dragged out of a browser) are not paths
   this app can open and are dropped rather than refused.
+
+**A drag the window accepts is highlighted.** The central widget takes a
+translucent tint behind a dashed border (`DROP_HIGHLIGHT_STYLE`) from
+`dragEnterEvent` until `dragLeaveEvent` or `dropEvent`, so the gesture has a
+visible half-way state between entering and releasing. The rule is scoped to
+the central widget's object name, because a stylesheet set bare on a widget
+cascades to everything inside it — unscoped, the dashed border would draw
+itself around every button and label rather than the window. The highlight
+is appearance only: it does not change what is accepted — the drag-enter
+still answers "is this a file?" — and it comes off before the drop is
+handled, so a refused drop leaves the menu looking like itself. Clearing it
+in both the leave and the drop is deliberate, because a leave is not
+guaranteed on every way a drag can end.
 
 The drop needs no modal dialog, which is what makes it the quicker of the two, and
 it is confined to the menu — the only window on screen when nobody else is up.

@@ -1,17 +1,17 @@
 """Tests for the main menu window and the paths it launches.
 
-The menu is the app's entry point, so the four things worth guarding are that it
-resolves the right scripts, that **Editor** asks for a source video and hands the
-chosen one to the scanner, that a video **dropped on the menu** reaches the same
-place the dialog does, and that a failure to launch surfaces as a dialog rather
-than a crash.
+The menu is the app's entry point, so the things worth guarding are that it
+resolves the right scripts, that **Editor** asks for a source video and hands
+the chosen one to the scanner, that a video **dropped on the menu** reaches the
+same place the dialog does -- highlighted for as long as the drag lasts -- and
+that a failure to launch surfaces as a dialog rather than a crash.
 """
 
 import os
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
 
 from editor_stub import ensure_qapp
@@ -254,6 +254,18 @@ def _drag(widget, *entries):
     return event
 
 
+def _drag_leave(widget):
+    """The drag-leave a real drag produces when it leaves `widget`.
+
+    Sent rather than called directly, for the same reason the enter
+    and the drop are: the event has to travel Qt's dispatch to be
+    evidence about what a real drag does.
+    """
+    event = QDragLeaveEvent()
+    QApplication.sendEvent(widget, event)
+    return event
+
+
 def _drop(widget, *entries):
     """A whole drag over `widget`: enter, then release.
 
@@ -380,6 +392,79 @@ def test_a_refused_drop_leaves_the_menu_up_to_try_again(menu, tmp_path):
     _drop(menu, menu.source)
 
     assert menu.opened == [("scanner", {"source": str(menu.source)})]
+
+
+# ---------------------------------------------------------------------------
+# The drop highlight
+# ---------------------------------------------------------------------------
+
+def test_a_drag_over_the_menu_highlights_it(menu, tmp_path):
+    """The window's half of the drag conversation: a tint and a dashed
+    border for as long as the drag lasts, so the gesture has a visible
+    state between entering and releasing."""
+    import mainwindow
+
+    video = tmp_path / "compilation.mp4"
+    video.write_bytes(b"video")
+
+    assert not menu._drop_highlight
+    assert menu.ui.styleSheet() == ""
+
+    _drag(menu, video)
+
+    assert menu._drop_highlight
+    assert menu.ui.styleSheet() == mainwindow.DROP_HIGHLIGHT_STYLE
+
+
+def test_the_highlight_comes_off_when_the_drag_leaves(menu, tmp_path):
+    """A highlight that outlives its drag is a lie about what the window
+    is being offered, so the leave takes it back off."""
+    video = tmp_path / "compilation.mp4"
+    video.write_bytes(b"video")
+
+    _drag(menu, video)
+    _drag_leave(menu)
+
+    assert not menu._drop_highlight
+    assert menu.ui.styleSheet() == ""
+
+
+def test_the_highlight_comes_off_when_the_drag_is_dropped(menu):
+    """The drop clears it too, because a leave is not guaranteed on every
+    way a drag can end -- and it comes off before the drop is handled,
+    so a refused drop leaves the menu looking like itself."""
+    _drag(menu, menu.source)
+    _drop(menu, menu.source)
+
+    assert not menu._drop_highlight
+    assert menu.ui.styleSheet() == ""
+
+
+def test_a_drag_that_is_not_a_file_highlights_nothing(menu):
+    """A refused drag is refused before the highlight: the window is not
+    being offered anything, so it has nothing to prepare for."""
+    _drag(menu, QUrl("https://example.com/clip.mp4"))
+
+    assert not menu._drop_highlight
+    assert menu.ui.styleSheet() == ""
+
+
+def test_the_highlight_wraps_the_window_not_its_contents(menu):
+    """The tint and the dashed border belong to the window alone.
+
+    A stylesheet set bare on a widget cascades to everything inside
+    it, so an unscoped rule draws the dashed border around every
+    button and label as well as the window. The rule has to name the
+    central widget -- and only the central widget -- in its selector,
+    which is what keeps the outline on the outer edges.
+    """
+    import mainwindow
+
+    _drag(menu, menu.source)
+
+    assert menu.ui.styleSheet().startswith(
+        f"#{menu.ui.objectName()} {{")
+    assert menu.ui.styleSheet() == mainwindow.DROP_HIGHLIGHT_STYLE
 
 
 # ---------------------------------------------------------------------------

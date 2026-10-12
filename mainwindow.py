@@ -37,7 +37,10 @@ editor's own modal dialogs are on the same footing.
 
 The drop is not that. It arrives as Qt's own drag events on this window, so it
 needs no modal and no shell involvement at all — and it is confined to the menu,
-which is the only window visible when nobody else is up.
+which is the only window visible when nobody else is up. A drag the window
+accepts is answered with a highlight — a tint and a dashed border on the
+central widget, `DROP_HIGHLIGHT_STYLE` — for as long as it lasts, so the
+gesture has a visible state between entering and releasing.
 """
 
 import os
@@ -61,6 +64,23 @@ from shared.sources import (
     validate_source_video,
 )
 from shared.ui_loader import UiLoader, adopt_title
+
+
+#: The highlight a drag over the menu puts on the central widget: a
+#: translucent tint behind a dashed border, the standard "drop here"
+#: affordance. The rule is scoped to the central widget's own object
+#: name, because a stylesheet set bare on a widget cascades to
+#: everything inside it -- an unscoped rule draws the dashed border
+#: around every button and label, not around the window. Literal
+#: colours rather than a palette role, because the point is to stand
+#: out from whichever scheme the system is running.
+DROP_HIGHLIGHT_STYLE = (
+    "#MainWindow {"
+    "background-color: rgba(60, 110, 220, 64);"
+    "border: 2px dashed rgba(60, 110, 220, 220);"
+    "border-radius: 6px;"
+    "}"
+)
 
 
 def video_name_filter():
@@ -165,6 +185,7 @@ class MainWindow(QMainWindow):
         # the cursor and, if it does not take it, up to its parent, so the
         # buttons and labels inside need nothing.
         self.setAcceptDrops(True)
+        self._drop_highlight = False
 
         self.ui.editorButton.clicked.connect(self.open_editor)
         self.ui.importButton.clicked.connect(self.open_import)
@@ -219,12 +240,42 @@ class MainWindow(QMainWindow):
         message, so a mistyped container would be answered by nothing happening;
         accepting it here instead lets `open_source` refuse it by name, listing
         what is supported.
+
+        A drag that is offered the window is also offered the highlight, which
+        stays up for as long as the drag does -- `dragLeaveEvent` and
+        `dropEvent` are the two ways it comes down.
         """
         mime_data = event.mimeData()
         if any(url.isLocalFile() for url in mime_data.urls()):
+            self._set_drop_highlight(True)
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """Take the drop highlight back when the drag leaves the window.
+
+        The other half of the pair with `dragEnterEvent`. `dropEvent`
+        clears it too, because a leave is not guaranteed on every way a
+        drag can end -- a release outside the window, or a drag cancelled
+        outright -- and a highlight that outlives its drag is a lie about
+        what the window is being offered.
+        """
+        self._set_drop_highlight(False)
+        event.accept()
+
+    def _set_drop_highlight(self, active):
+        """Show or hide the drop highlight, and only on a change.
+
+        Idempotent, because the enter that sets it and the drop that
+        clears it can both run for the same drag (a drop is always
+        preceded by an enter), and because re-applying an unchanged
+        stylesheet is work the drag's every move does not need.
+        """
+        if self._drop_highlight == active:
+            return
+        self._drop_highlight = active
+        self.ui.setStyleSheet(DROP_HIGHLIGHT_STYLE if active else "")
 
     def dropEvent(self, event):
         """Open the scanner on a dropped video, exactly as the button would.
@@ -232,7 +283,11 @@ class MainWindow(QMainWindow):
         The drop carries no modal dialog and needs nothing from the shell beyond
         the one `open_source` call, which is the whole difference from the dialog
         route and the reason it can be the quicker one.
+
+        The highlight comes off first, so the window is back to its resting
+        look whatever the drop then does -- open, refuse, or ignore.
         """
+        self._set_drop_highlight(False)
         chosen = dropped_source(event.mimeData())
         if chosen is None:
             event.ignore()
