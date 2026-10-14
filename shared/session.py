@@ -89,6 +89,7 @@ _BUILDERS = {
     "queue": ("importer.queue", "create"),
     "values": ("importer.values", "create"),
     "library": ("library.manager", "create"),
+    "sharing": ("sharing.sharing", "create"),
 }
 
 #: The names a caller may open. Settings is listed so a bad name says what the

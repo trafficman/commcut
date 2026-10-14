@@ -192,6 +192,24 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   every keystroke. →
   [architecture.md](architecture.md#the-library-manager)
 
+- **Library Sharing** (`sharing/sharing.py`, `shared/sharing.py`): the
+  main menu's **Library Sharing** button. The export library, or a
+  tag-filtered part of it, as a zip a recipient drops into their
+  `import/` folder. The Library Manager's shape with the tag form
+  replaced by the share filter: a read-only tree of what a share would
+  hold on the left, an mpv preview on the right, and the filter below
+  the player. The tree is the filter's result, rebuilt from a walk on
+  every open and re-run synchronously on every row change, so what it
+  shows is what the share would hold. Within one namespace the rules are
+  OR'd, across namespaces they are AND'd, and an exclusion drops a clip
+  the inclusions would otherwise have kept; matching is in
+  `value_dedup_key` space, so a value typed into a row and a folder the
+  library rendered agree. The zip holds each clip's video and its `.cnfo`
+  record under one root folder named after the zip, written to the
+  `Share/` folder beside the app with a no-clobber name and a
+  `.part`-then-rename write, so an interrupted share leaves no half-file.
+  → [sharing.md](sharing.md)
+
 Detail in [architecture.md](architecture.md) and
 [naming-and-organization.md](naming-and-organization.md).
 

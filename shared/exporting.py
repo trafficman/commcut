@@ -106,13 +106,14 @@ def export_folder_setting_error(value: str) -> str | None:
     same reason the scheme fields validate through `compile_filename_scheme`
     rather than a second copy of the grammar.
 
-    Three rules, in order, each a message written for a person:
+    Four rules, in order, each a message written for a person:
 
     1. absolute -- a relative path would resolve against whatever the working
        directory happens to be when the export runs, which is not a folder
        anybody chose
     2. not `import/`, not inside it, and not containing it
-    3. not an existing file
+    3. not the share folder, not inside it, and not containing it
+    4. not an existing file
 
     A blank value is **not** an error: it is how the user asks for the default,
     and `export_folder()` reads it that way.
@@ -145,6 +146,18 @@ def export_folder_setting_error(value: str) -> str | None:
             f"commcut moves and deletes finished clips out of the import "
             f"folder, so an export root that overlaps it would write into the "
             f"one folder the importer is allowed to empty."
+        )
+
+    share_root = environment.share_folder()
+    if _overlaps(candidate, share_root):
+        return (
+            f"The export folder cannot be the share folder or "
+            f"overlap it:\n"
+            f"  export: {candidate}\n"
+            f"  share: {share_root}\n\n"
+            f"commcut writes library shares as zips into the share "
+            f"folder, so an export root that overlaps it would write "
+            f"exported clips into the folder shares are written to."
         )
 
     if os.path.lexists(candidate) and not os.path.isdir(candidate):

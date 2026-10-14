@@ -46,11 +46,12 @@ PyInstaller build of this app breaks:
                        holding the executable, never the extraction folder --
                        the latter is wiped when the process exits.
 
-``install_root()`` is also the one owner of the three writable folder *names*
+``install_root()`` is also the one owner of the writable folder *names*
 below it, which is why they are spelled here rather than in the modules that
 read them: ``import_folder()`` next to ``install_root()`` rather than in
-``shared/sources.py``, and the export root in ``shared/exporting.py``, which
-resolves a setting with this folder as its default.
+``shared/sources.py``, ``share_folder()`` for the library-share zip, and the
+export root in ``shared/exporting.py``, which resolves a setting with this
+folder as its default.
 
 The PyInstaller spec pins ``contents_directory="."`` so that, in the shipped
 onedir layout, ``resource_root() == install_root()`` and the two collapse into
@@ -365,6 +366,13 @@ SETTINGS_FILENAME = "settings.json"
 #: be inside the program root rather than somewhere a single mis-click reaches.
 IMPORT_FOLDER_NAME = "import"
 
+#: Folder under the install root that library shares are written to.
+#: Fixed rather than configurable on purpose: a share is a zip of clips
+#: from the export library, and the folder it lands in is a known
+#: location rather than a save dialog, so the one place it is written
+#: is spelled here.
+SHARE_FOLDER_NAME = "share"
+
 
 def settings_path() -> str:
     """Absolute path of ``settings.json``.
@@ -394,6 +402,23 @@ def import_folder() -> str:
     either of those would be a cycle.
     """
     return os.path.join(install_root(), IMPORT_FOLDER_NAME)
+
+
+def share_folder() -> str:
+    """Absolute path of the folder library shares are written to.
+
+    Fixed under the install root and not configurable: a share is a zip
+    of clips from the export library, and the folder it lands in is a
+    known location rather than a choice, which is the reason. See
+    :data:`SHARE_FOLDER_NAME`.
+
+    Here rather than in ``shared/sharing.py`` for the same reason
+    ``import_folder()`` is here: ``shared/exporting.py`` must compare the
+    export root against it, and ``shared/sharing.py`` imports from the
+    modules ``shared/exporting.py`` also imports, so a copy in either
+    would be a second spelling of the path.
+    """
+    return os.path.join(install_root(), SHARE_FOLDER_NAME)
 
 
 
@@ -817,13 +842,14 @@ def no_console_kwargs():
 
 #: Writable folders the app expects to exist next to the executable.
 #:
-#: export/ and temp/ are created lazily by shared.ffmpeg when something is
-#: actually written, so they only need to exist for discoverability -- and
-#: export/ is here because it is the *default* export root, not because every
-#: install uses it. import/ is never created by anything else, and an installed
-#: build has no source tree to inherit it from -- the user drops a source video
-#: in by hand.
-APP_FOLDERS = ('import', 'export', 'temp')
+#: export/, temp/ and share/ are created lazily -- export/ and temp/ by
+#: shared.ffmpeg when something is actually written, share/ by the share
+#: writer -- so they only need to exist for discoverability -- and
+#: export/ is here because it is the *default* export root, not because
+#: every install uses it. import/ is never created by anything else, and
+#: an installed build has no source tree to inherit it from -- the user
+#: drops a source video in by hand.
+APP_FOLDERS = ('import', 'export', 'temp', 'share')
 
 
 def ensure_app_folders():

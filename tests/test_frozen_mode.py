@@ -23,6 +23,7 @@ from shared.environment import (
     MPV_GPU_CONTEXT,
     MPV_VIDEO_OUTPUT,
     SETTINGS_FILENAME,
+    SHARE_FOLDER_NAME,
     ensure_app_folders,
     get_binary_path,
     import_folder,
@@ -32,6 +33,7 @@ from shared.environment import (
     resource_path,
     resource_root,
     settings_path,
+    share_folder,
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +69,7 @@ UI_FILES = (
     ("importer", "queuewindow.ui"),
     ("importer", "valueswindow.ui"),
     ("library", "librarywindow.ui"),
+    ("sharing", "sharingwindow.ui"),
 )
 
 # Read-only resources that are not .ui files. Deliberately a separate list: the
@@ -186,7 +189,9 @@ def test_the_user_data_folders_are_beside_the_executable(frozen, tmp_path):
 
     assert import_folder() == os.path.join(install_dir, IMPORT_FOLDER_NAME)
     assert settings_path() == os.path.join(install_dir, SETTINGS_FILENAME)
+    assert share_folder() == os.path.join(install_dir, SHARE_FOLDER_NAME)
     assert IMPORT_FOLDER_NAME in APP_FOLDERS
+    assert SHARE_FOLDER_NAME in APP_FOLDERS
 
 
 def test_the_import_folder_is_not_where_a_source_video_has_to_be(tmp_path):

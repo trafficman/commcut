@@ -49,6 +49,9 @@ commcut/
 ├── library/                 # The Library Manager (browse + re-tag)
 │   ├── manager.py           # Entry point: Library Manager window, the walk, the save
 │   └── librarywindow.ui     # Qt Designer file; promoted TagForm
+├── sharing/                 # Library Sharing (filter + zip)
+│   ├── sharing.py           # Entry point: Library Sharing window, the filter, the share
+│   └── sharingwindow.ui     # Qt Designer file
 ├── editor/                  # The Editing Wizard (current focus)
 │   ├── editor.py            # Entry point: Editor window, editing state machine,
 │   │                        # splash flow, PreScanWorker scaffolding, ExportWorker
@@ -75,6 +78,7 @@ commcut/
 │   ├── exporting.py         # Settings snapshot, destination planner, export preflight
 │   ├── catalog.py           # build_catalog (read the library back), sync_vocabulary
 │   ├── retagging.py         # plan_retag / execute_retag: the re-tag plan and transaction
+│   ├── sharing.py           # filter_clips, share_plan, share_zip_name, write_share_zip
 │   ├── importing.py         # plan_import / execute_import, find_videos, match_value
 │   ├── mesh.py              # MeshSession: the folder-name model, and the alias table
 │   ├── values.py            # ValueSession: the tag-value model, and the value table
@@ -308,8 +312,9 @@ handed to the Tagged Library Mesh rather than asked about folder names that are
 somebody install's *rendered* output. See
 [importing.md](importing.md#the-flow).
 
-The file dialog is modal, which puts it outside the shell: only the **Settings**
-and **Import** buttons call `shell().open_safely(name)` directly, while **Editor**
+The file dialog is modal, which puts it outside the shell: the **Settings**,
+**Import**, **Library Manager** and **Library Sharing** buttons call
+`shell().open_safely(name)` directly, while **Editor**
 and a drop both call `open_source`, which calls `open_safely('scanner',
 source=...)` once the video is known. `shell().open_safely(name)`
 is still the only way a window is opened anywhere in the app. The menu is the one
@@ -321,7 +326,7 @@ the app, which the shell watches for through an event filter rather than
 
 `setup_environment` resolves the project root as `install_root()`: the source
 tree unfrozen, `dirname(sys.executable)` frozen. `tests/test_main_window.py`
-covers the file dialog, both ways into the wizard (button and drop), the three
+covers the file dialog, both ways into the wizard (button and drop), the menu's
 buttons, and the project-root resolution from every entry point;
 `tests/test_session.py` covers the navigation.
 
@@ -375,6 +380,50 @@ still running — the same two rules as the scanner and the editor. The
 walk is
 [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)'s;
 the form is [tag-vocabulary.md](tag-vocabulary.md)'s.
+
+## Library Sharing
+
+Library Sharing (`sharing/sharing.py`) is the main menu's
+**Library Sharing** button: the export library, or a
+tag-filtered part of it, as a zip a recipient drops into
+their `import/` folder. It is the Library Manager's shape
+with the tag form replaced by the share filter — a read-only
+tree of what a share would hold on the left, an mpv preview
+on the right, and the filter below the player.
+
+The tree is the filter's oracle. It is rebuilt from a fresh
+`build_catalog` walk on every open, and the filter re-runs
+synchronously on every row change, so what the tree shows is
+always what the share would hold: within one namespace the
+rules are OR'd, across namespaces they are AND'd, an
+exclusion drops a clip the inclusions would otherwise have
+kept, and matching happens in `value_dedup_key` space, so a
+value typed into a row and a folder the library rendered
+agree. Both combos are editable and neither validates — the
+vocabulary is advisory (invariant 13) — and the value combo
+offers the catalog's own values for the chosen namespace, the
+library's truth rather than the advisory `vocabulary.json`.
+The Share button follows the result, so a filter that matches
+nothing cannot be shared.
+
+A share is a copy, so the window writes nothing to the
+library. The zip itself is `shared/sharing.py:write_share_zip`:
+each clip's video with its `.cnfo` record at its relative
+path beneath one root folder named after the zip, `ZIP_STORED`
+because compressing media is wasted CPU, written to a `.part`
+beside its final name and renamed into place, under a
+no-clobber name (`stem (1).zip`, `stem (2).zip`, …), with
+the ` (Created with CommCut)` suffix applied before the
+extension. It runs on a worker `QThread` behind a non-modal,
+cancellable progress dialog, into the fixed `Share/` folder
+beside the app (`shared/environment.py:share_folder`, fixed
+rather than a save dialog for the same reason `import/` is).
+`closeEvent` shuts the preview's player down while its video
+frame still has its native handle, and refuses to close while
+either the walk or the zip thread is still running — the same
+rules as the Library Manager, with the real close deferred to
+the teardown that follows the thread actually stopping. See
+[sharing.md](sharing.md).
 
 ## The source video is picked from anywhere
 
@@ -494,9 +543,13 @@ The shared modules are:
   carry a dead second copy) or `shared/importing.py` (which carried the live
   one) because `shared/exporting.py` must compare the export root against it and
   `shared/importing.py` imports *from* `shared/exporting.py` — either of those
-  would be a cycle. `settings_path()` is here for the same reason
-  `import_folder()` is: it is the one owner of a path under the install root,
-  and four modules used to spell it out themselves.
+   would be a cycle. `settings_path()` is here for the same reason
+   `import_folder()` is: it is the one owner of a path under the install root,
+   and four modules used to spell it out themselves. `share_folder()`
+   is here for the same reason too: `shared/exporting.py` compares the
+   export root against it, and `shared/sharing.py` imports from the
+   modules `shared/exporting.py` also imports, so a copy in either
+   would be a second spelling of the path.
 - `shared/session.py` — the `Shell`: the one `QApplication`'s single visible
   window, the `_BUILDERS` registry mapping a window name to its module and
   builder, `OpenInstead` for a builder that declines, and `shell()` /
@@ -581,8 +634,22 @@ The shared modules are:
     the path at all. `execute_retag()` is the transaction: the record is
     published at the new path before the video moves, a failed move cleans
     up after itself, a v1 record gains the clip ID the re-select needs,
-    and a case-only change is a move on both kinds of volume.
-  - `shared/importing.py` — the Library Importer's backend. `plan_import()` resolves
+     and a case-only change is a move on both kinds of volume.
+   - `shared/sharing.py` — Library Sharing's backend, with no Qt
+     and no child process, so the filter can run on the GUI thread
+     on every row change: `filter_clips()` is the one place the
+     filter's semantics live (within one namespace OR, across
+     namespaces AND, an exclusion applied after the inclusion,
+     matching in `value_dedup_key` space, so a value typed into a
+     row and a folder the library rendered agree); `share_plan()`
+     counts the folders, videos and bytes a share would hold;
+     `share_zip_name()` applies the ` (Created with CommCut)`
+     suffix before the extension; and `write_share_zip()` is the
+     write — each clip's video with its record under one root
+     folder, `ZIP_STORED`, `.part`-then-rename, no-clobber
+     numbering, cancel-safe. The window owns the threads around
+     it. See [sharing.md](sharing.md).
+   - `shared/importing.py` — the Library Importer's backend. `plan_import()` resolves
    finished clips to destinations through the *same* `plan_clip_destination` and
    `DestinationIndex` the export planner uses, so a foreign clip cannot land
    somewhere an exported one would not; `execute_import()` copies, links or moves

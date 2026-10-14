@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self.ui.importButton.clicked.connect(self.open_import)
         self.ui.settingsButton.clicked.connect(self.open_settings)
         self.ui.libraryButton.clicked.connect(self.open_library)
+        self.ui.shareButton.clicked.connect(self.open_sharing)
 
     def open_editor(self):
         """Ask for a source video and open the scanner on it.
@@ -331,6 +332,22 @@ class MainWindow(QMainWindow):
         and `library/manager.py`.
         """
         shell().open_safely('library')
+
+    def open_sharing(self):
+        """Open Library Sharing over the export library.
+
+        A share is the export library, or a tag-filtered part
+        of it, as a zip: every clip's video with its `.cnfo`
+        record beside it, so a recipient drops it into their
+        `import/` folder and imports it through the usual
+        pipeline. Like the Library Manager it is opened with
+        no arguments — the library is the export folder, which
+        Settings configures, and the zip lands in the Share
+        folder beside the app. See
+        [docs/sharing.md](docs/sharing.md) and
+        `sharing/sharing.py`.
+        """
+        shell().open_safely('sharing')
 
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""

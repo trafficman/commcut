@@ -250,18 +250,19 @@ def test_no_link_inside_the_archive_dangles(tree, dist):
 def test_nothing_the_app_owns_at_runtime_reaches_the_archive(tree, dist):
     """The leak test, and the reason the manifest is an allow-list.
 
-    `import/`, `export/` and `temp/` are not in `.gitignore`: for a source
-    install the project root *is* the install root, so they sit at the repo
-    root holding whatever the developer last exported. A walker that took
-    "everything, minus what I remembered to exclude" would put a user's videos
-    into a public release. This plants all of it and requires that none of it
-    arrives.
+    `import/`, `export/`, `temp/` and `Share/` are not in
+    `.gitignore`: for a source install the project root *is* the
+    install root, so they sit at the repo root holding whatever the
+    developer last exported or shared. A walker that took
+    "everything, minus what I remembered to exclude" would put a
+    user's videos into a public release. This plants all of it and
+    requires that none of it arrives.
     """
     root = str(tree)
 
-    for folder in ("import", "export", "temp", ".venv", "tests",
-                   "prototypes", "bin", "build", "dist", ".github",
-                   "picker", "experiments"):
+    for folder in ("import", "export", "temp", "share", ".venv",
+                   "tests", "prototypes", "bin", "build", "dist",
+                   ".github", "picker", "experiments"):
         os.makedirs(os.path.join(root, folder), exist_ok=True)
         with open(os.path.join(root, folder, "a-private-clip.mp4"), "wb") as f:
             f.write(b"not yours to publish")
@@ -281,11 +282,12 @@ def test_nothing_the_app_owns_at_runtime_reaches_the_archive(tree, dist):
     archive, members = _build(tree, dist)
     names = [m.name for m in members]
 
-    for fragment in ("import/", "export/", "temp/", ".venv", "tests/",
-                     "prototypes", "bin/", "build/", "dist/", ".github",
-                     "picker/", "__pycache__", ".pyc", "core.py",
-                     "settings.json", "vocabulary.json", "commcut.log",
-                     "results_post_refactor", "a-private-clip"):
+    for fragment in ("import/", "export/", "temp/", "Share/", ".venv",
+                     "tests/", "prototypes", "bin/", "build/", "dist/",
+                     ".github", "picker/", "__pycache__", ".pyc",
+                     "core.py", "settings.json", "vocabulary.json",
+                     "commcut.log", "results_post_refactor",
+                     "a-private-clip"):
         assert not any(fragment in name for name in names), fragment
 
     # And the file that legitimately looks like the thing being hunted for is
@@ -304,7 +306,8 @@ def test_only_the_experiment_index_is_shipped_from_experiments(tree):
 
 @pytest.mark.parametrize("refused", [
     "bin", "bin/mac", "tests/test_docs.py", "prototypes/editor.py",
-    "import/a.mp4", "export/b.mp4", "temp/clip.mp4", ".venv/bin/python",
+    "import/a.mp4", "export/b.mp4", "temp/clip.mp4", "Share/a.zip",
+    ".venv/bin/python",
     "shared/__pycache__/environment.cpython-311.pyc", "settings.json",
     "vocabulary.json", "commcut.log", "core.py", "build/lib.py",
     "dist/x.tar.gz", ".github/workflows/release.yml", "picker/old.py",

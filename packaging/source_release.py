@@ -119,6 +119,7 @@ SOURCE_ENTRIES = (
     'settings',
     'importer',
     'library',
+    'sharing',
     'assets',
 
     # What it needs installed.
@@ -171,11 +172,14 @@ FORBIDDEN_PATHS = (
     'build',
     'dist',
     # The app's own runtime folders, which for a source install *are* the
-    # project root. A developer who has exported a hundred clips has a hundred
-    # real files here, and they are not gitignored.
+    # project root. A developer who has exported a hundred clips has a
+    # hundred real files here, and they are not gitignored. `Share` is
+    # capitalized because that is the folder's name; the lowercase
+    # `sharing/` beside it is code and is in the manifest.
     'import',
     'export',
     'temp',
+    'share',
     '.venv',
     # Runtime state, written on first run.
     'settings.json',

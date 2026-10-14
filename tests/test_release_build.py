@@ -64,6 +64,7 @@ def _make_portable(root):
         _write(root / "bin" / "win" / name, "binary")
     _write(root / "import" / "README.txt", build.IMPORT_PLACEHOLDER, "\r\n")
     _write(root / "export" / "README.txt", build.EXPORT_PLACEHOLDER, "\r\n")
+    _write(root / "share" / "README.txt", build.SHARE_PLACEHOLDER, "\r\n")
     return root
 
 
@@ -207,12 +208,13 @@ def test_a_missing_binary_stops_the_archive(portable):
 
 
 def test_the_placeholders_survive_being_zipped(portable):
-    """import/ and export/ keep their README, so the folders are not empty.
+    """import/, export/ and share/ keep their README, so the folders
+    are not empty.
 
-    An empty folder does not survive being zipped, so a distributable that
-    arrives with no import/ looks broken before the user has done anything
-    wrong. The placeholder is the whole reason those two folders are written
-    rather than created empty.
+    An empty folder does not survive being zipped, so a distributable
+    that arrives with no import/ looks broken before the user has done
+    anything wrong. The placeholder is the whole reason those folders
+    are written rather than created empty.
 
     The line endings are part of it: the constant holds newlines, and
     assemble_portable() writes it with ``newline='\\r\\n'`` so that Notepad on
@@ -226,7 +228,8 @@ def test_the_placeholders_survive_being_zipped(portable):
 
     with zipfile.ZipFile(zip_path) as archive:
         for folder, expected in (("import", build.IMPORT_PLACEHOLDER),
-                                 ("export", build.EXPORT_PLACEHOLDER)):
+                                 ("export", build.EXPORT_PLACEHOLDER),
+                                 ("share", build.SHARE_PLACEHOLDER)):
             raw = archive.read(f"{root}{folder}/README.txt").decode("utf-8")
             assert "\r\n" in raw, f"{folder}/README.txt is not CRLF"
             assert raw.replace("\r\n", "\n") == expected

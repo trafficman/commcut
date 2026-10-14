@@ -111,6 +111,7 @@ UI_DATAS = [
     ('importer/queuewindow.ui', 'importer'),
     ('importer/valueswindow.ui', 'importer'),
     ('library/librarywindow.ui', 'library'),
+    ('sharing/sharingwindow.ui', 'sharing'),
     ('assets/commcut_banner.png', 'assets'),
     ('assets/commcut_icon.png', 'assets'),
     ('assets/commcut_icon.ico', 'assets'),
@@ -174,6 +175,7 @@ hiddenimports = [
     'importer.mesh',
     'importer.queue',
     'library.manager',
+    'sharing.sharing',
     'importer.values',
 ]
 

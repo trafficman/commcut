@@ -63,6 +63,7 @@ commcut/
 ├── editor/                  # Editing Wizard: segments, tags, export
 ├── settings/                # file + folder scheme editors
 ├── library/                 # Library Manager: browse export/, re-tag clips
+├── sharing/                 # Library Sharing: filter the library, zip it
 ├── shared/                  # the library the windows build on
 ├── tests/                   # pytest suite (docs/testing.md)
 ├── docs/                    # the documents indexed below
@@ -79,7 +80,8 @@ number the two build scripts check a tag against), `diagnostics`
 videos may be opened), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
-(the `.cnfo`), `retagging` (the re-tag plan and transaction), `vocabulary`,
+(the `.cnfo`), `retagging` (the re-tag plan and transaction), `sharing`
+(the share filter, plan, naming and zip write), `vocabulary`,
 `mesh`, `values`, `tag_form`, `splash`, `icons`,
 `ui_loader`. `environment` also owns `settings_path()` and the fixed
 `import_folder()`. Per-module detail: [docs/architecture.md](docs/architecture.md).
@@ -93,6 +95,7 @@ planner and `export_folder()`), `catalog` (reading the library back), `records`
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
 | [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI and the export folder |
+| [docs/sharing.md](docs/sharing.md) | library sharing: the export library, or a tag-filtered part of it, as a zip a recipient drops into `import/` — the filter's semantics, the tree that shows what a share would hold, and the zip's naming and write |
 | [docs/importing.md](docs/importing.md) | the Library Importer: both meshes and the tag editor, reading somebody else's library, the occupied-destination rule, copy/link/move and what a move deletes, and why a path can only ever propose a tag |
 | [docs/tag-vocabulary.md](docs/tag-vocabulary.md) | the tag dropdowns: `vocabulary.json`, its shipped defaults, the dedup rule, the most-recently-used ordering, who records a confirmed tag, what the sync counts as "used" |
 | [docs/packaging.md](docs/packaging.md) | the portable Windows build, everything that only breaks when frozen, and the two tag-driven release pipelines |
@@ -112,7 +115,7 @@ diagnose. The linked document has the full reasoning.
    → [docs/packaging.md](docs/packaging.md)
 2. **Frozen has two roots.** `resource_root()` is the read-only payload;
    `install_root()` is beside the exe and holds `bin/<os>/`, `settings.json`,
-   `import/`, the *default* `export/`, `temp/`, `commcut.log`. Nothing that must
+   `import/`, the *default* `export/`, `Share/`, `temp/`, `commcut.log`. Nothing that must
    survive goes in the payload. Unfrozen they are the same folder, so a source
    install on macOS or Linux writes to the clone.
    → [docs/packaging.md](docs/packaging.md)

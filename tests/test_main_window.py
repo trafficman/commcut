@@ -533,6 +533,12 @@ def test_library_button_opens_the_library_manager(menu):
     assert menu.opened == [("library", {})]
 
 
+def test_share_button_opens_the_sharing_window(menu):
+    menu.ui.shareButton.click()
+
+    assert menu.opened == [("sharing", {})]
+
+
 def test_the_menu_does_not_start_processes(menu):
     """The process model is gone, and a subprocess here would mean it is not.
 

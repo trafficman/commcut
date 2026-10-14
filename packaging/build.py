@@ -119,9 +119,11 @@ OPTIONAL_PAYLOAD_FILES = (
 # Folders the app expects next to the executable. import/ and export/ are in
 # APP_FOLDERS in shared/environment.py; temp/ is created on first run and is
 # pure scratch, so it is not shipped. export/ is shipped because it is the
-# *default* export root, not because every install uses it -- the user can point
-# commcut anywhere from Settings.
-PLACEHOLDER_FOLDERS = ('import', 'export')
+# *default* export root, not because every install uses it -- the user can
+# point commcut anywhere from Settings. Share/ is shipped because it is
+# where library shares are written, and an empty folder does not survive
+# being zipped.
+PLACEHOLDER_FOLDERS = ('import', 'export', 'share')
 
 IMPORT_PLACEHOLDER = """\
 This folder is for importing finished clips into your library.
@@ -156,6 +158,28 @@ This is the default. Settings has an "Export Folder" row that accepts any folder
 on this computer, and an empty row means you are back to this one.
 """
 
+SHARE_PLACEHOLDER = """\
+Library shares are written here as zip files.
+
+Open "Library Sharing" from the main menu to share your library, or a
+filtered part of it. The zip holds each clip's video and its .cnfo
+record, so somebody who receives it drops the contents into their
+import folder and imports them through the usual pipeline.
+
+Nothing else lives in this folder. Delete a zip here once it has been
+received; a share is a copy, so the library it came from is untouched.
+"""
+
+#: The README each placeholder folder is born with, by folder name.
+#: A dict rather than the if/else the loop used to carry, because a
+#: third folder is a second branch and that pattern does not scale
+#: past two.
+PLACEHOLDER_TEXT = {
+    'import': IMPORT_PLACEHOLDER,
+    'export': EXPORT_PLACEHOLDER,
+    'share': SHARE_PLACEHOLDER,
+}
+
 # Git LFS pointer files are ~130 bytes of ASCII. A real ffmpeg.exe is over a
 # hundred megabytes. Anything under this threshold is a pointer, not a binary,
 # and shipping one produces a build that installs cleanly and then fails the
@@ -182,6 +206,7 @@ REQUIRED_ARCHIVE_ENTRIES = (
     'bin/win/libmpv-2.dll',
     'import/README.txt',
     'export/README.txt',
+    'Share/README.txt',
 )
 
 # Read the archive's contents in chunks rather than whole: the biggest file in
@@ -404,16 +429,15 @@ def assemble_portable(onedir):
         shutil.copy2(os.path.join(BIN_SOURCE_DIR, name),
                      os.path.join(target_bin, name))
 
-    # import/ and export/ ship with a placeholder because empty folders do not
-    # survive being zipped, and a distributable that arrives with no import/
-    # looks broken.
+    # import/, export/ and Share/ ship with a placeholder because empty
+    # folders do not survive being zipped, and a distributable that
+    # arrives with no import/ looks broken.
     for name in PLACEHOLDER_FOLDERS:
         folder = os.path.join(PORTABLE_DIR, name)
         os.makedirs(folder, exist_ok=True)
-        note = (IMPORT_PLACEHOLDER if name == 'import' else EXPORT_PLACEHOLDER)
         with open(os.path.join(folder, 'README.txt'), 'w',
                   encoding='utf-8', newline='\r\n') as handle:
-            handle.write(note)
+            handle.write(PLACEHOLDER_TEXT[name])
 
     total = sum(
         os.path.getsize(os.path.join(dirpath, file))
