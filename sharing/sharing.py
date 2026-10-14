@@ -184,7 +184,7 @@ class ShareDialog(QDialog):
 
     The filename preview is the one place the suffix is shown
     before it is applied, so the name the user types and the file
-    that lands in the Share folder cannot disagree.
+    that lands in the share folder cannot disagree.
     """
 
     def __init__(self, clips, parent=None):
@@ -215,7 +215,7 @@ class ShareDialog(QDialog):
         layout.addWidget(self._line)
         layout.addWidget(self._preview)
         layout.addWidget(QLabel(
-            "The zip is written to the Share folder beside commcut. "
+            "The zip is written to the share folder beside commcut. "
             "It holds each clip's video and its .cnfo record, so a "
             "recipient drops it into their import folder and imports "
             "it through the usual pipeline."))
@@ -721,7 +721,7 @@ class SharingWindow(QMainWindow):
     def _on_zip_done(self, path):
         """The zip was written: say where it is."""
         self.ui.labelStatus.setText(
-            f"Wrote {os.path.basename(path)} to the Share folder.")
+            f"Wrote {os.path.basename(path)} to the share folder.")
 
     def _on_zip_failed(self, message):
         """The zip could not be written: say why."""

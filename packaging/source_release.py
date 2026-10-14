@@ -173,9 +173,9 @@ FORBIDDEN_PATHS = (
     'dist',
     # The app's own runtime folders, which for a source install *are* the
     # project root. A developer who has exported a hundred clips has a
-    # hundred real files here, and they are not gitignored. `Share` is
-    # capitalized because that is the folder's name; the lowercase
-    # `sharing/` beside it is code and is in the manifest.
+    # hundred real files here, and they are not gitignored. `share` is
+    # lowercase because that is the folder's name; the `sharing/`
+    # package beside it is code and is in the manifest.
     'import',
     'export',
     'temp',

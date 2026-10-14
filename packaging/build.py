@@ -120,7 +120,7 @@ OPTIONAL_PAYLOAD_FILES = (
 # APP_FOLDERS in shared/environment.py; temp/ is created on first run and is
 # pure scratch, so it is not shipped. export/ is shipped because it is the
 # *default* export root, not because every install uses it -- the user can
-# point commcut anywhere from Settings. Share/ is shipped because it is
+# point commcut anywhere from Settings. share/ is shipped because it is
 # where library shares are written, and an empty folder does not survive
 # being zipped.
 PLACEHOLDER_FOLDERS = ('import', 'export', 'share')
@@ -206,7 +206,7 @@ REQUIRED_ARCHIVE_ENTRIES = (
     'bin/win/libmpv-2.dll',
     'import/README.txt',
     'export/README.txt',
-    'Share/README.txt',
+    'share/README.txt',
 )
 
 # Read the archive's contents in chunks rather than whole: the biggest file in
@@ -429,7 +429,7 @@ def assemble_portable(onedir):
         shutil.copy2(os.path.join(BIN_SOURCE_DIR, name),
                      os.path.join(target_bin, name))
 
-    # import/, export/ and Share/ ship with a placeholder because empty
+    # import/, export/ and share/ ship with a placeholder because empty
     # folders do not survive being zipped, and a distributable that
     # arrives with no import/ looks broken.
     for name in PLACEHOLDER_FOLDERS:

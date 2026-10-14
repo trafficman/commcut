@@ -206,7 +206,7 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   `value_dedup_key` space, so a value typed into a row and a folder the
   library rendered agree. The zip holds each clip's video and its `.cnfo`
   record under one root folder named after the zip, written to the
-  `Share/` folder beside the app with a no-clobber name and a
+   `share/` folder beside the app with a no-clobber name and a
   `.part`-then-rename write, so an interrupted share leaves no half-file.
   → [sharing.md](sharing.md)
 

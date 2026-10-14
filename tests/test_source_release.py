@@ -250,7 +250,7 @@ def test_no_link_inside_the_archive_dangles(tree, dist):
 def test_nothing_the_app_owns_at_runtime_reaches_the_archive(tree, dist):
     """The leak test, and the reason the manifest is an allow-list.
 
-    `import/`, `export/`, `temp/` and `Share/` are not in
+    `import/`, `export/`, `temp/` and `share/` are not in
     `.gitignore`: for a source install the project root *is* the
     install root, so they sit at the repo root holding whatever the
     developer last exported or shared. A walker that took
@@ -282,7 +282,7 @@ def test_nothing_the_app_owns_at_runtime_reaches_the_archive(tree, dist):
     archive, members = _build(tree, dist)
     names = [m.name for m in members]
 
-    for fragment in ("import/", "export/", "temp/", "Share/", ".venv",
+    for fragment in ("import/", "export/", "temp/", "share/", ".venv",
                      "tests/", "prototypes", "bin/", "build/", "dist/",
                      ".github", "picker/", "__pycache__", ".pyc",
                      "core.py", "settings.json", "vocabulary.json",
@@ -306,7 +306,7 @@ def test_only_the_experiment_index_is_shipped_from_experiments(tree):
 
 @pytest.mark.parametrize("refused", [
     "bin", "bin/mac", "tests/test_docs.py", "prototypes/editor.py",
-    "import/a.mp4", "export/b.mp4", "temp/clip.mp4", "Share/a.zip",
+    "import/a.mp4", "export/b.mp4", "temp/clip.mp4", "share/a.zip",
     ".venv/bin/python",
     "shared/__pycache__/environment.cpython-311.pyc", "settings.json",
     "vocabulary.json", "commcut.log", "core.py", "build/lib.py",

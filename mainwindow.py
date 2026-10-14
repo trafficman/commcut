@@ -342,7 +342,7 @@ class MainWindow(QMainWindow):
         `import/` folder and imports it through the usual
         pipeline. Like the Library Manager it is opened with
         no arguments — the library is the export folder, which
-        Settings configures, and the zip lands in the Share
+        Settings configures, and the zip lands in the share
         folder beside the app. See
         [docs/sharing.md](docs/sharing.md) and
         `sharing/sharing.py`.

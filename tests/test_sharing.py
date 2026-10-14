@@ -627,7 +627,7 @@ class FakeShareDialog(QDialog):
 @pytest.fixture
 def harness(qapp, monkeypatch, tmp_path):
     """Installs the fakes and returns a factory for sharing
-    windows over a temp export folder and a temp Share folder."""
+    windows over a temp export folder and a temp share folder."""
     library_root = tmp_path / "library"
     share_root = tmp_path / "share"
     os.makedirs(str(library_root), exist_ok=True)
@@ -849,7 +849,7 @@ def test_removing_a_row_widens_the_share_again(harness):
 
 def test_sharing_writes_a_zip(harness, qapp):
     """The Share button, through the dialog and the worker, writes
-    a zip into the Share folder: each clip's video and its record,
+    a zip into the share folder: each clip's video and its record,
     under one root folder named after the zip."""
     open_sharing, root, share_root = harness
 

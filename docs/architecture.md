@@ -415,7 +415,7 @@ beside its final name and renamed into place, under a
 no-clobber name (`stem (1).zip`, `stem (2).zip`, …), with
 the ` (Created with CommCut)` suffix applied before the
 extension. It runs on a worker `QThread` behind a non-modal,
-cancellable progress dialog, into the fixed `Share/` folder
+cancellable progress dialog, into the fixed `share/` folder
 beside the app (`shared/environment.py:share_folder`, fixed
 rather than a save dialog for the same reason `import/` is).
 `closeEvent` shuts the preview's player down while its video

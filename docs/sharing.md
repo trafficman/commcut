@@ -45,7 +45,7 @@ leaf loads its preview through the real `MpvBridge`, and
 The window is opened by the shell from the main menu's
 **Library Sharing** button, with no arguments: the library is the
 export folder, which Settings configures, and the zip lands in the
-`Share/` folder beside the app. There is no source path to hand
+`share/` folder beside the app. There is no source path to hand
 off, because a share reads the library rather than a video.
 
 ## The filter
@@ -130,17 +130,17 @@ real close to the teardown that follows the thread actually stopping.
 
 ## The Share folder
 
-Shares are written to `Share/` beside the app —
+Shares are written to `share/` beside the app —
 `shared/environment.py:share_folder`, fixed rather than configurable
 for the same reason `import/` is: it is the one folder this feature
 writes, and a known location is easier to find than a save dialog. It
 is created on first run with the other app folders, and the portable
 build ships it with a `README.txt` placeholder, because an empty
 folder does not survive being zipped. The export root is refused if it
-overlaps `Share/` (`shared/exporting.py:export_folder_setting_error`),
+overlaps `share/` (`shared/exporting.py:export_folder_setting_error`),
 so exported clips cannot land in the folder shares are written to.
 
-`Share/` is kept out of the source release
+`share/` is kept out of the source release
 (`packaging/source_release.py`), alongside `import/`, `export/` and
 `temp/`: for a source install the project root *is* the install root,
 so a developer's real shares would otherwise be published. It is
