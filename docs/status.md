@@ -298,17 +298,8 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
 
 ### Not built
 
-The full vision in `README.md` has three pieces; two are not started:
-
-- The **Rename Wizard** (batch-rename already-cut clips) does not exist. The walk
-  it needs now exists — see "Next".
 - **Smart-cut export** does not exist — export re-encodes each whole segment
   instead. See "Next" below.
-- The import and export folders: the **export folder is configurable** from
-  Settings, `import/` is fixed beside the app on purpose (see "Next").
-- **The file dialog has no tags.** A source video is picked by name, not by
-  the tags a clip carries; the Library Manager is where a clip's tags are
-  seen and edited, once the clip is in the library.
 - **No recent sources.** A source video can be picked from anywhere, and a
   previously scanned rip is routed straight to the editor by its `.cmct` — but a
   native dialog cannot label a file the way the old picker did, so resuming one
@@ -327,17 +318,7 @@ The full vision in `README.md` has three pieces; two are not started:
   worker itself: `shared/ffmpeg.py:execute_export_plan` already takes
   `on_progress`/`should_cancel` and `editor/editor.py:ExportWorker` already runs
   it off the GUI thread behind a progress dialog.
-- **Choosing folders**: the **export folder is configurable** and `import/` is
-  fixed beside the app, deliberately and permanently.
-  `shared/environment.py:import_folder` is the one owner of the import folder,
-  beside `install_root()` — not in `shared/sources.py`, which used to carry a
-  dead second copy of it, and not in `shared/importing.py`, which used to carry
-  the live one. It lives in `shared/environment.py` because `shared/exporting.py`
-  has to compare the export root against it and `shared/importing.py` imports
-  *from* `shared/exporting.py`, so a definition in either of those is an import
-  cycle.
-
-  `import/` is not a setting because the Library Importer **moves and deletes
+- **Choosing folders**: `import/` is not a setting because the Library Importer **moves and deletes
   from it**: `move` removes the clip it has taken, and the prune tidies the
   folders it emptied. The one folder this app destroys stays inside the program
   root, where a single mis-click cannot reach somebody's downloads folder. A
@@ -373,13 +354,6 @@ The full vision in `README.md` has three pieces; two are not started:
   writes nothing, because pruning against half a library would delete every value
   the other half uses.
 
-   The **library browser** is built — the Library Manager shows what is in
-   `export/`. The **Rename Wizard** is the next consumer of the same walk — it
-   reads tags from a record and rewrites the path, never the reverse. Counts per
-   value are derivable from `Catalog.clips` when something wants them,
-   and deliberately are not cached. →
-  [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog),
-  [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library)
 - **The Library Importer's import window.** The backend, both meshes, the queue and
   the shared import screen are built, and **Import Now** runs the import from either
   ending, so a window that would join them is convenience rather than capability.
@@ -430,9 +404,6 @@ The full vision in `README.md` has three pieces; two are not started:
   [naming-and-organization.md](naming-and-organization.md#the-export-runs-off-the-gui-thread).
 - The boundary peek has no settings toggle; it is always on at 15 frames /
   450ms.
-- `End Seg` only works forward. Moving the *previous* segment's end back to the
-  playhead is the natural next addition and is a small block in
-  `place_end_boundary` (see [segment-model.md](segment-model.md#end-seg)).
 - The scanner's detector is `blackdetect` only. No silence detection, no
   heuristics for rapid concurrent detections or long spans without one.
 - **Exactly one window is visible at a time, and the main menu no longer sits
