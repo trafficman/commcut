@@ -34,17 +34,19 @@ Its UI (`scannerwindow.ui`) has: an embedded video frame, two
 `MarkerTimelineWidget`s ("Scanner Preview" and "User Marked"), transport
 controls (play/pause, frame ±, keyframe ±), a segment-controls row
 (Undo, Place Boundary), detector sliders (Minimum Black Frames 0–40,
-Black Levels 0–100), and a scan row (Test Scan, Finished — Scan Full
-Source Video).
+Black Levels 0–100), and a scan row (Test Scan, Skip Scan — Mark
+Manually, Finished — Scan Full Source Video).
 
 What's wired in `ScannerWindow.__init__`: loading the preview clip (passed in
 from `create()`), mpv player construction, transport + frame/keyframe stepping,
 feeding both timelines the bridge's position/duration/seek, the slider value
 labels, Place Boundary (playhead → lower **User Marked** timeline via
 `add_marker`), Undo (pops the last user marker), Test Scan (`blackdetect` →
-midpoint markers in the upper **Scanner Preview** timeline), and Finished
-(`blackdetect` on the full source → midpoint boundaries written to a `.cmct`,
-then the Video Editor launched for manual fixes + tags).
+midpoint markers in the upper **Scanner Preview** timeline), Skip Scan
+(probe duration → placeholder single-segment `.cmct` → editor for fully
+manual marking), and Finished (`blackdetect` on the full source → midpoint
+boundaries written to a `.cmct`, then the Video Editor launched for manual
+fixes + tags).
 
 ## Detection
 
@@ -97,11 +99,36 @@ folder, the sidecar is written to a folder the app does not control.
 take a write before the scanner is built, and `MediaPlayer._save_sidecar` turns a
 later failure into a message naming the file and the folder.
 
+## Skip Scan — manual boundaries
+
+The **Skip Scan** button skips automated detection entirely. Instead of running
+`blackdetect`, it probes only the source duration (`probe_duration` via
+`DurationProbeWorker` on a `QThread`, off the GUI thread), writes a placeholder
+`.cmct` — a single segment spanning 0..duration via `SegmentModel.placeholder`
+through the `_placeholder_model` helper — and opens the Video Editor on that same
+source. The user then marks boundaries by hand using the editor's End Seg and
+Start Seg tools.
+
+The probe is a single `ffprobe` call and returns in well under a second, but it
+still runs off the GUI thread so the transport controls stay responsive. The
+same thread-lifecycle and closeEvent guard pattern as the other two scans apply:
+a `LoadingDialog` gives feedback and offers a cancel, the window is disabled for
+the duration, and `closeEvent` refuses to close while the probe thread is
+active.
+
+Unlike the Finished scan, the duration probe cannot be interrupted —
+`probe_duration` is a blocking `subprocess.run` with no poll loop — so the
+cancel flag is set but the probe runs to completion. The
+`_on_skip_scan_complete` handler checks `_close_after_worker` before opening the
+editor, so a user who asked to close-and-cancel during the probe does not get a
+new window opened on top.
+
 ## Thread lifecycle and closeEvent
 
-All three worker threads — the pre-scan worker (in `create`), the test-scan
-worker (in `on_test_scan`), and the finished-scan worker (in `on_finished`) —
-follow the same shape documented in [architecture.md](architecture.md#ending-a-worker-thread):
+All four worker threads — the pre-scan worker (in `create`), the test-scan
+worker (in `on_test_scan`), the finished-scan worker (in `on_finished`), and
+the skip-scan duration-probe worker (in `on_skip_scan`) — follow the same shape
+documented in [architecture.md](architecture.md#ending-a-worker-thread):
 
 1. The worker is a `QObject` whose `run()` slot is connected to
    `thread.started`. It emits `result`/`scanned` on success and `failed` on

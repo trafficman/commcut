@@ -271,26 +271,36 @@
      </item>
      <item>
       <layout class="QHBoxLayout" name="scanButtons">
-       <item>
-        <widget class="QPushButton" name="scanButton">
-         <property name="toolTip">
-          <string>Run a segment scan on the two minute preview with the above settings</string>
-         </property>
-         <property name="text">
-          <string>Test Scan</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="finishedButton">
-         <property name="toolTip">
-          <string>Scan the entire source video with the above settings, and move on to the Video Editor</string>
-         </property>
-         <property name="text">
-          <string>Finished - Scan Full Source Video</string>
-         </property>
-        </widget>
-       </item>
+      <item>
+       <widget class="QPushButton" name="scanButton">
+        <property name="toolTip">
+         <string>Run a segment scan on the two minute preview with the above settings</string>
+        </property>
+        <property name="text">
+         <string>Test Scan</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="skipScanButton">
+        <property name="toolTip">
+         <string>Skip the automated scan and open the editor with a single segment for the whole video, so you can mark boundaries manually using the editor's tools</string>
+        </property>
+        <property name="text">
+         <string>Skip Scan - Mark Manually</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="finishedButton">
+        <property name="toolTip">
+         <string>Scan the entire source video with the above settings, and move on to the Video Editor</string>
+        </property>
+        <property name="text">
+         <string>Finished - Scan Full Source Video</string>
+        </property>
+       </widget>
+      </item>
       </layout>
      </item>
     </layout>

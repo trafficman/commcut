@@ -1,6 +1,6 @@
 """Tests for the scanner's worker-thread refactor.
 
-Covers four changes in scanner/scanner.py:
+Covers six changes in scanner/scanner.py:
 
   A. ScannerPreScanWorker — clip_to_temp + scan_keyframes moved off the GUI
      thread in create(), behind a modal LoadingDialog.exec().
@@ -14,6 +14,9 @@ Covers four changes in scanner/scanner.py:
      try, so a machine without the binaries reports failed() instead of
      dying mid-thread — and the tests stub get_binary_path, which the
      workers call before the stubbed _run_ffmpeg.
+  F. DurationProbeWorker — probes the source duration for the Skip Scan path,
+     which writes a placeholder single-segment .cmct and opens the editor
+     for fully manual boundary marking.
 
 The ScannerWindow itself needs libmpv and a .ui file, so a ScannerStub mirrors
 its lifecycle methods (close to EditorStub's pattern) without constructing a
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import QMainWindow, QPushButton
 
 import scanner.scanner as scanner_module
 from scanner.scanner import (
+    DurationProbeWorker,
     FinishedScanWorker,
     ScannerPreScanWorker,
     ScannerWindow,
@@ -132,6 +136,13 @@ class StubFinishedScanWorker(FinishedScanWorker):
         pass
 
 
+class StubDurationProbeWorker(DurationProbeWorker):
+    """DurationProbeWorker with moveToThread as a no-op."""
+
+    def moveToThread(self, thread):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # ScannerStub — minimal ScannerWindow without libmpv
 # ---------------------------------------------------------------------------
@@ -154,6 +165,7 @@ class ScannerStub(ScannerWindow):
 
         self.ui = type("Ui", (), {})()
         self.ui.scanButton = QPushButton()
+        self.ui.skipScanButton = QPushButton()
         self.ui.timelineWidget1 = _FakeTimeline()
         self.ui.timelineWidget2 = _FakeTimeline()
         self.ui.horizontalSlider = _FakeSlider(8)
@@ -165,6 +177,9 @@ class ScannerStub(ScannerWindow):
         self._test_scan_thread = None
         self._test_scan_worker = None
         self._test_scan_dialog = None
+        self._skip_scan_thread = None
+        self._skip_scan_worker = None
+        self._skip_scan_dialog = None
         self._close_after_worker = False
         self._enabled = True
 
@@ -183,7 +198,8 @@ def qapp():
 @pytest.fixture
 def stub(qapp, monkeypatch):
     """A ScannerStub with QThread, LoadingDialog, QMessageBox, shell, log,
-    _model_from_midpoints, and the worker classes all stubbed."""
+    _model_from_midpoints, _placeholder_model, and the worker classes all
+    stubbed."""
     monkeypatch.setattr(scanner_module, "QThread", FakeThread)
     monkeypatch.setattr(scanner_module, "LoadingDialog", FakeLoadingDialog)
     monkeypatch.setattr(scanner_module, "QMessageBox", _FakeMessageBox)
@@ -192,9 +208,13 @@ def stub(qapp, monkeypatch):
                         lambda name: "ffmpeg")
     monkeypatch.setattr(scanner_module, "_model_from_midpoints",
                         lambda midpoints, duration, name: _FakeModel())
+    monkeypatch.setattr(scanner_module, "_placeholder_model",
+                        lambda source_name, duration: _FakeModel())
     monkeypatch.setattr(scanner_module, "TestScanWorker", StubTestScanWorker)
     monkeypatch.setattr(scanner_module, "FinishedScanWorker",
                         StubFinishedScanWorker)
+    monkeypatch.setattr(scanner_module, "DurationProbeWorker",
+                        StubDurationProbeWorker)
 
     _FakeMessageBox.answers = []
     _FakeMessageBox.questions = []
@@ -418,6 +438,54 @@ def test_finished_scan_worker_no_longer_takes_duration_arg():
 
 
 # ---------------------------------------------------------------------------
+# DurationProbeWorker unit tests
+# ---------------------------------------------------------------------------
+
+def test_duration_probe_worker_emits_scanned(monkeypatch, qapp):
+    """probe_duration result travels directly to scanned(duration)."""
+    monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
+
+    worker = DurationProbeWorker("/source.mp4")
+    received = []
+    worker.scanned.connect(lambda duration: received.append(duration))
+
+    worker.run()
+
+    assert received == [120.0]
+
+
+def test_duration_probe_worker_fails_when_duration_unknown(monkeypatch, qapp):
+    """probe_duration returning None means the probe cannot proceed."""
+    monkeypatch.setattr(scanner_module, "probe_duration", lambda path: None)
+
+    worker = DurationProbeWorker("/source.mp4")
+    received = []
+    worker.failed.connect(lambda reason: received.append(reason))
+
+    worker.run()
+
+    assert len(received) == 1
+    assert "duration" in received[0].lower()
+
+
+def test_duration_probe_worker_fails_when_ffprobe_missing(monkeypatch, qapp):
+    """A machine without ffprobe reports failed, not a dead thread."""
+    def missing(path):
+        raise FileNotFoundError("no ffprobe")
+
+    monkeypatch.setattr(scanner_module, "probe_duration", missing)
+
+    worker = DurationProbeWorker("/source.mp4")
+    received = []
+    worker.failed.connect(lambda r: received.append(r))
+
+    worker.run()
+
+    assert len(received) == 1
+    assert "FileNotFoundError" in received[0]
+
+
+# ---------------------------------------------------------------------------
 # Fake-thread lifecycle tests (threading wiring)
 # ---------------------------------------------------------------------------
 
@@ -493,6 +561,35 @@ def test_finished_scan_thread_quits_and_tears_down_on_failed(stub, monkeypatch):
     assert any("cancel" in w[1].lower() for w in _FakeMessageBox.warnings)
 
 
+def test_skip_scan_thread_quits_and_tears_down_on_scanned(stub, monkeypatch):
+    """_start_skip_scan creates the worker; scanned triggers teardown and hand-off."""
+    monkeypatch.setattr(scanner_module, "probe_duration", lambda path: 120.0)
+
+    stub._close_after_worker = False
+
+    closed = []
+    monkeypatch.setattr(stub, "close", lambda: closed.append(True))
+
+    stub._start_skip_scan("/source.mp4")
+
+    assert stub._skip_scan_thread is None, "teardown cleared the thread"
+    assert stub._skip_scan_worker is None
+    assert stub._skip_scan_dialog is None
+    assert stub.shell.opened == [("editor", {"source": "/fake/source.mp4"})]
+    assert closed, "window closed after successful skip scan"
+
+
+def test_skip_scan_thread_quits_and_tears_down_on_failed(stub, monkeypatch):
+    """A failed skip scan also quits the thread and re-enables the window."""
+    monkeypatch.setattr(scanner_module, "probe_duration", lambda path: None)
+
+    stub._start_skip_scan("/source.mp4")
+
+    assert stub._skip_scan_thread is None
+    assert stub._skip_scan_worker is None
+    assert any("duration" in w[1].lower() for w in _FakeMessageBox.warnings)
+
+
 def test_both_scans_cannot_run_concurrently(stub, monkeypatch):
     """A second _start_test_scan while one is active is a no-op (guard)."""
     fake_stderr = "[blackdetect @ 0x1] black_start:1.000000 black_end:2.000000\n"
@@ -505,6 +602,15 @@ def test_both_scans_cannot_run_concurrently(stub, monkeypatch):
     stub._start_test_scan("/clip.mp4", 0.5, 0.10)
 
     assert stub._test_scan_thread is not None, "the existing thread was not replaced"
+
+
+def test_skip_scan_cannot_run_concurrently(stub):
+    """A second _start_skip_scan while one is active is a no-op (guard)."""
+    stub._skip_scan_thread = FakeThread()
+
+    stub._start_skip_scan("/source.mp4")
+
+    assert stub._skip_scan_thread is not None, "the existing thread was not replaced"
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +643,20 @@ def test_close_event_refuses_while_scan_active(qapp, monkeypatch):
 
     assert stub.bridge.shutdowns == 0, "mpv was not shut down during active scan"
     assert not event.isAccepted()
+
+
+def test_close_event_refuses_while_skip_scan_active(qapp, monkeypatch):
+    """closeEvent ignores the close while a skip-scan thread is running."""
+    monkeypatch.setattr(scanner_module, "QMessageBox", _FakeMessageBox)
+    _FakeMessageBox.answers = [_FakeMessageBox.No]
+    stub = ScannerStub()
+    stub._skip_scan_thread = object()
+
+    event = QCloseEvent()
+    stub.closeEvent(event)
+
+    assert stub.bridge.shutdowns == 0, "mpv was not shut down during active scan"
+    assert not event.isAccepted(), "close was refused"
 
 
 def test_close_event_proceeds_when_no_scan_active(qapp, monkeypatch):
@@ -646,6 +766,68 @@ def test_on_test_scan_stopped_waits_for_scan(qapp, monkeypatch):
     stub._on_test_scan_stopped()
 
     assert not closed, "did not close while full scan was still active"
+
+
+def test_on_skip_scan_stopped_closes_when_no_other_thread_active(qapp, monkeypatch):
+    """_on_skip_scan_stopped closes if _close_after_worker is set and no other scan."""
+    monkeypatch.setattr(scanner_module, "QThread", FakeThread)
+    _FakeMessageBox.answers = []
+
+    stub = ScannerStub()
+    stub._close_after_worker = True
+    stub._skip_scan_thread = None
+    stub._skip_scan_dialog = None
+    stub._skip_scan_worker = None
+    stub._scan_thread = None
+    stub._test_scan_thread = None
+
+    closed = []
+    monkeypatch.setattr(stub, "close", lambda: closed.append(True))
+
+    stub._on_skip_scan_stopped()
+
+    assert closed, "window was closed via _close_after_worker"
+    assert stub._close_after_worker is False
+
+
+def test_on_skip_scan_stopped_waits_for_scan(qapp, monkeypatch):
+    """_on_skip_scan_stopped does not close while a full scan is still active."""
+    monkeypatch.setattr(scanner_module, "QThread", FakeThread)
+    _FakeMessageBox.answers = []
+
+    stub = ScannerStub()
+    stub._close_after_worker = True
+    stub._skip_scan_thread = None
+    stub._skip_scan_dialog = None
+    stub._skip_scan_worker = None
+    stub._scan_thread = object()
+
+    closed = []
+    monkeypatch.setattr(stub, "close", lambda: closed.append(True))
+
+    stub._on_skip_scan_stopped()
+
+    assert not closed, "did not close while full scan was still active"
+
+
+def test_on_skip_scan_stopped_waits_for_test_scan(qapp, monkeypatch):
+    """_on_skip_scan_stopped does not close while a test scan is still active."""
+    monkeypatch.setattr(scanner_module, "QThread", FakeThread)
+    _FakeMessageBox.answers = []
+
+    stub = ScannerStub()
+    stub._close_after_worker = True
+    stub._skip_scan_thread = None
+    stub._skip_scan_dialog = None
+    stub._skip_scan_worker = None
+    stub._test_scan_thread = object()
+
+    closed = []
+    monkeypatch.setattr(stub, "close", lambda: closed.append(True))
+
+    stub._on_skip_scan_stopped()
+
+    assert not closed, "did not close while test scan was still active"
 
 
 # ---------------------------------------------------------------------------

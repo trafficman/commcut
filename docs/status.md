@@ -56,13 +56,18 @@ Related: [architecture.md](architecture.md), [segment-model.md](segment-model.md
   on the main thread either; midpoint boundaries are written as `.cmct`
   segment starts via `SegmentModel` and the Video Editor is launched
   automatically.
+- Skip Scan (manual boundaries): skips `blackdetect` entirely — probes only
+  the source duration via `DurationProbeWorker`, off the GUI thread; writes a
+  placeholder single-segment `.cmct` (`_placeholder_model` →
+  `SegmentModel.placeholder`) spanning 0..duration; opens the Video Editor so
+  the user can mark boundaries by hand with End Seg / Start Seg.
 - Scanner→Editor handoff: if `sidecar_path(source)` already exists, the scanner
   launches the editor and exits, so an existing `.cmct` is never overwritten (the
   source used is the one handed to the scanner by the menu or a drop, not a
   re-resolved default).
-- `closeEvent` refuses to close while either thread is active (`_scan_thread`
-  or `_test_scan_thread`), cancelling both on Yes and closing once both have
-  stopped.
+- `closeEvent` refuses to close while any worker thread is active
+  (`_scan_thread`, `_test_scan_thread`, or `_skip_scan_thread`), cancelling the
+  active one(s) on Yes and closing once all have stopped.
 
 Detail in [scanner.md](scanner.md).
 
@@ -379,8 +384,9 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
   as historical — the active code is in `editor/` (and the scanner in
   `scanner/`).
 - Automated boundary detection is fully wired: Test Scan (preview, in-memory
-  midpoints), Finished (full-source `blackdetect` → `.cmct` → editor), and
-  the Scanner→Editor handoff when a `.cmct` already exists.
+  midpoints), Finished (full-source `blackdetect` → `.cmct` → editor),
+  Skip Scan (duration probe → placeholder single-segment `.cmct` → editor for
+  manual marking), and the Scanner→Editor handoff when a `.cmct` already exists.
 - Export is present as a named full-segment transcode; the smart-cut
   (keyframe-bracketed copy+transcode+concat) version is the remaining piece.
   The legacy numeric `export_segment_clips()` helper still exists for

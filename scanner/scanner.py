@@ -71,6 +71,16 @@ def _model_from_midpoints(midpoints, duration, source_name):
     return SegmentModel(source=source_name, duration=duration, segments=segments)
 
 
+def _placeholder_model(source_name, duration):
+    """Single-segment placeholder: the whole video, unmarked, not ignored.
+
+    This is the fallback when the user skips automated detection entirely —
+    the .cmct the editor loads is one segment covering 0..duration, ready for
+    manual cutting via the editor's End Seg / Start Seg tools.
+    """
+    return SegmentModel.placeholder(source_name, duration)
+
+
 class ScannerPreScanWorker(QObject):
     """Runs clip_to_temp + scan_keyframes off the GUI thread during create().
 
@@ -230,6 +240,45 @@ class TestScanWorker(QObject):
         self._cancelled = True
 
 
+class DurationProbeWorker(QObject):
+    """Probes the source video's duration off the GUI thread.
+
+    Supports the Skip Scan button: no blackdetect is run, only the duration
+    is needed to build a placeholder single-segment model that the user then
+    cuts up by hand in the editor. Emits ``scanned(duration)`` on success or
+    ``failed(reason)`` on error, following the same shape as the other scan
+    workers.
+    """
+    scanned = Signal(float)
+    failed = Signal(str)
+
+    def __init__(self, source_path, parent=None):
+        super().__init__(parent)
+        self.source_path = source_path
+        self._cancelled = False
+
+    @Slot()
+    def run(self):
+        try:
+            duration = probe_duration(self.source_path)
+            if duration is None:
+                self.failed.emit(
+                    "Could not determine the source video's duration."
+                )
+                return
+            self.scanned.emit(duration)
+        except Exception as error:
+            log_exception("Skip scan duration probe failed", error)
+            self.failed.emit(
+                f"The duration could not be determined: "
+                f"{type(error).__name__}: {error}"
+            )
+
+    @Slot()
+    def cancel(self):
+        self._cancelled = True
+
+
 class ScannerWindow(QMainWindow):
     """The Segment Scanner window.
 
@@ -243,7 +292,9 @@ class ScannerWindow(QMainWindow):
     user-placed boundary; Test Scan runs blackdetect and stamps midpoint
     markers into the Scanner Preview timeline; Finished runs blackdetect on
     the full source, writes a .cmct of midpoint boundaries, and opens the
-    Video Editor on that same source. Remaining: Export / smart cut.
+    Video Editor on that same source; Skip Scan skips detection entirely and
+    opens the editor with a single-segment placeholder .cmct for fully
+    manual marking. Remaining: Export / smart cut.
     """
 
     def __init__(self, source_path, clip_path, keyframes):
@@ -322,6 +373,9 @@ class ScannerWindow(QMainWindow):
         # Wire the Finished button (full-source scan -> .cmct -> editor)
         self.ui.finishedButton.clicked.connect(self.on_finished)
 
+        # Wire the Skip Scan button (skip detection -> placeholder .cmct -> editor)
+        self.ui.skipScanButton.clicked.connect(self.on_skip_scan)
+
         # The preview clip and keyframe list come from scanner.create(), which
         # built them on a worker thread before this window was constructed.
         # Writing the .cmct beside the source needs a writable folder, which
@@ -342,6 +396,13 @@ class ScannerWindow(QMainWindow):
         self._test_scan_thread = None
         self._test_scan_worker = None
         self._test_scan_dialog = None
+
+        # --- skip scan state ---
+        # None when no Skip Scan probe is running; set when one starts so the
+        # window can refuse to close mid-probe and tear the thread down safely.
+        self._skip_scan_thread = None
+        self._skip_scan_worker = None
+        self._skip_scan_dialog = None
 
     def _on_position_changed(self, position):
         self.current_position = position
@@ -464,7 +525,7 @@ class ScannerWindow(QMainWindow):
 
         self.ui.scanButton.setEnabled(True)
 
-        if self._close_after_worker and self._scan_thread is None:
+        if self._close_after_worker and self._scan_thread is None and self._skip_scan_thread is None:
             self._close_after_worker = False
             self.bridge.shutdown()
             self.close()
@@ -611,7 +672,117 @@ class ScannerWindow(QMainWindow):
         self._scan_thread = None
         self._scan_worker = None
 
-        if self._close_after_worker and self._test_scan_thread is None:
+        if self._close_after_worker and self._test_scan_thread is None and self._skip_scan_thread is None:
+            self._close_after_worker = False
+            self.setEnabled(True)
+            self.bridge.shutdown()
+            self.close()
+            return
+        self.setEnabled(True)
+
+    def on_skip_scan(self):
+        """Skip the automated scan and open the editor with a single segment
+        spanning the whole video, so the user can mark boundaries manually using
+        the editor's End Seg / Start Seg tools.
+
+        Only the source duration is needed — ``_placeholder_model`` builds the
+        one-segment model — so a lightweight probe replaces the full blackdetect
+        pass. The probe runs off the GUI thread so the transport controls stay
+        responsive while ffprobe measures the video.
+        """
+        source = self.source_path
+        self._start_skip_scan(source)
+
+    def _start_skip_scan(self, source):
+        """Launch the duration probe on a worker thread.
+
+        Only the duration is needed — the placeholder model is a single segment
+        covering the whole video. The probe runs off the GUI thread so the window
+        stays responsive. A progress dialog makes the (brief) freeze explicit
+        and offers a cancel.
+        """
+        if self._skip_scan_thread is not None:
+            return
+
+        worker = DurationProbeWorker(source)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.scanned.connect(self._on_skip_scan_complete)
+        worker.failed.connect(self._on_skip_scan_failed)
+        worker.scanned.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_skip_scan_stopped)
+        self._skip_scan_worker = worker
+        self._skip_scan_thread = thread
+
+        self.setEnabled(False)
+        dialog = LoadingDialog("Preparing manual boundaries…", cancellable=True,
+                               modal=False, parent=self, title="Skip scan")
+        dialog.set_range(0, 0)
+        dialog.canceled.connect(self._on_skip_scan_cancel_requested)
+        dialog.show()
+        self._skip_scan_dialog = dialog
+
+        thread.start()
+
+    def _on_skip_scan_cancel_requested(self):
+        """Cancel requested: flag the worker (the duration probe finishes on its own).
+
+        ``probe_duration`` is a single blocking ffprobe call with no interrupt
+        point, so the flag is set for consistency but the probe runs to
+        completion — a duration probe returns in well under a second. The real
+        purpose is to keep this handler's shape identical to the other scan
+        handlers so closeEvent can call it uniformly.
+        """
+        if self._skip_scan_worker is not None:
+            self._skip_scan_worker.cancel()
+        dialog = self._skip_scan_dialog
+        if dialog is not None:
+            dialog.set_message("Cancelling…")
+
+    def _on_skip_scan_complete(self, duration):
+        """Probe finished: write a placeholder .cmct and hand off to the editor.
+
+        The placeholder is a single segment spanning the whole video — the
+        fallback shape the editor expects when there are no detected boundaries —
+        so the user lands in the editor ready to cut by hand. If the window was
+        asked to close during the probe, the teardown handler finishes the close
+        instead of opening a new window.
+        """
+        if self._close_after_worker:
+            return
+        source = self.source_path
+        model = _placeholder_model(os.path.basename(source), duration)
+        sidecar = sidecar_path(source)
+        model.save(sidecar)
+        log(f"Skip scan: wrote 1 segment to {sidecar}")
+
+        self.setEnabled(True)
+        shell().open_safely('editor', source=source)
+        self.close()
+
+    def _on_skip_scan_failed(self, reason):
+        """Probe could not run: log and report, then re-enable the window."""
+        log(f"Skip scan failed — {reason}")
+        QMessageBox.warning(self, "Skip scan failed", reason)
+
+    def _on_skip_scan_stopped(self):
+        """Tear the skip-scan thread down after it has actually stopped."""
+        dialog = self._skip_scan_dialog
+        if dialog is not None:
+            dialog.deleteLater()
+        thread = self._skip_scan_thread
+        if thread is not None:
+            thread.deleteLater()
+        worker = self._skip_scan_worker
+        if worker is not None:
+            worker.deleteLater()
+        self._skip_scan_dialog = None
+        self._skip_scan_thread = None
+        self._skip_scan_worker = None
+
+        if self._close_after_worker and self._scan_thread is None and self._test_scan_thread is None:
             self._close_after_worker = False
             self.setEnabled(True)
             self.bridge.shutdown()
@@ -626,12 +797,12 @@ class ScannerWindow(QMainWindow):
         """Shut the mpv player down before this window -- and its native video
         handle -- is destroyed.
 
-        Refuses to close while a scan is running, because a QThread destroyed
-        while still executing aborts the process. The user is asked whether to
-        cancel the scan and close; if so, the flag ``_close_after_worker`` is
-        set so ``_on_scan_stopped`` / ``_on_test_scan_stopped`` close the window
-        once all worker threads have actually quit, and this close is ignored
-        for now.
+         Refuses to close while a scan is running, because a QThread destroyed
+         while still executing aborts the process. The user is asked whether to
+         cancel the scan and close; if so, the flag ``_close_after_worker`` is
+         set so ``_on_scan_stopped`` / ``_on_test_scan_stopped`` /
+         ``_on_skip_scan_stopped`` close the window once all worker threads have
+         actually quit, and this close is ignored for now.
 
         The same mpv teardown rule the editor follows, for the same reason: the
         player is embedded into the video frame's HWND, so a player still running
@@ -639,7 +810,7 @@ class ScannerWindow(QMainWindow):
         longer exists, and joining its threads blocks the GUI thread. See
         ``MpvBridge.shutdown``.
         """
-        if self._scan_thread is not None or self._test_scan_thread is not None:
+        if self._scan_thread is not None or self._test_scan_thread is not None or self._skip_scan_thread is not None:
             answer = QMessageBox.question(
                 self,
                 "Scan in progress",
@@ -653,10 +824,12 @@ class ScannerWindow(QMainWindow):
                     self._on_scan_cancel_requested()
                 if self._test_scan_thread is not None:
                     self._on_test_scan_cancel_requested()
+                if self._skip_scan_thread is not None:
+                    self._on_skip_scan_cancel_requested()
                 # The close happens again from _on_scan_stopped /
-                # _on_test_scan_stopped, once both threads have finished --
-                # that second pass is the one that shuts the player down and
-                # accepts.
+                # _on_test_scan_stopped / _on_skip_scan_stopped, once all
+                # threads have finished -- that second pass is the one that
+                # shuts the player down and accepts.
             event.ignore()
             return
 

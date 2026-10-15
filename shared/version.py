@@ -14,7 +14,7 @@ suffix -- and a tag is valid when it is ``v`` followed by it. The prefix is a
 tag convention, not part of the version, so it is stripped rather than stored.
 """
 
-VERSION = "0.4.0-alpha"
+VERSION = "0.4.1-alpha"
 
 #: Where releases are published. The one refusal whose remedy is "a newer
 #: commcut" -- a record written by a future schema version -- names this,

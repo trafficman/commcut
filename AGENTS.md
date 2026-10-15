@@ -93,7 +93,7 @@ planner and `export_folder()`), `catalog` (reading the library back), `records`
 | [docs/README.md](docs/README.md) | the doc index and the conventions this set follows |
 | [docs/architecture.md](docs/architecture.md) | the annotated layout, the one-process-per-window model, the main menu, the source hand-off, the shared library, the MpvBridge pattern, the splash flow, the application icon, diagnostics |
 | [docs/segment-model.md](docs/segment-model.md) | the `.cmct` format, `SegmentModel`, the editor state machine and its buttons, the boundary peek, tag locks, End Seg, required record fields |
-| [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished, the hand-off to the editor |
+| [docs/scanner.md](docs/scanner.md) | the scanner: preview clip, marker timelines, `blackdetect`, Test Scan / Finished / Skip Scan, the hand-off to the editor |
 | [docs/naming-and-organization.md](docs/naming-and-organization.md) | file naming scheme, folder organization scheme, the parser, sanitation and path safety, the export pipeline, the `.cnfo` clip record, the Settings scheme UI and the export folder |
 | [docs/sharing.md](docs/sharing.md) | library sharing: the export library, or a tag-filtered part of it, as a zip a recipient drops into `import/` — the filter's semantics, the tree that shows what a share would hold, and the zip's naming and write |
 | [docs/importing.md](docs/importing.md) | the Library Importer: both meshes and the tag editor, reading somebody else's library, the occupied-destination rule, copy/link/move and what a move deletes, and why a path can only ever propose a tag |
