@@ -43,6 +43,12 @@ A **source video** is not a folder choice either. The main menu's file dialog
 takes any video from anywhere, which is what freed `import/` for finished clips
 in the first place.
 
+A **share zip** is not a folder choice either. A `.zip` dropped on the main menu,
+or chosen from its file dialog, is extracted into `import/` before the mesh runs,
+so the same folder and routing code handles both entry points. The extraction is
+described in [sharing.md](sharing.md#receiving-a-share); the `has_record_entries`
+check is the gate, and `find_videos` is the auto-router once the zip is unpacked.
+
 ## The flow
 
 ```mermaid

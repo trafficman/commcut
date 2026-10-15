@@ -5,7 +5,8 @@ recipient drops into their `import/` folder.
 
 Applies to: `sharing/sharing.py`, `sharing/sharingwindow.ui`,
 `shared/sharing.py`, `shared/environment.py:share_folder`,
-`tests/test_sharing.py`.
+`shared/environment.py:import_folder`, `mainwindow.py`,
+`tests/test_sharing.py`, `tests/test_main_window.py`.
 
 Related: [naming-and-organization.md](naming-and-organization.md)
 (the library a share is read from, and the record a share carries),
@@ -156,3 +157,40 @@ no way to share a single clip's tags without its video, because a
 record with no video describes nothing. And there is no re-rendering
 of names here: the recipient's schemes decide what a shared clip is
 called, which is the whole point of sending the record.
+
+## Receiving a share
+
+A recipient drops the zip on the main menu, or picks it from the
+**Import** button's file dialog. The menu recognizes a `.zip` that
+contains at least one `.cnfo` record (`shared/sharing.py:has_record_entries`)
+and hands it to the importer; a `.zip` without records falls through
+to the video route, which refuses it by name like any other
+non-video file.
+
+`shared/sharing.py:extract_share_zip` writes the zip's contents into
+`import/` under a folder named for the zip's stem — deduplicated if
+the name is taken — on a worker `QThread` behind a non-modal,
+cancellable `LoadingDialog`, mirroring the share-write pattern. Both
+teardowns hang off `QThread.finished` (invariant 14). Safety:
+
+- **Path escapes are refused.** Any member whose path climbs above the
+  extraction folder is rejected, so a crafted zip cannot write outside
+  `import/`.
+- **Symlinks are refused.** A member whose Unix mode is a symlink (`stat.S_ISLNK`)
+  is rejected before extraction.
+- **Entry count is checked.** A zip holding more than `MAX_ZIP_ENTRIES` (50,000)
+  entries is refused outright.
+- **Free space is checked.** The uncompressed total is compared against
+  `shutil.disk_usage(dest_root)` before any file is written.
+- **Staging is cleaned.** The zip is extracted to a `.part` folder and
+  renamed into place only on success, so a cancelled or failed run
+  leaves no half-tree; cleanup uses `os.remove` per file and `os.rmdir`
+  per directory, never `rmtree`.
+
+On success the window closes and `shell().open_safely('mesh')` opens
+the Library Import over `import/`, whose own worker auto-routes: a
+zip where every clip already has its record is handed straight to the
+Tagged Library Mesh rather than being asked about folder names that
+were this install's rendered output. The `.cnfo` check is a gate, not
+a routing mechanism — the real per-clip detection happens in the
+mesh's `find_videos` walk.

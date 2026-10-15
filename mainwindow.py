@@ -45,19 +45,25 @@ gesture has a visible state between entering and releasing.
 
 import os
 import sys
+import threading
 
-# This file sits at the project root, so that is what goes on sys.path; the
-# subdirectory scripts each step up a level to reach the same place.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from shared.diagnostics import log
-from shared.environment import resource_path, setup_environment
+from shared.diagnostics import log, log_exception
+from shared.environment import import_folder, resource_path, setup_environment
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from PySide6.QtCore import QFile
+from PySide6.QtCore import QFile, QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
+from shared.loading import LoadingDialog
 from shared.session import shell
+from shared.sharing import (
+    ZIP_EXTENSION,
+    ZipImportError,
+    extract_share_zip,
+    has_record_entries,
+)
 from shared.sources import (
     VIDEO_EXTENSIONS,
     is_video_file,
@@ -122,23 +128,47 @@ def choose_source_video(parent=None):
     return chosen[0] if chosen else None
 
 
+def zip_name_filter():
+    """The file dialog's filter for share zips."""
+    return f"CommCut shares (*{ZIP_EXTENSION});;All files (*)"
+
+
+def choose_share_zip(parent=None):
+    """Ask the user for a share zip to import. Returns its path, or None if cancelled.
+
+    A module-level function rather than a method so a test can stand in for the
+    one thing a native dialog cannot do: be answered.
+    """
+    dialog = QFileDialog(parent, "Choose a share to import")
+    dialog.setFileMode(QFileDialog.ExistingFile)
+    dialog.setAcceptMode(QFileDialog.AcceptOpen)
+    dialog.setNameFilter(zip_name_filter())
+    if not dialog.exec():
+        return None
+    chosen = dialog.selectedFiles()
+    return chosen[0] if chosen else None
+
+
 def dropped_source(mime_data):
-    """The one path a drop should open, or None if it carries no local file.
+    """The one path a drop should open, as `(path, source_type)`, or None if no local file.
 
-    A drop can carry any number of files — dragging a folder's worth of rips out
-    of a file manager is the obvious case — and the Editing Wizard works on one
-    source at a time, so this picks **the first video** and ignores the rest. The
-    log says how many videos came in, because a drop of twenty is otherwise a
-    silent truncation and the person who made it is watching one window replace
-    the menu.
+    `source_type` is `"video"` or `"zip"`, telling the caller how to route it.
 
-    A drop with no video in it yields its first file anyway, and the caller
-    hands *that* to `validate_source_video`, which refuses it by name. Ignoring
-    it would leave somebody who dropped the wrong file with a gesture that
-    visibly did nothing and no idea why; refusing it is what the file dialog
-    would have done with the same file.
+    A drop can carry any number of files -- dragging a folder's worth of rips out
+    of a file manager is the obvious case -- and the Editing Wizard works on one
+    source at a time, so this picks the first acceptable file of the most
+    specific kind and ignores the rest. A video drop is preferred over a zip: a
+    video is the editor's input and a zip is the importer's. The log says how many
+    of each came in, because a drop of twenty is otherwise a silent truncation
+    and the person who made it is watching one window replace the menu.
 
-    URLs that are not local files — a link dragged out of a browser — are not
+    A drop with no video or zip in it yields its first file anyway, typed as a
+    video, and the caller hands that to `validate_source_video`, which refuses it
+    by name. Ignoring it would leave somebody who dropped the wrong file with a
+    gesture that visibly did nothing and no idea why; refusing it is what the file
+    dialog would have done with the same file.
+
+    URLs that are not local files -- a link dragged out of a browser -- are not
     paths this app can open and there is no video to compare, so they are
     dropped rather than refused.
     """
@@ -150,10 +180,18 @@ def dropped_source(mime_data):
     if not paths:
         return None
     videos = [path for path in paths if is_video_file(path)]
-    if len(videos) > 1:
-        log(f"a drop carried {len(videos)} videos; opening the first and "
-            f"ignoring the rest: {videos[0]}")
-    return videos[0] if videos else paths[0]
+    zips = [path for path in paths if path.lower().endswith(ZIP_EXTENSION)]
+    if videos:
+        if len(videos) > 1:
+            log(f"a drop carried {len(videos)} videos; opening the first "
+                f"and ignoring the rest: {videos[0]}")
+        return (videos[0], "video")
+    if zips:
+        if len(zips) > 1:
+            log(f"a drop carried {len(zips)} zips; importing the first "
+                f"and ignoring the rest: {zips[0]}")
+        return (zips[0], "zip")
+    return (paths[0], "video")
 
 
 class MainWindow(QMainWindow):
@@ -192,6 +230,11 @@ class MainWindow(QMainWindow):
         self.ui.settingsButton.clicked.connect(self.open_settings)
         self.ui.libraryButton.clicked.connect(self.open_library)
         self.ui.shareButton.clicked.connect(self.open_sharing)
+
+        self._zip_cancel = None
+        self._zip_import_worker = None
+        self._zip_import_thread = None
+        self._zip_import_dialog = None
 
     def open_editor(self):
         """Ask for a source video and open the scanner on it.
@@ -279,7 +322,7 @@ class MainWindow(QMainWindow):
         self.ui.setStyleSheet(DROP_HIGHLIGHT_STYLE if active else "")
 
     def dropEvent(self, event):
-        """Open the scanner on a dropped video, exactly as the button would.
+        """Open the scanner on a dropped video, or import a dropped zip.
 
         The drop carries no modal dialog and needs nothing from the shell beyond
         the one `open_source` call, which is the whole difference from the dialog
@@ -293,29 +336,127 @@ class MainWindow(QMainWindow):
         if chosen is None:
             event.ignore()
             return
+        path, source_type = chosen
         event.acceptProposedAction()
-        self.open_source(chosen)
+        if source_type == "zip":
+            self.open_share_zip(path)
+        else:
+            self.open_source(path)
 
     def open_import(self):
-        """Open the Untagged Library Mesh.
+        """Open the Library Import, choosing between a folder and a zip.
 
-        **Import** opens the Library Importer's first window over `import/`: it
-        turns the folder names in the untagged half of that folder into tags. It is
-        also the whole importer's router — its worker already walks the folder, so a
-        folder where every clip already has a record is handed on to the Tagged
-        Library Mesh instead of being asked about folder names that are somebody
-        install's rendered output.
+        **Import** opens the Library Importer's first window over `import/`:
+        it turns the folder names in the untagged half of that folder into tags.
+        It is also the whole importer's router -- its worker already walks the
+        folder, so a folder where every clip already has a record is handed on to
+        the Tagged Library Mesh instead of being asked about folder names that
+        are somebody install's rendered output.
 
-        It is opened with no arguments, and there is deliberately nothing to
-        choose here. `import/` is fixed beside the app because this importer
-        *moves and deletes* from it: the folder it is allowed to empty stays
-        inside the program root, where one mis-click cannot reach somebody's
-        downloads folder. Where the library itself lives is the export folder in
-        Settings, and that is configurable. See
-        `shared/environment.py:import_folder` and
-        [docs/importing.md](docs/importing.md).
+        A share zip can also be dropped on the window, or chosen here: it is
+        extracted into `import/` and then handed to the same mesh, so the
+        importer's auto-routing decides whether it shows the Tagged or Untagged
+        half. `import/` is fixed beside the app because this importer *moves and
+        deletes* from it: the folder it is allowed to empty stays inside the
+        program root, where one mis-click cannot reach somebody's downloads
+        folder. Where the library itself lives is the export folder in Settings,
+        and that is configurable. See
+        `docs/importing.md <docs/importing.md>`_ and
+        `shared/environment.py:import_folder`_.
         """
         shell().open_safely('mesh')
+
+    def open_share_zip(self, zip_path):
+        """Extract a share zip into `import/`, then open the mesh on it.
+
+        A share is a zip of finished clips with their `.cnfo` records; extracting
+        it into `import/` hands it off to the mesh, which auto-routes tagged and
+        untagged clips. The extraction runs on a worker thread behind a
+        non-modal, cancellable `LoadingDialog`, mirroring the share-write pattern;
+        teardown hangs off `QThread.finished` (invariant 14).
+        """
+        if not has_record_entries(zip_path):
+            QMessageBox.warning(
+                self, "That is not a CommCut share",
+                f"{os.path.basename(zip_path)} does not contain any "
+                "clip records (.cnfo). It does not look like a CommCut "
+                "library share.")
+            return
+        self._begin_zip_import(zip_path)
+
+    def _begin_zip_import(self, zip_path):
+        """Extract `zip_path` on a worker thread behind a dialog."""
+        self._zip_cancel = threading.Event()
+        worker = ZipImportWorker(
+            zip_path, dest_root=import_folder(),
+            cancel_event=self._zip_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_zip_import_done)
+        worker.failed.connect(self._on_zip_import_failed)
+        worker.cancelled.connect(self._on_zip_import_cancelled)
+        worker.progressed.connect(self._on_zip_import_progressed)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_zip_import_stopped)
+        self._zip_import_worker = worker
+        self._zip_import_thread = thread
+
+        dialog = LoadingDialog(
+            "Extracting the share…", cancellable=True,
+            modal=False, title="Library Import")
+        dialog.set_range(0, 0)
+        dialog.canceled.connect(self._on_zip_import_cancel_requested)
+        dialog.show()
+        self._zip_import_dialog = dialog
+
+        thread.start()
+
+    def _on_zip_import_cancel_requested(self):
+        if self._zip_cancel is not None:
+            self._zip_cancel.set()
+
+    def _on_zip_import_progressed(self, done, total):
+        dialog = self._zip_import_dialog
+        if dialog is None:
+            return
+        if total > 0:
+            dialog.set_range(0, total)
+            dialog.set_value(done)
+
+    def _on_zip_import_done(self):
+        """The zip was extracted: open the mesh over `import/`."""
+        dialog, self._zip_import_dialog = self._zip_import_dialog, None
+        if dialog is not None:
+            dialog.close()
+        self._zip_cancel = None
+        shell().open_safely('mesh')
+
+    def _on_zip_import_failed(self, message):
+        """The zip could not be imported: say why."""
+        dialog, self._zip_import_dialog = self._zip_import_dialog, None
+        if dialog is not None:
+            dialog.close()
+        self._zip_cancel = None
+        QMessageBox.warning(
+            self, "The share could not be imported",
+            f"The share could not be extracted:\n{message}")
+
+    def _on_zip_import_cancelled(self):
+        """The user gave up: say nothing was extracted."""
+        dialog, self._zip_import_dialog = self._zip_import_dialog, None
+        if dialog is not None:
+            dialog.close()
+        self._zip_cancel = None
+
+    def _on_zip_import_stopped(self):
+        """The zip thread has really stopped, so the guard can come off."""
+        thread, self._zip_import_thread = self._zip_import_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._zip_import_worker = self._zip_import_worker, None
+        if worker is not None:
+            worker.deleteLater()
 
     def open_library(self):
         """Open the Library Manager over the export library.
@@ -352,3 +493,50 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         """Open the standalone file and folder scheme settings window."""
         shell().open_safely('settings')
+
+
+class ZipImportWorker(QObject):
+    """Extracts a share zip off the GUI thread.
+
+    `extract_share_zip` reports progress and checks the cancel event
+    before each member, so a zip the user gave up on does not have to
+    finish. `done` fires on success, `cancelled` on a cancel, and
+    `failed` with a reason on error; `finished` always follows, which
+    is the signal the thread's teardown hangs off (invariant 14).
+    """
+
+    done = Signal()
+    failed = Signal(str)
+    cancelled = Signal()
+    progressed = Signal(int, int)
+    finished = Signal()
+
+    def __init__(self, zip_path, dest_root=None, cancel_event=None):
+        super().__init__()
+        self.zip_path = zip_path
+        self.dest_root = dest_root or import_folder()
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            path = extract_share_zip(
+                self.zip_path,
+                self.dest_root,
+                on_progress=self._progress,
+                should_cancel=self.cancel_event.is_set,
+            )
+            if path is None:
+                self.cancelled.emit()
+            else:
+                self.done.emit()
+        except ZipImportError as error:
+            log_exception("importing the share zip failed", error)
+            self.failed.emit(str(error))
+        except Exception as error:
+            log_exception("importing the share zip failed", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        self.finished.emit()
+
+    def _progress(self, done, total, relative_path=None):
+        self.progressed.emit(done, total)

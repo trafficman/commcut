@@ -10,6 +10,7 @@ that a failure to launch surfaces as a dialog rather than a crash.
 import os
 
 import pytest
+from unittest.mock import patch
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
@@ -392,6 +393,43 @@ def test_a_refused_drop_leaves_the_menu_up_to_try_again(menu, tmp_path):
     _drop(menu, menu.source)
 
     assert menu.opened == [("scanner", {"source": str(menu.source)})]
+
+
+def test_a_zip_drop_is_routed_to_import(menu, tmp_path):
+    """A `.zip` drop is recognized as a share and routed to the importer."""
+    share = tmp_path / "library.zip"
+    share.write_bytes(b"")
+    with patch.object(menu, "open_share_zip") as stub:
+        _drop(menu, share)
+    stub.assert_called_once()
+    called_path = stub.call_args[0][0]
+    assert os.path.basename(called_path) == "library.zip"
+
+
+def test_a_zip_drop_without_records_shows_a_warning(menu, tmp_path):
+    """A `.zip` without `.cnfo` records is refused as a share."""
+    share = tmp_path / "not-a-share.zip"
+    share.write_bytes(b"")
+
+    with patch("mainwindow.has_record_entries", return_value=False):
+        _drop(menu, share)
+
+    assert menu.opened == []
+    assert menu.refusals
+    assert "library share" in menu.refusals[0]
+
+
+def test_a_video_drop_takes_priority_over_a_zip_drop(menu, tmp_path):
+    """When both a video and a zip are dropped, the video wins."""
+    video = tmp_path / "compilation.mp4"
+    video.write_bytes(b"video")
+    share = tmp_path / "library.zip"
+    share.write_bytes(b"")
+
+    with patch.object(menu, "open_share_zip"):
+        _drop(menu, share, video)
+
+    assert menu.opened == [("scanner", {"source": str(video)})]
 
 
 # ---------------------------------------------------------------------------

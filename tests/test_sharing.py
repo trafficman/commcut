@@ -49,6 +49,9 @@ from shared.sharing import (
     share_plan,
     share_zip_name,
     write_share_zip,
+    extract_share_zip,
+    has_record_entries,
+    ZipImportError,
 )
 
 FOLDER_SCHEME_TEXT = "{network}/{filler_type}/{time_period}"
@@ -931,3 +934,224 @@ def test_closing_the_window_shuts_the_player_down(harness):
 
     assert bridge.shutdowns == 1
     window.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# Zip import
+# ---------------------------------------------------------------------------
+
+def _make_zip(path, entries):
+    """Write `entries` `{name: content}` into `path` as a zip."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    return path
+
+
+def test_has_record_entries_detects_a_cnfo(tmp_path):
+    """A zip with a `.cnfo` file is recognized as a share."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "Share/clip.mp4": b"video",
+        "Share/clip.cnfo": b"record",
+    })
+    assert has_record_entries(zip_path)
+
+
+def test_has_record_entries_rejects_a_zip_without_records(tmp_path):
+    """A zip with no `.cnfo` files is not a share."""
+    zip_path = _make_zip(str(tmp_path / "no-records.zip"), {
+        "Share/clip.mp4": b"video",
+    })
+    assert not has_record_entries(zip_path)
+
+
+def test_has_record_entries_is_case_insensitive_for_the_extension(tmp_path):
+    """`.cnfo`, `.CNFO`, `.Cnfo` all count."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "Share/clip.cnfo": b"lower",
+        "Share/clip2.CNFO": b"upper",
+    })
+    assert has_record_entries(zip_path)
+
+
+def test_extract_share_zip_writes_files_under_the_root(tmp_path):
+    """The zip's contents are preserved under a folder named after the zip stem."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "My Share/clip.mp4": b"video",
+        "My Share/clip.cnfo": b"record",
+    })
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    result = extract_share_zip(zip_path, dest)
+
+    assert os.path.basename(result) == "share"
+    assert os.path.isfile(os.path.join(result, "My Share", "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "My Share", "clip.cnfo"))
+
+
+def test_extract_share_zip_does_not_clobber_an_existing_folder(tmp_path):
+    """A name already in `import/` gets the `(1)` treatment."""
+    existing = tmp_path / "import" / "share"
+    existing.mkdir(parents=True)
+    (existing / "old.mp4").write_bytes(b"old")
+
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "share/clip.mp4": b"video",
+        "share/clip.cnfo": b"record",
+    })
+    dest = str(tmp_path / "import")
+
+    result = extract_share_zip(zip_path, dest)
+
+    assert os.path.basename(result) == "share (1)"
+    assert os.path.isfile(os.path.join(result, "share", "clip.mp4"))
+    assert os.path.isfile(os.path.join(existing, "old.mp4"))
+
+
+def test_extract_share_zip_reports_progress(tmp_path):
+    """Progress is called once before the first member and once per member."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "share/a.mp4": b"aa",
+        "share/a.cnfo": b"r1",
+        "share/b.mp4": b"bb",
+        "share/b.cnfo": b"r2",
+    })
+    dest = str(tmp_path / "import")
+    reports = []
+
+    extract_share_zip(
+        zip_path, dest,
+        on_progress=lambda done, total: reports.append((done, total)))
+
+    assert reports[0] == (0, 4)
+    assert reports[-1] == (4, 4)
+    assert len(reports) == 5
+
+
+def test_extract_share_zip_cancels_cleanly(tmp_path):
+    """A cancel leaves no staging directory behind."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "share/a.mp4": b"aa",
+        "share/a.cnfo": b"r1",
+    })
+    dest = str(tmp_path / "import")
+
+    cancelled = []
+    result = extract_share_zip(
+        zip_path, dest,
+        should_cancel=lambda: (cancelled.append(True), True)[1])
+
+    assert result is None
+    assert not os.path.exists(os.path.join(dest, "share"))
+    assert not os.path.exists(os.path.join(dest, "share.part"))
+    assert cancelled
+
+
+def test_extract_share_zip_rejects_a_path_escape(tmp_path):
+    """A member that escapes `dest_root/..` is refused."""
+    zip_path = _make_zip(str(tmp_path / "evil.zip"), {
+        "../escape.txt": b"escaped",
+    })
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    with pytest.raises(ZipImportError) as info:
+        extract_share_zip(zip_path, dest)
+
+    assert "escape" in str(info.value)
+    assert not os.path.isfile(str(tmp_path / "escape.txt"))
+
+
+def test_extract_share_zip_rejects_a_symlink(tmp_path):
+    """A member that is a symlink is refused."""
+    zip_path = str(tmp_path / "evil.zip")
+    info_entry = zipfile.ZipInfo("share/link")
+    info_entry.external_attr = (0o120000 << 16)
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr(info_entry, b"/etc/passwd")
+
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    with pytest.raises(ZipImportError) as info:
+        extract_share_zip(zip_path, dest)
+
+    assert "symlink" in str(info.value)
+
+
+def test_extract_share_zip_rejects_too_many_entries(tmp_path):
+    """A zip exceeding `MAX_ZIP_ENTRIES` is refused."""
+    from shared.sharing import MAX_ZIP_ENTRIES
+    entries = {f"share/f{i}.mp4": b"x" for i in range(MAX_ZIP_ENTRIES + 1)}
+    zip_path = _make_zip(str(tmp_path / "big.zip"), entries)
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    with pytest.raises(ZipImportError) as info:
+        extract_share_zip(zip_path, dest)
+
+    assert "exceeds" in str(info.value)
+
+
+def test_extract_share_zip_cleans_up_on_failure(tmp_path, monkeypatch):
+    """A mid-extraction error removes the staging directory."""
+    zip_path = str(tmp_path / "share.zip")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("share/a.mp4", b"aa")
+        archive.writestr("share/a.cnfo", b"r1")
+
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    original_open = open
+
+    def failing_open(file, mode="r", *args, **kwargs):
+        if str(file).endswith("a.mp4"):
+            raise OSError("simulated write failure")
+        return original_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+
+    with pytest.raises(OSError):
+        extract_share_zip(zip_path, dest)
+
+    assert not os.path.exists(os.path.join(dest, "share.part"))
+    assert not os.path.exists(os.path.join(dest, "share"))
+
+
+def test_extract_share_zip_skips_directory_entries(tmp_path):
+    """Directory entries in the zip are not extracted as files."""
+    zip_path = str(tmp_path / "share.zip")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("share/", b"")
+        archive.writestr("share/clip.mp4", b"video")
+        archive.writestr("share/clip.cnfo", b"record")
+
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    result = extract_share_zip(zip_path, dest)
+
+    assert os.path.isfile(os.path.join(result, "share", "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "share", "clip.cnfo"))
+
+
+def test_extract_share_zip_checks_free_space(tmp_path, monkeypatch):
+    """A zip that would not fit is refused before any file is written."""
+    zip_path = _make_zip(str(tmp_path / "share.zip"), {
+        "share/big.bin": b"x" * 100,
+    })
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    import shared.sharing as sharing_module
+    monkeypatch.setattr(
+        sharing_module, "shutil",
+        type("FakeShutil", (), {
+            "disk_usage": lambda root: type("Usage", (), {"free": 50})()
+        }))
+
+    with pytest.raises(ZipImportError) as info:
+        extract_share_zip(zip_path, dest)
+    assert "free" in str(info.value)
