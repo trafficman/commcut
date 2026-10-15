@@ -168,10 +168,14 @@ to the video route, which refuses it by name like any other
 non-video file.
 
 `shared/sharing.py:extract_share_zip` writes the zip's contents into
-`import/` under a folder named for the zip's stem — deduplicated if
-the name is taken — on a worker `QThread` behind a non-modal,
-cancellable `LoadingDialog`, mirroring the share-write pattern. Both
-teardowns hang off `QThread.finished` (invariant 14). Safety:
+`import/` under a folder named for the zip's own root folder (the one
+`write_share_zip` created when it archived the clips) — deduplicated
+if the name is taken — on a worker `QThread` behind a non-modal,
+cancellable `LoadingDialog`, mirroring the share-write pattern. The
+zip's internal root folder is preserved as the extraction folder, so
+there is no extra wrapper: the clips land at `import/<root>/...` exactly
+as the sender's install rendered them. Both teardowns hang off
+`QThread.finished` (invariant 14). Safety:
 
 - **Path escapes are refused.** Any member whose path climbs above the
   extraction folder is rejected, so a crafted zip cannot write outside

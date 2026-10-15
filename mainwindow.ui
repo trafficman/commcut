@@ -142,20 +142,17 @@
    </item>
    <item>
     <layout class="QVBoxLayout" name="verticalLayout_4">
-      <item>
-       <widget class="QPushButton" name="importButton">
-        <property name="toolTip">
-         <string>Import finished clips from another library, or a share zip dropped on this window. A zip is extracted into the import folder and then routed through the same auto-detect mesh.</string>
-        </property>
-        <property name="text">
-         <string>Library Import</string>
-        </property>
-       </widget>
-      </item>
+     <item>
+      <widget class="QPushButton" name="importButton">
+       <property name="text">
+        <string>Library Import</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QLabel" name="labelImportHint">
        <property name="text">
-        <string>Import existing filler clips into your library</string>
+        <string>Import existing filler clips into your library, or drop a Library Share zip here</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignmentFlag::AlignCenter</set>

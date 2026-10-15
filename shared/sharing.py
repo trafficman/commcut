@@ -324,6 +324,58 @@ def _unique_extraction_target(dest_root: str, stem: str) -> str:
             return candidate
 
 
+def _zip_root_folder(archive: zipfile.ZipFile) -> str | None:
+    """The common top-level folder of all members in `archive`, if any.
+
+    `write_share_zip` writes every clip under one root folder named
+    after the zip stem, so a well-formed share zip has exactly one
+    top-level folder. The extraction uses that name so it does not
+    create a duplicate wrapper -- the folder the zip already carries
+    becomes the folder in `import/`. Returns None when the zip has
+    no single common root (members scattered at the top level).
+    """
+    roots = set()
+    for info in archive.infolist():
+        parts = info.filename.replace("\\", "/").split("/")
+        if parts and parts[0]:
+            roots.add(parts[0])
+    if len(roots) == 1:
+        return next(iter(roots))
+    return None
+
+
+def _strip_zip_root(info: zipfile.ZipInfo, root_name: str) -> zipfile.ZipInfo:
+    """A copy of `info` with the zip's root folder stripped from its name.
+
+    The extraction folder is already named after the root, so the root
+    component inside the zip would produce a duplicate nested folder.
+    A member that *is* the root folder, or one with no root prefix, is
+    returned unchanged so its safety check can reject it if needed.
+    """
+    name = info.filename.replace("\\", "/")
+    prefix = root_name + "/"
+    if name.startswith(prefix):
+        stripped = zipfile.ZipInfo(name[len(prefix):])
+        stripped.external_attr = info.external_attr
+        stripped.compress_type = info.compress_type
+        stripped.file_size = info.file_size
+        return stripped
+    return info
+
+
+def _check_no_escape_components(filename: str) -> None:
+    """Raise `ZipImportError` if `filename` contains a `..` component.
+
+    Called before the root folder is stripped, because stripping can
+    hide a path-escape: `../escape.txt` with root `..` would become
+    `escape.txt` and look safe to the strip-aware check.
+    """
+    parts = filename.replace("\\", "/").split("/")
+    if any(part == ".." for part in parts):
+        raise ZipImportError(
+            f"A path inside the zip escapes the destination: {filename}")
+
+
 def _check_safe_member(info: zipfile.ZipInfo, dest_root: str) -> str:
     """The extraction path for `info`, or raise `ZipImportError`.
 
@@ -409,10 +461,15 @@ def extract_share_zip(
 ) -> str:
     """Extract a share zip into `dest_root`, returning its root folder.
 
-    The zip's own root folder is preserved under `dest_root` -- the one
-    folder named after the zip -- so the contents land at
-    `dest_root/<root>/...` exactly as `write_share_zip` wrote them, and
-    `find_videos` sees them with their records beside them.
+    The zip already carries its own root folder (named by `write_share_zip`
+    after the zip's stem), so the extraction goes directly into `dest_root`
+    without creating a second wrapper. The returned path is the extracted
+    root folder that the zip defined -- `dest_root/<root>/...` -- so
+    `find_videos` sees the clips with their records beside them.
+
+    If a folder with the zip's root name already exists in `dest_root`,
+    the extraction lands in `dest_root/<root> (1)/`, `dest_root/<root> (2)/`,
+    and so on -- the same deduplication `_unique_target` uses for shares.
 
     Safety:
 
@@ -449,7 +506,10 @@ def extract_share_zip(
 
         _check_free_space(required, dest_root)
 
-        root_name = os.path.splitext(os.path.basename(zip_path))[0]
+        root_name = _zip_root_folder(archive)
+        if not root_name:
+            root_name = os.path.splitext(
+                os.path.basename(zip_path))[0]
         extract_dir = _unique_extraction_target(dest_root, root_name)
         staging = extract_dir + PART_EXTENSION
         os.makedirs(staging, exist_ok=True)
@@ -470,7 +530,10 @@ def extract_share_zip(
                     raise ZipImportError(
                         f"A symlink inside the zip is not safe to extract: {name}")
 
-                rel = _check_safe_member(info, staging)
+                _check_no_escape_components(info.filename)
+
+                member = _strip_zip_root(info, root_name)
+                rel = _check_safe_member(member, staging)
                 if not rel:
                     continue
                 target = os.path.join(staging, rel)

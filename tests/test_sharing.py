@@ -975,7 +975,7 @@ def test_has_record_entries_is_case_insensitive_for_the_extension(tmp_path):
 
 
 def test_extract_share_zip_writes_files_under_the_root(tmp_path):
-    """The zip's contents are preserved under a folder named after the zip stem."""
+    """The zip's internal root folder becomes the folder in `import/`."""
     zip_path = _make_zip(str(tmp_path / "share.zip"), {
         "My Share/clip.mp4": b"video",
         "My Share/clip.cnfo": b"record",
@@ -985,13 +985,13 @@ def test_extract_share_zip_writes_files_under_the_root(tmp_path):
 
     result = extract_share_zip(zip_path, dest)
 
-    assert os.path.basename(result) == "share"
-    assert os.path.isfile(os.path.join(result, "My Share", "clip.mp4"))
-    assert os.path.isfile(os.path.join(result, "My Share", "clip.cnfo"))
+    assert os.path.basename(result) == "My Share"
+    assert os.path.isfile(os.path.join(result, "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "clip.cnfo"))
 
 
 def test_extract_share_zip_does_not_clobber_an_existing_folder(tmp_path):
-    """A name already in `import/` gets the `(1)` treatment."""
+    """A folder with the same root name gets the `(1)` treatment."""
     existing = tmp_path / "import" / "share"
     existing.mkdir(parents=True)
     (existing / "old.mp4").write_bytes(b"old")
@@ -1005,7 +1005,8 @@ def test_extract_share_zip_does_not_clobber_an_existing_folder(tmp_path):
     result = extract_share_zip(zip_path, dest)
 
     assert os.path.basename(result) == "share (1)"
-    assert os.path.isfile(os.path.join(result, "share", "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "clip.cnfo"))
     assert os.path.isfile(os.path.join(existing, "old.mp4"))
 
 
@@ -1133,8 +1134,8 @@ def test_extract_share_zip_skips_directory_entries(tmp_path):
 
     result = extract_share_zip(zip_path, dest)
 
-    assert os.path.isfile(os.path.join(result, "share", "clip.mp4"))
-    assert os.path.isfile(os.path.join(result, "share", "clip.cnfo"))
+    assert os.path.isfile(os.path.join(result, "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "clip.cnfo"))
 
 
 def test_extract_share_zip_checks_free_space(tmp_path, monkeypatch):
@@ -1155,3 +1156,19 @@ def test_extract_share_zip_checks_free_space(tmp_path, monkeypatch):
     with pytest.raises(ZipImportError) as info:
         extract_share_zip(zip_path, dest)
     assert "free" in str(info.value)
+
+
+def test_extract_share_zip_without_a_common_root_uses_zip_stem(tmp_path):
+    """A zip with no single top-level folder falls back to the zip's stem."""
+    zip_path = _make_zip(str(tmp_path / "mystery.zip"), {
+        "clip.mp4": b"video",
+        "clip.cnfo": b"record",
+    })
+    dest = str(tmp_path / "import")
+    os.makedirs(dest)
+
+    result = extract_share_zip(zip_path, dest)
+
+    assert os.path.basename(result) == "mystery"
+    assert os.path.isfile(os.path.join(result, "clip.mp4"))
+    assert os.path.isfile(os.path.join(result, "clip.cnfo"))
