@@ -163,6 +163,7 @@ class LibraryManagerWindow(QMainWindow):
         self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
         self.ui.treeLibrary.setHeaderHidden(True)
+        self.ui.tabWidget.setTabText(0, "Library")
         self.ui.buttonSave.setEnabled(False)
 
         self.ui.buttonPlay.clicked.connect(self.on_play_pause)
