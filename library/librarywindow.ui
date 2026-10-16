@@ -12,8 +12,8 @@
   </property>
   <property name="minimumSize">
    <size>
-    <width>760</width>
-    <height>820</height>
+    <width>800</width>
+    <height>720</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -24,8 +24,11 @@
     <number>6</number>
    </property>
    <item>
-     <widget class="QTabWidget" name="tabWidget">
-      <widget class="QWidget" name="libraryTab">
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="libraryTab">
       <property name="title" stdset="0">
        <string>Library</string>
       </property>
@@ -83,6 +86,12 @@
           </layout>
          </widget>
          <widget class="QWidget" name="clipPane" native="true">
+          <property name="minimumSize">
+           <size>
+            <width>400</width>
+            <height>0</height>
+           </size>
+          </property>
           <layout class="QVBoxLayout" name="clipLayout">
            <item>
             <widget class="QLabel" name="labelClipName">
@@ -136,40 +145,59 @@
             </layout>
            </item>
            <item>
-            <widget class="TagForm" name="tagForm" native="true"/>
-           </item>
-           <item>
-            <widget class="QLabel" name="labelDestination">
-             <property name="text">
-              <string/>
-             </property>
-             <property name="wordWrap">
+            <widget class="QScrollArea" name="scrollArea">
+             <property name="widgetResizable">
               <bool>true</bool>
              </property>
+             <widget class="QWidget" name="scrollAreaWidgetContents">
+              <property name="geometry">
+               <rect>
+                <x>0</x>
+                <y>0</y>
+                <width>403</width>
+                <height>396</height>
+               </rect>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_2">
+               <item>
+                <widget class="TagForm" name="tagForm" native="true"/>
+               </item>
+               <item>
+                <widget class="QLabel" name="labelDestination">
+                 <property name="text">
+                  <string/>
+                 </property>
+                 <property name="wordWrap">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QLabel" name="labelStatus">
+                 <property name="text">
+                  <string/>
+                 </property>
+                 <property name="wordWrap">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="clipSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
             </widget>
-           </item>
-           <item>
-            <widget class="QLabel" name="labelStatus">
-             <property name="text">
-              <string/>
-             </property>
-             <property name="wordWrap">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <spacer name="clipSpacer">
-             <property name="orientation">
-              <enum>Qt::Orientation::Vertical</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>20</width>
-               <height>20</height>
-              </size>
-             </property>
-            </spacer>
            </item>
            <item>
             <layout class="QHBoxLayout" name="clipButtons">
