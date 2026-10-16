@@ -39,6 +39,7 @@ the window has; the window renders that and does no deciding of its own.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 
@@ -46,6 +47,15 @@ from shared.importing import FoundVideo, ValueMatch, match_value
 from shared.paths import normalized_validation_key
 from shared.scheme import CANONICAL_TAG_KEYS
 from shared.vocabulary import Vocabulary
+
+#: A four-digit year starting with 19 or 20, not part of a longer number.
+#: Matches `1998` in "clip 1998 promo" and "(2005)", but not "19985" or "MCMXCVIII".
+YEAR_RE = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
+
+#: Entry name for the built-in default year rule. It is not a real file-name
+#: literal and never matches one by substring; it is a marker so the rule appears
+#: in the rules list and can be removed like any other learned rule.
+DEFAULT_YEAR_RULE_NAME = "Year (19XX–20XX)"
 
 #: A folder name's state. `rejected` is distinct from `unmeshed` because Reject is
 #: a *decision* -- "this folder's name is not a tag" -- while unmeshed is the
@@ -428,6 +438,12 @@ class MeshSession:
 
         self._colours = self._assign_colours()
         self._conflicts: list[MeshConflict] = []
+        #: The built-in default year rule is on by default. It is not a user
+        #: decision stored in `self._entries` — folder names and user-learned
+        #: rules live there, and the default year rule is separate so it does not
+        #: pollute `entries()`, `rules()`, `aliases()`, `counts()`, or `report()`.
+        #: It can be switched off with `disable_default_year_rule()`.
+        self._default_year_rule_enabled = True
 
     # -- introspection ----------------------------------------------------
 
@@ -757,6 +773,19 @@ class MeshSession:
         del self._entries[literal]
 
 
+    def default_year_rule_enabled(self) -> bool:
+        """Whether the built-in default year rule is contributing tags."""
+        return self._default_year_rule_enabled
+
+    def disable_default_year_rule(self) -> None:
+        """Switch off the built-in default year rule.
+
+        There is no re-enable: a removed default is a user decision that should
+        stand for the run. A caller that wants it back constructs a fresh
+        `MeshSession`.
+        """
+        self._default_year_rule_enabled = False
+
     def rules(self) -> tuple[AliasEntry, ...]:
         """The learned rules, sorted. What the rules list shows."""
         return tuple(sorted(
@@ -765,6 +794,21 @@ class MeshSession:
             key=lambda entry: entry.name.casefold(),
         ))
 
+
+    def _rule_contributions(self, filename: str):
+        """Yield `(namespace, value, source)` for every learned rule matching `filename`.
+
+        Literal rules match by case-insensitive substring. The built-in default
+        year rule matches any 19XX/20XX in the name and yields the matched year
+        as the value, so it is handled separately rather than by substring.
+        """
+        haystack = filename.casefold()
+        for entry in self.rules():
+            if entry.name.casefold() in haystack:
+                yield entry.namespace, entry.value, entry.name
+        if self._default_year_rule_enabled:
+            for match in YEAR_RE.finditer(filename):
+                yield "year", match.group(0), DEFAULT_YEAR_RULE_NAME
 
     def tags_for_filename(self, filename: str) -> ResolvedTags:
         """What the learned rules make of one file name.
@@ -783,11 +827,8 @@ class MeshSession:
         """
         if not filename:
             return ResolvedTags(tags={})
-        haystack = filename.casefold()
         return accumulate(
-            ((entry.namespace, entry.value, entry.name)
-             for entry in self.rules() if entry.name.casefold() in haystack),
-            example_path=filename,
+            self._rule_contributions(filename), example_path=filename,
         )
 
 
@@ -835,16 +876,13 @@ class MeshSession:
         """
         chain = folder_chain(relative_path)
         filename = os.path.basename(relative_path)
-        haystack = filename.casefold()
 
         def contributions():
             for name in chain:
                 entry = self._entries.get(name)
                 if entry is not None and entry.state == MESHED:
                     yield entry.namespace, entry.value, name
-            for entry in self.rules():
-                if entry.name.casefold() in haystack:
-                    yield entry.namespace, entry.value, entry.name
+            yield from self._rule_contributions(filename)
 
         return accumulate(contributions(), example_path=relative_path)
 

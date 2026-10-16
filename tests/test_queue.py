@@ -1476,7 +1476,7 @@ def test_the_rules_dialog_suggests_a_namespace_from_the_library(harness, qapp):
 
 
 def test_removing_a_rule_through_the_dialog(harness, qapp):
-    from importer.rules import RulesDialog
+    from importer.rules import RulesDialog, _ROLE
 
     open_queue, root, _ = harness
     session = MeshSession(str(root), [FakeVideo("Rips/A.mp4")], vocabulary=None)
@@ -1484,7 +1484,10 @@ def test_removing_a_rule_through_the_dialog(harness, qapp):
     dialog = RulesDialog(session, filename="A.mp4")
 
     try:
-        dialog.listRules.setCurrentRow(0)
+        row = next(
+            i for i in range(dialog.listRules.count())
+            if dialog.listRules.item(i).data(_ROLE) == "30 Sec")
+        dialog.listRules.setCurrentRow(row)
         dialog.on_remove()
 
         assert session.rules() == ()

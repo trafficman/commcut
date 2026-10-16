@@ -18,6 +18,7 @@ from shared.catalog import Catalog, CatalogClip
 from shared.mesh import (
     ALIAS_TABLE_VERSION,
     COLOURS,
+    DEFAULT_YEAR_RULE_NAME,
     LEARNED_FOLDER,
     LEARNED_RULE,
     MESHED,
@@ -977,6 +978,106 @@ def test_a_rule_does_not_re_map_a_folder_name_it_shares_a_literal_with():
 
 def test_an_empty_file_name_resolves_to_nothing():
     assert rules_session("CN/A.mkv").tags_for_filename("").tags == {}
+
+
+# ---------------------------------------------------------------------------
+# Built-in default year rule
+# ---------------------------------------------------------------------------
+
+def test_a_fresh_session_has_the_default_year_rule():
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.default_year_rule_enabled()
+
+
+def test_default_year_rule_matches_nineteen_hundreds():
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.tags_for_filename("Toonami 1998 promo.mkv").tags == {
+        "year": "1998"}
+
+
+def test_default_year_rule_matches_two_thousands():
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.tags_for_filename("clip (2005) bumper.mkv").tags == {
+        "year": "2005"}
+
+
+def test_default_year_rule_matches_year_beside_underscores():
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.tags_for_filename("worlds_finest_1998_final.mp4").tags == {
+        "year": "1998"}
+
+
+def test_default_year_rule_ignores_numbers_outside_year_range():
+    """1899 and 2100 are not years by this rule; 19985 is a longer number."""
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.tags_for_filename("clip 1899 promo.mkv").tags == {}
+    assert loose.tags_for_filename("clip 2100 promo.mkv").tags == {}
+    assert loose.tags_for_filename("model 19985 unit.mkv").tags == {}
+
+
+def test_default_year_rule_ignores_non_digit_surroundings():
+    """Roman numerals and dotted versions are not matched as years."""
+    loose = rules_session("CN/A.mkv")
+
+    assert loose.tags_for_filename("MCMXCVIII promo.mkv").tags == {}
+
+
+def test_two_years_in_one_name_leave_year_unassigned():
+    """The clip would get two values for one namespace, so neither is taken."""
+    loose = rules_session("CN/A.mkv")
+
+    result = loose.tags_for_filename("1998 to 2005 retrospective.mkv")
+
+    assert "year" not in result.tags
+    assert result.resolved is False
+    assert result.needs_manual_edit is True
+
+
+def test_default_year_rule_can_be_disabled():
+    loose = rules_session("CN/A.mkv")
+
+    loose.disable_default_year_rule()
+
+    assert not loose.default_year_rule_enabled()
+    assert loose.tags_for_filename("Toonami 1998 promo.mkv").tags == {}
+
+
+def test_default_year_rule_and_a_specific_year_rule_agreeing_do_not_conflict():
+    """Same namespace, same value from two sources is the ordinary case."""
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("1998", "year", "1998")
+
+    result = loose.tags_for_filename("Toonami 1998 promo.mkv")
+
+    assert result.tags == {"year": "1998"}
+    assert result.resolved is True
+
+
+def test_default_year_rule_and_a_specific_year_rule_disagreeing_conflict():
+    """Two different values for the year namespace cannot be reconciled."""
+    loose = rules_session("CN/A.mkv")
+    loose.learn_rule("1998", "year", "2005")
+
+    result = loose.tags_for_filename("Toonami 1998 promo.mkv")
+
+    assert "year" not in result.tags
+    assert result.resolved is False
+
+
+def test_default_year_rule_contributes_through_tags_for_clip():
+    loose = rules_session("CN/A 1998.mkv")
+    loose.assign("CN", "network", "Cartoon Network")
+
+    combined = loose.tags_for_clip("CN/A 1998.mkv")
+
+    assert combined.tags == {
+        "network": "Cartoon Network", "year": "1998"}
+    assert combined.resolved is True
 
 
 # ---------------------------------------------------------------------------

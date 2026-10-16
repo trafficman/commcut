@@ -256,12 +256,20 @@ so the function had no caller. Filename parsing was the part that would have
 *inferred* rather than asked, and `docs/naming-and-organization.md` refuses that
 outright: a scheme renders lossily, so a name cannot be read back into tags.
 
-Leaving unused code "for later" would have been the wrong call. If filename parsing
-is ever wanted it belongs in a separate pass, written with real examples in hand,
-and it would have to ask rather than suggest. The rule that survives is narrower
-and stronger: **a folder name becomes a tag only through
+Leaving unused code "for later" would have been the wrong call. If general
+filename parsing is ever wanted it belongs in a separate pass, written with real
+examples in hand, and it would have to ask rather than suggest. The rule that
+survives is narrower and stronger: **a folder name becomes a tag only through
 `MeshSession.assign`**, and the type boundary is what stops that happening by
 accident.
+
+The one exception is the built-in default year rule: every `MeshSession` starts
+with `Year (19XX–20XX) → year:`, which matches any four-digit number starting
+with `19` or `20` in a file name and fills the `year:` namespace with it. It is
+a learned rule, so it shows in the Manage Autofill Rules list and can be removed
+like any other rule — a library whose filenames happen to contain a lot of
+non-year `19XX`/`20XX` numbers can drop it with one click. It is the one narrow,
+reversable inference the mesh allows.
 
 `match_value` did survive, because both value questions need its ranked, counted
 evidence — see below.

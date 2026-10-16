@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from shared.diagnostics import log
 from shared.importing import match_value
 from shared.mesh import (
+    DEFAULT_YEAR_RULE_NAME,
     LEARNED_FOLDER,
     MeshConflict,
     MeshSession,
@@ -58,6 +59,11 @@ def describe_rule(entry) -> str:
     if entry.state != "meshed":
         return f"{entry.name}  —  not a tag yet ({source})"
     return f"{entry.name}  →  {entry.namespace}: {entry.value}"
+
+
+def describe_default_year_rule() -> str:
+    """One line for the built-in default year rule in the rules list."""
+    return f"{DEFAULT_YEAR_RULE_NAME}  →  year: <year>"
 
 
 class RulesDialog(QDialog):
@@ -163,6 +169,10 @@ class RulesDialog(QDialog):
 
     def _refresh_list(self):
         self.listRules.clear()
+        if self.session.default_year_rule_enabled():
+            item = QListWidgetItem(describe_default_year_rule())
+            item.setData(_ROLE, DEFAULT_YEAR_RULE_NAME)
+            self.listRules.addItem(item)
         for entry in self.session.rules():
             item = QListWidgetItem(describe_rule(entry))
             item.setData(_ROLE, entry.name)
@@ -177,6 +187,13 @@ class RulesDialog(QDialog):
         offers, so "which namespace" is answered with `block (14 clips)` rather
         than a guess.
         """
+        if literal == DEFAULT_YEAR_RULE_NAME:
+            self._select_pair("year", "")
+            self.labelEvidence.setText(
+                "Built-in default rule: any 19XX/20XX in the file name becomes "
+                "<b>year:</b> with that year. It can be removed from this list.")
+            return
+
         entry = self.session.find(literal) if literal else None
         if entry is not None:
             if entry.state == "meshed":
@@ -261,6 +278,12 @@ class RulesDialog(QDialog):
         if item is None:
             return
         literal = item.data(_ROLE)
+        if literal == DEFAULT_YEAR_RULE_NAME:
+            self.session.disable_default_year_rule()
+            self.labelStatus.setText(
+                "Removed the default year rule.")
+            self._refresh_list()
+            return
         try:
             self.session.remove_rule(literal)
         except ValueError as error:
