@@ -315,6 +315,20 @@ delete-a-clip-and-cut-it-again case, which is exactly when the user is most
 likely to retry. An orphan record also never blocks anything: the
 existing-destination check keys on the `.mp4` path and never sees it.
 
+### Library maintenance: realigning to the schemes
+
+A clip that was renamed by hand, or whose folder scheme changed since it was
+exported, no longer lives where its tags render to. `shared/retagging.py`
+finds those clips — `find_misaligned_clips` renders every clip's tags through
+the current schemes and compares to its actual path — and
+`align_misaligned_clips` moves each one to its rendered destination through the
+same `execute_retag` transaction a save uses: the `.cnfo` record is published at
+the destination before the video moves, `DestinationIndex` collision checks
+name the clip a destination would collide with and refuse that move, and a
+crash leaves either the old pair or the new one. Nothing here parses a filename
+back into tags, and nothing here writes without first publishing its record, so
+`video present ⟹ record present` holds throughout.
+
 A record that cannot be published fails **its own clip** with nothing on disk,
 and a value XML cannot represent fails it before the encode. `ElementTree`
 escapes `&`, `<` and `>` but emits control characters raw, producing a file its

@@ -38,6 +38,7 @@ from shared.records import (
     load_record,
     write_record,
 )
+from shared.retagging import ScanResult
 from shared.tag_form import set_field_text
 
 FOLDER_SCHEME_TEXT = "{network}/{filler_type}/{time_period}"
@@ -175,6 +176,20 @@ class StubCatalogWorker(manager_module.CatalogWorker):
         pass
 
 
+class StubMaintenanceScanWorker(manager_module.MaintenanceScanWorker):
+    """Like `StubCatalogWorker`, for the maintenance scan worker."""
+
+    def moveToThread(self, thread):
+        pass
+
+
+class StubMaintenanceAlignWorker(manager_module.MaintenanceAlignWorker):
+    """Like `StubCatalogWorker`, for the maintenance align worker."""
+
+    def moveToThread(self, thread):
+        pass
+
+
 class FakeLoadingDialog(QObject):
     """A `LoadingDialog` whose `exec()` returns at once.
 
@@ -192,6 +207,9 @@ class FakeLoadingDialog(QObject):
         self.visible = True
 
     def set_range(self, *_args):
+        pass
+
+    def set_value(self, *_args):
         pass
 
     def set_message(self, *_args):
@@ -219,6 +237,9 @@ class Recorder:
     Save = 1
     Discard = 2
     Cancel = 3
+    Yes = 4
+    No = 8
+    Ok = 16
     answer = Cancel
     seen = []
 
@@ -250,6 +271,25 @@ def plant_clip(root, tags, clip_id=None):
         handle.write(b"\0" * 16)
     write_record(
         os.path.join(root, *destination.record_relative_components),
+        ClipRecord(source="compilation.mp4", segment_index=1,
+                    start=10.0, duration=20.0,
+                    tags=tuple(sorted(tags.items())),
+                    clip_id=clip_id))
+    return path
+
+
+def plant_clip_at(root, relative, tags, clip_id=None):
+    """Plant a clip at an arbitrary path, regardless of what its
+    tags render to — the way a clip ends up after its scheme changes,
+    or it is renamed by hand."""
+    if clip_id is None:
+        clip_id = next_clip_id()
+    path = os.path.join(root, *relative.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\0" * 16)
+    write_record(
+        os.path.splitext(path)[0] + RECORD_EXTENSION,
         ClipRecord(source="compilation.mp4", segment_index=1,
                     start=10.0, duration=20.0,
                     tags=tuple(sorted(tags.items())),
@@ -299,6 +339,10 @@ def harness(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(manager_module, "QThread", FakeThread)
     monkeypatch.setattr(manager_module, "CatalogWorker",
                         StubCatalogWorker)
+    monkeypatch.setattr(manager_module, "MaintenanceScanWorker",
+                        StubMaintenanceScanWorker)
+    monkeypatch.setattr(manager_module, "MaintenanceAlignWorker",
+                        StubMaintenanceAlignWorker)
     monkeypatch.setattr(manager_module, "create_mpv_player",
                         lambda _container: FakePlayer())
     monkeypatch.setattr(manager_module, "MpvBridge",
@@ -850,6 +894,194 @@ def test_releasing_the_transport_seeks_the_bridge(harness):
         window.ui.sliderPosition.setValue(7)
         window.ui.sliderPosition.sliderReleased.emit()
         assert player.seeks == [7]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# Maintenance: scan and align
+# ---------------------------------------------------------------------------
+
+def test_scan_reports_no_issues_for_an_aligned_library(harness):
+    """A clip planted at the path its tags render to is not misaligned."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        Recorder.answer = Recorder.No
+        window.on_scan_library()
+
+        assert Recorder.seen[-1][0] == "Scan complete"
+        assert "No issues found" in Recorder.seen[-1][1]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scan_detects_misaligned_clips(harness):
+    """A clip at the wrong path is detected and alignment offered."""
+    open_library, root = harness
+    plant_clip_at(root, "CN/Promo/2000s/WrongName.mp4", tags_for("Alpha"))
+    window = open_library()
+
+    try:
+        Recorder.answer = Recorder.No
+        window.on_scan_library()
+
+        assert Recorder.seen[-1][0] == "Scan complete"
+        assert "1 clip(s) can be aligned" in Recorder.seen[-1][1]
+        assert "Align them now?" in Recorder.seen[-1][1]
+
+        assert os.path.isfile(
+            video_path(root, "CN/Promo/2000s/WrongName.mp4"))
+        assert not os.path.exists(
+            video_path(root, "CN/Promo/2000s/Alpha.mp4"))
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_align_moves_misaligned_clips(harness):
+    """Accepting the align prompt moves the clip to its rendered path
+    and rebuilds the tree."""
+    open_library, root = harness
+    plant_clip_at(root, "CN/Promo/2000s/WrongName.mp4", tags_for("Alpha"))
+    window = open_library()
+
+    try:
+        Recorder.answer = Recorder.Yes
+        window.on_scan_library()
+
+        assert os.path.isfile(
+            video_path(root, "CN/Promo/2000s/Alpha.mp4"))
+        assert not os.path.exists(
+            video_path(root, "CN/Promo/2000s/WrongName.mp4"))
+        assert os.path.isfile(
+            record_path(root, "CN/Promo/2000s/Alpha.mp4"))
+        assert not os.path.exists(
+            record_path(root, "CN/Promo/2000s/WrongName.mp4"))
+
+        leaf = leaf_for(window, "CN/Promo/2000s/Alpha.mp4")
+        assert leaf is not None
+
+        titles = [seen[0] for seen in Recorder.seen]
+        assert "Scan complete" in titles
+        assert "Align complete" in titles
+        assert any("Aligned 1 clip" in seen[1] for seen in Recorder.seen)
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scan_reports_clips_with_unrenderable_tags(harness):
+    """A clip missing required tags is reported as an error, not a
+    misalignment — it cannot be aligned until the tags are fixed by
+    hand."""
+    open_library, root = harness
+    plant_clip_at(root, "CN/Promo/2000s/Broken.mp4", {"title": "Broken"})
+    window = open_library()
+
+    try:
+        Recorder.answer = Recorder.No
+        window.on_scan_library()
+
+        assert Recorder.seen[-1][0] == "Scan complete"
+        assert "could not be checked" in Recorder.seen[-1][1]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scan_refuses_while_walk_running(harness):
+    """The scan button does nothing while the initial walk is still
+    running, because the scan reads the catalog the walk populates."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), parked=True)
+
+    try:
+        assert window._thread is not None
+        window.on_scan_library()
+        assert window._scan_thread is None
+
+        window._on_catalog_built(build_catalog(root))
+        window._on_walk_stopped()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_closeevent_refuses_over_a_scan_thread(harness):
+    """Closing while a scan runs is deferred, the same as a walk."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        window._scan_thread = FakeThread()
+        window._scan_cancel = threading.Event()
+        event = QCloseEvent()
+        window.closeEvent(event)
+        assert not event.isAccepted()
+        assert window._scan_cancel.is_set()
+        assert window._close_after_scan
+
+        window._scan_thread = None
+        assert window.close()
+        assert not window.isVisible()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_closeevent_refuses_over_an_align_thread(harness):
+    """Closing while an align runs is deferred, the same as a walk."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        window._align_thread = FakeThread()
+        window._align_cancel = threading.Event()
+        event = QCloseEvent()
+        window.closeEvent(event)
+        assert not event.isAccepted()
+        assert window._align_cancel.is_set()
+        assert window._close_after_align
+
+        window._align_thread = None
+        assert window.close()
+        assert not window.isVisible()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_closing_during_a_scan_closes_when_it_stops(harness):
+    """A close requested during a scan is honoured once the scan
+    thread has really stopped — the same deferred-close pattern the
+    walk uses."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        FakeThread.auto_run = False
+        try:
+            window.on_scan_library()
+            assert window._scan_thread is not None
+            assert not window.isEnabled()
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+            assert not event.isAccepted()
+            assert window._scan_cancel.is_set()
+            assert window._close_after_scan
+
+            window._on_scan_done(ScanResult(cancelled=True))
+            window._on_scan_stopped()
+
+            assert window._scan_thread is None
+            assert not window.isVisible()
+        finally:
+            FakeThread.auto_run = True
     finally:
         window.close()
         window.deleteLater()

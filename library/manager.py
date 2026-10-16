@@ -73,7 +73,9 @@ from shared.mpv import MpvBridge, create_mpv_player
 from shared.naming import compile_filename_scheme
 from shared.paths import compile_folder_scheme
 from shared.retagging import (
+    align_misaligned_clips,
     execute_retag,
+    find_misaligned_clips,
     plan_retag,
     retag_is_in_place,
 )
@@ -127,6 +129,88 @@ class CatalogWorker(QObject):
         self.progressed.emit(clips_found, relative_path)
 
 
+class MaintenanceScanWorker(QObject):
+    """Scans the library for clips whose path doesn't match their tags.
+
+    `find_misaligned_clips` is a per-clip render-and-compare over an
+    in-memory catalog — CPU-bound but not destructive — and it reports
+    progress per clip and stops whenever the cancel event is set.
+    The outcome is emitted once — `done` with a `ScanResult`, or
+    `failed` with a reason — and `finished` always follows, which is
+    the signal the thread's teardown hangs off.
+    """
+
+    done = Signal(object)
+    failed = Signal(str)
+    progressed = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, catalog, folder_scheme, filename_scheme,
+                 cancel_event=None):
+        super().__init__()
+        self.catalog = catalog
+        self.folder_scheme = folder_scheme
+        self.filename_scheme = filename_scheme
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = find_misaligned_clips(
+                self.catalog, self.folder_scheme, self.filename_scheme,
+                on_progress=self._progress,
+                should_cancel=self.cancel_event.is_set,
+            )
+            self.done.emit(result)
+        except Exception as error:
+            log_exception("scanning the library failed", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        self.finished.emit()
+
+    def _progress(self, clips_found, relative_path):
+        self.progressed.emit(clips_found, relative_path)
+
+
+class MaintenanceAlignWorker(QObject):
+    """Moves misaligned clips to where their tags put them.
+
+    `align_misaligned_clips` runs the retag transaction per clip — the
+    record published at the destination before the video moves — and
+    reports progress per clip aligned. The outcome is emitted once —
+    `done` with an `AlignmentResult`, or `failed` with a reason — and
+    `finished` always follows, which is the signal the thread's
+    teardown hangs off.
+    """
+
+    done = Signal(object)
+    failed = Signal(str)
+    progressed = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, misaligned, catalog, cancel_event=None):
+        super().__init__()
+        self.misaligned = misaligned
+        self.catalog = catalog
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = align_misaligned_clips(
+                self.misaligned, self.catalog,
+                on_progress=self._progress,
+                should_cancel=self.cancel_event.is_set,
+            )
+            self.done.emit(result)
+        except Exception as error:
+            log_exception("aligning the clips failed", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        self.finished.emit()
+
+    def _progress(self, clips_aligned, relative_path):
+        self.progressed.emit(clips_aligned, relative_path)
+
+
 class LibraryManagerWindow(QMainWindow):
     """Every clip in the export library, in one tree, with the
     tag form and a preview beside it."""
@@ -159,12 +243,26 @@ class LibraryManagerWindow(QMainWindow):
         self._select_after_walk = ""
         self._move_report = None
         self._scrubbing = False
+        self._scan_thread = None
+        self._scan_worker = None
+        self._scan_dialog = None
+        self._scan_cancel = None
+        self._scan_result = None
+        self._scan_error = None
+        self._close_after_scan = False
+        self._align_thread = None
+        self._align_worker = None
+        self._align_dialog = None
+        self._align_cancel = None
+        self._align_result = None
+        self._align_error = None
+        self._close_after_align = False
 
         self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
         self.ui.treeLibrary.setHeaderHidden(True)
         self.ui.tabWidget.setTabText(0, "Library")
-        self.ui.tabWidget.setTabText(1, "Maintanence")
+        self.ui.tabWidget.setTabText(1, "Maintenance")
         self.ui.buttonSave.setEnabled(False)
 
         self.ui.buttonPlay.clicked.connect(self.on_play_pause)
@@ -182,6 +280,8 @@ class LibraryManagerWindow(QMainWindow):
             field_change_signal(
                 self.ui.tagForm.field(namespace)).connect(
                     self._on_tag_edited)
+
+        self.ui.buttonScanLibrary.clicked.connect(self.on_scan_library)
 
         self._begin_walk()
 
@@ -578,6 +678,250 @@ class LibraryManagerWindow(QMainWindow):
             f"Saved. Moved {clip.relative_path} → "
             f"{destination.relative_path}")
 
+    # -- maintenance ---------------------------------------------------
+
+    def on_scan_library(self):
+        """Scan the library for clips whose path doesn't match their tags."""
+        if self._thread is not None:
+            return
+        if self._scan_thread is not None:
+            return
+        self._begin_scan()
+
+    def _begin_scan(self):
+        """Scan the library on a worker thread, behind a dialog.
+
+        The window is frozen for the scan's duration, and the dialog
+        is deliberately parentless, because `setEnabled(False)` cascades
+        to child widgets and would disable the dialog's Cancel. The
+        thread's teardown hangs off `QThread.finished` (invariant 14).
+        """
+        self._scan_cancel = threading.Event()
+        total = len(self._catalog.clips)
+        worker = MaintenanceScanWorker(
+            self._catalog, self._folder_scheme,
+            self._filename_scheme, cancel_event=self._scan_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_scan_done)
+        worker.failed.connect(self._on_scan_failed)
+        worker.progressed.connect(self._on_scan_progressed)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_scan_stopped)
+        self._scan_worker = worker
+        self._scan_thread = thread
+
+        self.setEnabled(False)
+        dialog = LoadingDialog(
+            "Scanning the library…", cancellable=True, modal=False,
+            title="Library Manager")
+        dialog.set_range(0, total)
+        dialog.canceled.connect(self._on_scan_cancel_requested)
+        dialog.show()
+        self._scan_dialog = dialog
+
+        thread.start()
+
+    def _on_scan_cancel_requested(self):
+        """The user gave up on the scan: stop it."""
+        if self._scan_cancel is not None:
+            self._scan_cancel.set()
+
+    def _on_scan_progressed(self, clips_checked, relative_path):
+        """Update the scan dialog's progress and message."""
+        dialog = self._scan_dialog
+        if dialog is not None:
+            dialog.set_message(f"Scanned {clips_checked} clip(s)")
+            dialog.set_value(clips_checked)
+
+    def _on_scan_done(self, result):
+        """The scan finished: close the dialog and store the result."""
+        self._scan_result = result
+        self._scan_error = None
+        dialog, self._scan_dialog = self._scan_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_scan_failed(self, message):
+        """The scan could not run. The window stays up with the reason."""
+        self._scan_error = message
+        self._scan_result = None
+        dialog, self._scan_dialog = self._scan_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_scan_stopped(self):
+        """The scan thread has stopped; clean up and report results."""
+        thread, self._scan_thread = self._scan_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._scan_worker = self._scan_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        dialog, self._scan_dialog = self._scan_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self.setEnabled(True)
+
+        if self._close_after_scan:
+            self._close_after_scan = False
+            self._close_video()
+            self.close()
+            return
+
+        if self._scan_error is not None:
+            error, self._scan_error = self._scan_error, None
+            QMessageBox.warning(self, "Scan failed", error)
+            return
+
+        result = self._scan_result
+        self._scan_result = None
+        if result is None or result.cancelled:
+            return
+
+        self._show_scan_results(result)
+
+    def _show_scan_results(self, result):
+        """Report what the scan found, and offer to align."""
+        misaligned = result.misaligned
+        errors = result.errors
+        clips_found = result.clips_found
+
+        parts = []
+        if misaligned:
+            parts.append(
+                f"{len(misaligned)} clip(s) can be aligned — their "
+                f"tags render to a different path than they currently "
+                f"live in.")
+        if errors:
+            parts.append(
+                f"{len(errors)} clip(s) could not be checked — their "
+                f"tags need to be fixed by hand.")
+        if not misaligned and not errors:
+            parts.append(f"No issues found across {clips_found} clip(s).")
+
+        message = "\n".join(parts)
+
+        if not misaligned:
+            QMessageBox.warning(self, "Scan complete", message)
+            return
+
+        message += "\n\nAlign them now?"
+        answer = QMessageBox.warning(
+            self, "Scan complete", message,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self._begin_align(misaligned)
+
+    def _begin_align(self, misaligned):
+        """Align the misaligned clips on a worker thread, behind a dialog."""
+        self._align_cancel = threading.Event()
+        worker = MaintenanceAlignWorker(
+            misaligned, self._catalog, cancel_event=self._align_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_align_done)
+        worker.failed.connect(self._on_align_failed)
+        worker.progressed.connect(self._on_align_progressed)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_align_stopped)
+        self._align_worker = worker
+        self._align_thread = thread
+
+        self.setEnabled(False)
+        dialog = LoadingDialog(
+            "Aligning misaligned clips…", cancellable=True, modal=False,
+            title="Library Manager")
+        dialog.set_range(0, len(misaligned))
+        dialog.canceled.connect(self._on_align_cancel_requested)
+        dialog.show()
+        self._align_dialog = dialog
+
+        thread.start()
+
+    def _on_align_cancel_requested(self):
+        """The user gave up on the align: stop it."""
+        if self._align_cancel is not None:
+            self._align_cancel.set()
+
+    def _on_align_progressed(self, clips_aligned, relative_path):
+        """Update the align dialog's progress and message."""
+        dialog = self._align_dialog
+        if dialog is not None:
+            dialog.set_message(f"Aligned {clips_aligned} clip(s)")
+            dialog.set_value(clips_aligned)
+
+    def _on_align_done(self, result):
+        """The align finished: close the dialog and store the result."""
+        self._align_result = result
+        self._align_error = None
+        dialog, self._align_dialog = self._align_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_align_failed(self, message):
+        """The align could not run. The window stays up with the reason."""
+        self._align_error = message
+        self._align_result = None
+        dialog, self._align_dialog = self._align_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_align_stopped(self):
+        """The align thread has stopped; clean up and report results."""
+        thread, self._align_thread = self._align_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._align_worker = self._align_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        dialog, self._align_dialog = self._align_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self.setEnabled(True)
+
+        if self._close_after_align:
+            self._close_after_align = False
+            self._close_video()
+            self.close()
+            return
+
+        if self._align_error is not None:
+            error, self._align_error = self._align_error, None
+            QMessageBox.warning(self, "Align failed", error)
+            return
+
+        result = self._align_result
+        self._align_result = None
+        if result is None or result.cancelled:
+            return
+
+        self._show_align_results(result)
+
+        if result.aligned > 0:
+            self._select_after_walk = ""
+            self._begin_walk(rebuild=True)
+
+    def _show_align_results(self, result):
+        """Report what the align did."""
+        aligned = result.aligned
+        errors = result.errors
+
+        parts = []
+        if aligned:
+            parts.append(
+                f"Aligned {aligned} clip(s) to where their tags "
+                f"put them.")
+        if errors:
+            for label, reason in errors:
+                parts.append(f"  {label}: {reason}")
+        if not aligned and not errors:
+            parts.append("No clips needed aligning.")
+
+        QMessageBox.warning(self, "Align complete", "\n".join(parts))
+
     # -- playback ----------------------------------------------------
 
     def on_play_pause(self):
@@ -658,6 +1002,24 @@ class LibraryManagerWindow(QMainWindow):
             # is still running aborts the whole process.
             if self._cancel is not None:
                 self._cancel.set()
+            event.ignore()
+            return
+        if self._scan_thread is not None:
+            # The scan is still running. Ask it to stop and defer the
+            # close to `_on_scan_stopped`, which runs once the thread
+            # has really stopped.
+            if self._scan_cancel is not None:
+                self._scan_cancel.set()
+            self._close_after_scan = True
+            event.ignore()
+            return
+        if self._align_thread is not None:
+            # The align is still running. Ask it to stop and defer the
+            # close to `_on_align_stopped`, which runs once the thread
+            # has really stopped.
+            if self._align_cancel is not None:
+                self._align_cancel.set()
+            self._close_after_align = True
             event.ignore()
             return
         self._close_video()

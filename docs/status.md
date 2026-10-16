@@ -197,6 +197,23 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   every keystroke. →
   [architecture.md](architecture.md#the-library-manager)
 
+  **Library Maintenance** — the tab's **Scan Library** button runs
+  `find_misaligned_clips` (`shared/retagging.py`) off the GUI thread behind a
+  cancellable `LoadingDialog`: each clip's tags render through the folder and
+  filename schemes and are compared to where the clip actually lives. Clips
+  whose tags render to a different path are reported as `misaligned`; clips
+  whose tags cannot render at all (a missing required tag, an unknown key) are
+  reported as `errors` — they cannot be aligned until a person fixes them by
+  hand. Accepting the offered align runs `align_misaligned_clips`, which moves
+  each misaligned clip through the same `execute_retag` transaction a save
+  uses — the `.cnfo` record published at the destination before the video
+  moves, `DestinationIndex` collision checks that name the conflicting clip
+  and refuse the move — then rebuilds the tree so nothing is left pointing at
+  a gone path. `MaintenanceScanWorker` and `MaintenanceAlignWorker` follow the
+  same `worker.finished → thread.quit` teardown as `CatalogWorker`
+  (invariant 14), and `closeEvent` refuses/defers close while a scan or align
+  thread runs, exactly as the walk does.
+
 - **Library Sharing** (`sharing/sharing.py`, `shared/sharing.py`): the
   main menu's **Library Sharing** button. The export library, or a
   tag-filtered part of it, as a zip a recipient drops into their

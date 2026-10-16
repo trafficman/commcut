@@ -24,8 +24,8 @@
     <number>6</number>
    </property>
    <item>
-    <widget class="QTabWidget" name="tabWidget">
-     <widget class="QWidget" name="libraryTab">
+     <widget class="QTabWidget" name="tabWidget">
+      <widget class="QWidget" name="libraryTab">
       <property name="title" stdset="0">
        <string>Library</string>
       </property>
@@ -225,13 +225,16 @@
        <string>Maintenance</string>
       </property>
       <attribute name="title">
-       <string>Page</string>
+       <string/>
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayout">
        <item>
-        <widget class="QPushButton" name="pushButton">
+        <widget class="QPushButton" name="buttonScanLibrary">
+         <property name="toolTip">
+          <string>Scan the library for clips whose filename or location do not match their tags, then align them.</string>
+         </property>
          <property name="text">
-          <string>PushButton</string>
+          <string>Scan Library for Misaligned Clips</string>
          </property>
         </widget>
        </item>

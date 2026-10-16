@@ -40,10 +40,12 @@ No ffmpeg runs: a re-tag never touches a clip's content.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 
 from shared.catalog import Catalog, CatalogClip
 from shared.exporting import (
+    ClipDestination,
     DestinationIndex,
     ExportPlanError,
     plan_clip_destination,
@@ -213,3 +215,193 @@ def _remove_quietly(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Library maintenance: scan for, and align, misaligned clips
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MisalignedClip:
+    """A clip whose path does not match what its tags render to.
+
+    `destination` is where the clip's tags put it under the current
+    schemes; `clip.relative_path` is where it actually lives. The two
+    differ, which is the whole point of this type.
+    """
+
+    clip: CatalogClip
+    destination: ClipDestination
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """What a library maintenance scan found.
+
+    `misaligned` clips can be aligned: their tags render to a
+    destination different from their current path, and the tags are
+    complete enough to render.
+
+    `errors` are clips whose tags cannot render at all (a missing
+    required tag, an unknown key) — aligning them is impossible until
+    a person fixes the tags by hand.
+    """
+
+    misaligned: tuple[MisalignedClip, ...] = ()
+    errors: tuple[tuple[str, str], ...] = ()
+    clips_found: int = 0
+    cancelled: bool = False
+
+
+def _ignore_progress(_checked: int, _relative_path: str) -> None:
+    pass
+
+
+def _never_cancel() -> bool:
+    return False
+
+
+def find_misaligned_clips(
+    catalog: Catalog,
+    folder_scheme,
+    filename_scheme,
+    on_progress: Callable[[int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> ScanResult:
+    """Find clips whose path does not match their tags.
+
+    For each clip, renders its tags through the two schemes via
+    `plan_clip_destination` — the same function the Library Manager and
+    the editor both use to name a clip — and compares the result to the
+    clip's actual ``relative_path``. A clip whose tags cannot render
+    (a missing required tag, an unknown key) is reported as an error,
+    not a mismatch: it cannot be aligned until a person fixes the tags.
+
+    The catalog is consumed read-only. Nothing here writes to disk, so
+    this function is the reusable half of the maintenance feature: a
+    future "re-scheme an entire library at once" command calls this to
+    find what a new scheme would move, and then aligns the same clips.
+    """
+    if on_progress is None:
+        on_progress = _ignore_progress
+    if should_cancel is None:
+        should_cancel = _never_cancel
+
+    if catalog.cancelled:
+        return ScanResult(
+            clips_found=len(catalog.clips),
+            cancelled=True,
+        )
+
+    misaligned: list[MisalignedClip] = []
+    errors: list[tuple[str, str]] = []
+    clips = catalog.clips
+    cancelled = False
+
+    for index, clip in enumerate(clips):
+        if should_cancel():
+            cancelled = True
+            break
+        on_progress(index + 1, clip.relative_path)
+        label = os.path.basename(clip.path) or clip.path
+        try:
+            destination = plan_clip_destination(
+                tags=clip.tag_dict(),
+                folder_scheme=folder_scheme,
+                filename_scheme=filename_scheme,
+                label=label,
+            )
+        except ExportPlanError as error:
+            errors.append((label, str(error)))
+            continue
+        if not retag_is_in_place(clip, destination):
+            misaligned.append(MisalignedClip(
+                clip=clip, destination=destination))
+
+    return ScanResult(
+        misaligned=tuple(misaligned),
+        errors=tuple(errors),
+        clips_found=len(clips),
+        cancelled=cancelled,
+    )
+
+
+@dataclass(frozen=True)
+class AlignmentResult:
+    """What aligning a batch of misaligned clips did.
+
+    `aligned` is the count of clips that were moved. `errors` pairs a
+    clip label with a human-readable reason for each one that could not
+    be moved (a collision with another clip, an I/O failure).
+    """
+
+    aligned: int = 0
+    errors: tuple[tuple[str, str], ...] = ()
+    cancelled: bool = False
+
+
+def align_misaligned_clips(
+    misaligned: Sequence[MisalignedClip],
+    catalog: Catalog,
+    on_progress: Callable[[int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> AlignmentResult:
+    """Move every misaligned clip to where its tags put it.
+
+    Uses the same `execute_retag` transaction the Library Manager's
+    Save button does — the record is published at the destination
+    before the video moves, so a crash leaves either the old pair or
+    the new one, never a video without its record.
+
+    Collisions are checked through a `DestinationIndex` built from the
+    catalog's non-misaligned clips plus the destinations already claimed
+    by earlier clips in this run. A clip whose destination another clip
+    already holds — current or planned — is refused and reported, not
+    moved; the user is told which clip it would have collided with.
+    """
+    if on_progress is None:
+        on_progress = _ignore_progress
+    if should_cancel is None:
+        should_cancel = _never_cancel
+
+    # Build an index from every clip's current position, excluding the
+    # misaligned ones: they are vacating their current positions, so a
+    # misaligned clip's old spot must not block its new one. The index
+    # then tracks new destinations as they are claimed, so two clips
+    # that render to the same place are caught.
+    misaligned_clips = {mc.clip for mc in misaligned}
+    index = DestinationIndex()
+    for clip in catalog.clips:
+        if clip in misaligned_clips:
+            continue
+        index.claim(clip.relative_path.split("/"), owner=clip)
+
+    aligned = 0
+    errors: list[tuple[str, str]] = []
+
+    for mc in misaligned:
+        if should_cancel():
+            break
+        clip = mc.clip
+        destination = mc.destination
+        label = os.path.basename(clip.path) or clip.path
+        claim = index.claim(destination.relative_components, owner=clip)
+        if not claim.ok:
+            conflict = claim.conflict_with
+            errors.append((label, (
+                f"would collide with "
+                f"{os.path.basename(conflict.path)} "
+                f"({conflict.relative_path})")))
+            continue
+        try:
+            execute_retag(clip, destination, clip.tag_dict())
+            aligned += 1
+            on_progress(aligned, clip.relative_path)
+        except (OSError, ValueError) as error:
+            errors.append((label, str(error)))
+
+    return AlignmentResult(
+        aligned=aligned,
+        errors=tuple(errors),
+        cancelled=should_cancel(),
+    )

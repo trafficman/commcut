@@ -381,6 +381,27 @@ walk is
 [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)'s;
 the form is [tag-vocabulary.md](tag-vocabulary.md)'s.
 
+### Library Maintenance
+
+The Maintenance tab lets a person realign the library to a scheme whose
+rendering has changed, or that a clip was renamed out of. **Scan Library**
+runs `shared/retagging.py:find_misaligned_clips` off the GUI thread behind a
+cancellable dialog: every clip's tags render through the current folder and
+filename schemes and are compared to the clip's actual `relative_path`.
+Clips whose tags render elsewhere are `misaligned`; clips whose tags cannot
+render (missing required tag, unknown key) are `errors`, reported rather than
+moved, since nothing here can fix a tag. Accepting the offered align runs
+`shared/retagging.py:align_misaligned_clips`, which moves each misaligned
+clip through `execute_retag` — the `.cnfo` record published at the destination
+before the video moves — with `DestinationIndex` collision checks that name
+the clip a destination would collide with and refuse that move, then rebuilds
+the tree so nothing points at a gone path. `MaintenanceScanWorker` and
+`MaintenanceAlignWorker` follow the same `worker.finished → thread.quit`
+teardown as `CatalogWorker` (invariant 14), and `closeEvent` refuses or
+defers close while either thread runs, exactly as the walk does. Nothing in
+this tab writes to disk without first publishing its record, so a crash
+leaves either the old pair or the new one — never a video without its record.
+
 ## Library Sharing
 
 Library Sharing (`sharing/sharing.py`) is the main menu's
@@ -625,7 +646,7 @@ The shared modules are:
    window's `SyncWorker` is the thin wrapper that runs it off the GUI thread. See
     [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)
     and [tag-vocabulary.md](tag-vocabulary.md#syncing-from-the-library).
-  - `shared/retagging.py` — the Library Manager's backend, with no Qt:
+   - `shared/retagging.py` — the Library Manager's backend, with no Qt:
     re-tagging a clip that is already in the library. `plan_retag()`
     resolves a clip's edited tags to a destination through the same
     `plan_clip_destination` and `DestinationIndex` the export and import
@@ -635,6 +656,20 @@ The shared modules are:
     published at the new path before the video moves, a failed move cleans
     up after itself, a v1 record gains the clip ID the re-select needs,
      and a case-only change is a move on both kinds of volume.
+   - `shared/retagging.py` — library maintenance, still with no Qt:
+    `find_misaligned_clips()` renders every clip's tags through the
+    current folder and filename schemes and compares each result to where
+    the clip actually lives, reporting `misaligned` clips (a tag-rendered
+    destination different from the current path) and `errors` (tags that
+    cannot render at all — a missing required tag or an unknown key —
+    which a person must fix by hand). `align_misaligned_clips()` then
+    moves each misaligned clip through `execute_retag`, publishing the
+    record at the destination before the video moves, with
+    `DestinationIndex` collision checks that name the conflicting clip and
+    refuse the move. Together they are the read-only find and the all-or-
+    nothing move half of library maintenance; neither parses a filename
+    back into tags, and nothing here writes without first publishing its
+    record.
    - `shared/sharing.py` — Library Sharing's backend, with no Qt
      and no child process, so the filter can run on the GUI thread
      on every row change: `filter_clips()` is the one place the
