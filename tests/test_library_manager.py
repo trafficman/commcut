@@ -40,6 +40,7 @@ from shared.records import (
 )
 from shared.retagging import ScanResult
 from shared.tag_form import set_field_text
+from shared.tree_view import leaf_display
 
 FOLDER_SCHEME_TEXT = "{network}/{filler_type}/{time_period}"
 FILE_SCHEME_TEXT = "{title}"
@@ -468,18 +469,18 @@ def test_the_leaf_display_strips_only_leading_folder_values():
     left: a value that appears mid-name is kept, and a
     name that is nothing but its folder values stays whole
     rather than showing an empty row."""
-    assert manager_module._leaf_display(
+    assert leaf_display(
         ["Cartoon Network", "Promo", "2000s",
          "Cartoon Network Promo 2000s - Alpha.mp4"]) == "Alpha.mp4"
-    assert manager_module._leaf_display(
+    assert leaf_display(
         ["CN", "Promo", "2000s",
          "cn promo 2000s - alpha.mp4"]) == "alpha.mp4"
-    assert manager_module._leaf_display(
+    assert leaf_display(
         ["CN", "Promo", "2000s",
          "Alpha - CN Promo.mp4"]) == "Alpha - CN Promo.mp4"
-    assert manager_module._leaf_display(
+    assert leaf_display(
         ["CN", "Promo", "2000s", "Alpha.mp4"]) == "Alpha.mp4"
-    assert manager_module._leaf_display(["CN", "CN.mp4"]) == "CN.mp4"
+    assert leaf_display(["CN", "CN.mp4"]) == "CN.mp4"
 
 
 def test_the_tree_strips_folder_values_the_name_repeats(harness):

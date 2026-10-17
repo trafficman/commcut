@@ -86,6 +86,7 @@ from shared.tag_form import (
     TagForm,
     field_change_signal,
 )
+from shared.tree_view import build_tree
 from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import record_use, vocabulary_path
 
@@ -413,64 +414,13 @@ class LibraryManagerWindow(QMainWindow):
 
         The tree is derived state: it is never edited in place, only
         rebuilt from a walk, because a save changes what the walk
-        would find. Only folders that contain clips exist — the tree
-        is clip-driven — and every level is sorted casefolded, so a
-        folder named `B` sorts before a clip named `b.mp4` however
-        the catalog's path order interleaved them.
+        would find. Only folders that contain clips exist -- the tree
+        is clip-driven -- and every level shows folders first, then
+        clips, each casefolded alphabetically.
         """
-        self.ui.treeLibrary.clear()
-        self._clips_by_path = {}
-        self._clip_items = {}
-        folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
-        for clip in catalog.clips:
-            components = clip.relative_path.split("/")
-            parent = None
-            for depth in range(len(components) - 1):
-                key = tuple(components[:depth + 1])
-                node = folders.get(key)
-                if node is None:
-                    node = QTreeWidgetItem(parent, [components[depth]])
-                    if parent is None:
-                        self.ui.treeLibrary.addTopLevelItem(node)
-                    node.setFlags(node.flags() & ~Qt.ItemIsSelectable)
-                    folders[key] = node
-                parent = node
-            leaf = QTreeWidgetItem(parent, [_leaf_display(components)])
-            if parent is None:
-                self.ui.treeLibrary.addTopLevelItem(leaf)
-            leaf.setData(0, Qt.UserRole, clip.record.clip_id)
-            leaf.setData(0, Qt.UserRole + 1, clip.relative_path)
-            self._clips_by_path[clip.relative_path] = clip
-            if clip.record.clip_id:
-                self._clip_items[clip.record.clip_id] = leaf
-        self._sort_tree()
-
-    def _sort_tree(self):
-        """Sort every level of the tree casefolded."""
-        tree = self.ui.treeLibrary
-        top_level = [
-            tree.topLevelItem(index)
-            for index in range(tree.topLevelItemCount())
-        ]
-        top_level.sort(key=lambda item: item.text(0).casefold())
-        for item in top_level:
-            tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
-        for item in top_level:
-            tree.addTopLevelItem(item)
-        for item in top_level:
-            self._sort_subtree(item)
-
-    def _sort_subtree(self, item):
-        children = [
-            item.child(index) for index in range(item.childCount())
-        ]
-        children.sort(key=lambda child: child.text(0).casefold())
-        for child in children:
-            item.removeChild(child)
-        for child in children:
-            item.addChild(child)
-        for child in children:
-            self._sort_subtree(child)
+        build_tree(
+            self.ui.treeLibrary, catalog.clips,
+            self._clips_by_path, self._clip_items)
 
     def _on_item_clicked(self, item, column):
         """A folder row expands or collapses on click.
@@ -1030,36 +980,6 @@ def _format_time(seconds: float) -> str:
     """`m:ss`, the transport's clock."""
     total = max(0, int(seconds))
     return f"{total // 60}:{total % 60:02d}"
-
-
-def _leaf_display(components):
-    """The text a clip's row shows: its filename, with any
-    folder value it leads with struck from it.
-
-    A clip's filename is a projection of its tags, and the
-    folder above the row is those same tags rendered again,
-    so a `Cartoon Network` clip in a `Cartoon Network`
-    folder shows a name that starts with `Cartoon Network`
-    — the folder said twice. Striking the folder values
-    from the front of the name hands the horizontal room
-    back. The row still carries the real path in its
-    `Qt.UserRole + 1` data, so nothing that reads the tree
-    is affected, and the clip's full path is the name
-    label above the form.
-
-    Only a *leading* value is struck, and only when
-    something is left: a name that is nothing but its
-    folder values stays whole rather than showing an empty
-    row, and a value that appears mid-name is left alone.
-    """
-    stem, extension = os.path.splitext(components[-1])
-    for folder in components[:-1]:
-        if not stem.lower().startswith(folder.lower()):
-            continue
-        remainder = stem[len(folder):].lstrip(" -_.")
-        if remainder:
-            stem = remainder
-    return stem + extension
 
 
 def create(app):
