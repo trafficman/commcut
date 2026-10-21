@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from conftest import windows_path_length_only
 from shared import environment
 from shared import exporting
 from shared.environment import IMPORT_FOLDER_NAME
@@ -248,6 +249,7 @@ def test_a_folder_that_does_not_exist_yet_is_fine(install_root, tmp_path):
     assert export_folder_setting_error(str(chosen)) is None
 
 
+@windows_path_length_only
 def test_an_export_folder_the_platform_cannot_address_is_refused(install_root):
     """A root that is already over the platform's limit cannot hold any clip,
     so it is refused where it is chosen rather than at the first export."""
@@ -630,6 +632,7 @@ def test_a_stem_that_fits_both_names_is_accepted(tmp_path):
     assert destination.record_relative_components[-1] == stem + RECORD_EXTENSION
 
 
+@windows_path_length_only
 def test_plan_export_refuses_a_destination_the_platform_cannot_address(tmp_path):
     """The whole absolute path has to fit, and the refusal says by how much.
 
@@ -658,6 +661,7 @@ def test_plan_export_refuses_a_destination_the_platform_cannot_address(tmp_path)
     assert "Segment 1" in message
 
 
+@windows_path_length_only
 def test_preflight_refuses_a_hand_built_plan_whose_destination_is_too_long(
     tmp_path,
 ):

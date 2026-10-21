@@ -234,6 +234,20 @@ video). The runtime translation is in `shared/ffmpeg.py`,
 `shared/importing.py`, `shared/retagging.py`, `shared/sharing.py`,
 `shared/catalog.py`, and `shared/sources.py`.
 
+**Windows's rule, and Windows's tests.** The limit is in the code for every
+platform, because it is the filesystem's own number, but it is *exercised* only
+where it bites. Windows' 260 characters is a real ceiling for a library of
+named clips; macOS' 1024 and Linux' 4096 bytes are far enough above what
+commcut's own folders need that they are not worth solving yet, and their
+numbers are not settled. So the tests that depend on the limit carry
+`windows_path_length_only` (`tests/conftest.py`) and are skipped on macOS and
+Linux rather than rewritten for a number nobody has decided on.
+
+The portable rules are not affected by that: a component is limited by
+`NAME_MAX` everywhere, and the component rules are tested on every platform.
+The runtime translation is not affected either — POSIX's `ENAMETOOLONG` is
+unambiguous, so it is recognised without a length to check.
+
 ## Export pipeline
 
 The editor export flow is `editor/editor.py:on_export` →

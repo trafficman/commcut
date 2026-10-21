@@ -14,6 +14,7 @@ import os
 
 import pytest
 
+from conftest import windows_path_length_only
 from shared.catalog import Catalog, CatalogClip, build_catalog
 from shared.exporting import ExportSchemes
 from shared.importing import (
@@ -269,6 +270,7 @@ def test_a_missing_duration_is_refused(schemes, tmp_path):
     assert plan.skipped[0].reason == REASON_NO_DURATION
 
 
+@windows_path_length_only
 def test_a_clip_whose_destination_is_too_long_is_skipped(schemes, tmp_path):
     """The importer writes into this user's own library, so a destination the
     platform cannot address is a skip with a name -- not a failure at the

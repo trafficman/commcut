@@ -406,6 +406,11 @@ written, and says so by name, by length, and by which part of the path to
 shorten. The rule and the message live in `shared/paths.py`; see
 [naming-and-organization.md](naming-and-organization.md#the-absolute-path-has-to-fit-the-filesystem).
 
+This is a Windows problem. macOS and Linux allow far more than commcut's own
+folders need and their limits are not settled, so the rule is carried for all
+three platforms but *exercised* only on Windows — see
+[testing.md](testing.md#running-the-suite).
+
 ## Resolving the binaries at runtime
 
 `get_binary_path(name)` returns the absolute path of a binary, and it is the

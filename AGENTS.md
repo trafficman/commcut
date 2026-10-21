@@ -185,7 +185,8 @@ diagnose. The linked document has the full reasoning.
    limits live in `shared/paths.py` (`ABSOLUTE_PATH_LIMITS`,
    `absolute_path_error`, `describe_path_error`) because they are the
    filesystem's — 260 UTF-16 units on Windows — and the app may not depend on
-   Windows relaxing them;
+   Windows relaxing them; the rule is exercised on Windows only, the portable
+   component rules on every platform;
    `settings.json`'s own path is `shared/environment.py:settings_path`; the
    import folder is `shared/environment.py:import_folder` and the export root is
    `shared/exporting.py:export_folder`, whose *rules* are

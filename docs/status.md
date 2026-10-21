@@ -421,6 +421,9 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
   The rule is in `shared/paths.py`; the reasoning is in
   [packaging.md](packaging.md#the-path-limit-is-not-ours-to-raise) and
   [naming-and-organization.md](naming-and-organization.md#the-absolute-path-has-to-fit-the-filesystem).
+  It is **exercised on Windows only**: macOS and Linux allow far more than
+  commcut's own folders need, their numbers are not settled, and the tests
+  that depend on the limit are skipped there rather than rewritten.
 - `prototypes/` contains earlier iterations of the editor. Treat them
   as historical — the active code is in `editor/` (and the scanner in
   `scanner/`).

@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from conftest import windows_path_length_only
 from shared.scheme import GroupNode, LiteralNode
 
 from shared.paths import (
@@ -440,6 +441,9 @@ def test_render_uses_source_when_compiled_nodes_are_mutated(required_tags):
 
 # ---------------------------------------------------------------------------
 # The absolute path length
+#
+# Windows's rule, and Windows's tests. macOS and Linux allow far more and
+# their limits are not settled, so the rule is not exercised there.
 # ---------------------------------------------------------------------------
 
 def _root_of_length(length):
@@ -448,23 +452,20 @@ def _root_of_length(length):
     return prefix + "A" * (length - len(prefix))
 
 
-def test_the_limit_is_the_platforms_own():
-    """Windows' 260 is UTF-16 code units, macOS' 1024 and Linux' 4096 are bytes.
+@windows_path_length_only
+def test_windows_owns_a_260_character_limit():
+    """Windows' 260 is UTF-16 code units -- not characters and not bytes -- and
+    it applies to the whole absolute path.
 
     These are the filesystem's limits, not commcut's, and they are the numbers
     the refusal quotes.
     """
-    import sys
-
-    expected = {"win32": 260, "darwin": 1024, "linux": 4096}
-    key = {"win32": "windows", "darwin": "darwin", "linux": "linux"}[
-        sys.platform
-    ]
-
-    assert absolute_path_limit() == expected[sys.platform]
-    assert path_unit_name() == ("characters" if key == "windows" else "bytes")
+    assert absolute_path_limit() == 260
+    assert path_unit_name() == "characters"
+    assert platform_name() == "Windows"
 
 
+@windows_path_length_only
 def test_a_destination_that_exactly_fits_is_accepted():
     limit = absolute_path_limit()
     # A short name, so the staged temporary file is the longest one written
@@ -474,6 +475,7 @@ def test_a_destination_that_exactly_fits_is_accepted():
     assert absolute_path_error(root, ["Clip.mp4"], ["Clip.cnfo"]) is None
 
 
+@windows_path_length_only
 def test_a_destination_one_character_over_is_refused():
     limit = absolute_path_limit()
     root = _root_of_length(limit - STAGED_NAME_LENGTH)
@@ -484,6 +486,7 @@ def test_a_destination_one_character_over_is_refused():
     assert "too long" in error
 
 
+@windows_path_length_only
 def test_the_refusal_names_the_path_the_length_the_limit_and_the_split():
     limit = absolute_path_limit()
     root = _root_of_length(limit - STAGED_NAME_LENGTH + 1)
@@ -502,6 +505,7 @@ def test_the_refusal_names_the_path_the_length_the_limit_and_the_split():
     assert "Shorten the tag values" in error
 
 
+@windows_path_length_only
 def test_the_refusal_accounts_for_the_staged_temporary_file():
     """A short clip name in a deep folder fails on its own temporary file.
 
@@ -517,6 +521,7 @@ def test_the_refusal_accounts_for_the_staged_temporary_file():
     assert "staged temporary file" in error
 
 
+@windows_path_length_only
 def test_a_record_one_character_longer_than_the_clip_is_measured_separately():
     limit = absolute_path_limit()
     # Names long enough that the record, not the staged file, is the longest
@@ -567,9 +572,14 @@ def test_the_staged_name_budget_covers_every_writer(tmp_path):
         assert len(os.path.basename(path)) <= STAGED_NAME_LENGTH
 
 
-def test_a_missing_file_is_not_reported_as_a_path_that_is_too_long():
+@windows_path_length_only
+def test_a_windows_path_not_found_under_the_limit_is_a_missing_file():
     """Windows says "path not found" for an over-long path, and the length is
-    what tells the two apart."""
+    what tells the two apart.
+
+    This is the one place the discrimination matters, and it is Windows's:
+    POSIX's `ENAMETOOLONG` says what it is.
+    """
     error = OSError(3, "The system cannot find the path specified")
     error.filename = "C:\\short\\name.mp4"
     error.winerror = 3
@@ -579,6 +589,15 @@ def test_a_missing_file_is_not_reported_as_a_path_that_is_too_long():
         "The system cannot find the path specified")
 
 
+def test_a_file_that_is_not_there_is_not_a_path_that_is_too_long():
+    """The refusal has to be about a length, not about anything else."""
+    error = OSError(2, "No such file or directory", "some/where/name.mp4")
+
+    assert not is_too_long_path(error)
+    assert describe_path_error(error) == "No such file or directory"
+
+
+@windows_path_length_only
 def test_a_path_that_is_too_long_is_reported_as_one():
     limit = absolute_path_limit()
     long_path = "C:\\" + "A" * limit

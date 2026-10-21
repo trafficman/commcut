@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from conftest import windows_path_length_only
 from shared.catalog import build_catalog
 from shared.exporting import ExportPlanError
 from shared.naming import compile_filename_scheme
@@ -125,6 +126,7 @@ def test_a_destination_another_clip_holds_is_refused_naming_it(library):
     assert "CN/Promo/2000s/Beta.mp4" in str(raised.value)
 
 
+@windows_path_length_only
 def test_a_destination_the_platform_cannot_address_is_refused(library):
     """The clip's own root is the export root, so the length of the path is
     known before anything moves."""
@@ -140,6 +142,7 @@ def test_a_destination_the_platform_cannot_address_is_refused(library):
         )
 
 
+@windows_path_length_only
 def test_the_align_scan_reports_a_too_long_destination_as_an_error(tmp_path):
     """Not a mismatch: a clip whose destination cannot be addressed cannot be
     aligned either, and offering a fix that cannot work is worse than saying

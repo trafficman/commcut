@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import windows_path_length_only
 from shared import ffmpeg as shared_ffmpeg
 from shared.exporting import ExportPlan, ExportPlanError, ExportSchemes, PlannedExportClip
 from shared.ffmpeg import check_video_encoder, execute_export_plan, export_named_model
@@ -546,6 +547,9 @@ def test_a_failed_copy_leaves_nothing_behind(
 
 # ---------------------------------------------------------------------------
 # A path the platform cannot address
+#
+# Windows's rule, and Windows's errors. macOS and Linux allow far more, and
+# their limits are not settled, so the rule is not exercised there.
 # ---------------------------------------------------------------------------
 
 def _windows_too_long(path):
@@ -560,6 +564,7 @@ def _windows_too_long(path):
     return error
 
 
+@windows_path_length_only
 def test_a_too_long_path_is_not_reported_as_a_filesystem_without_hardlinks(
     tmp_path, monkeypatch
 ):
@@ -600,6 +605,7 @@ def test_a_filesystem_without_hardlinks_still_gets_that_advice(
     assert "hard links" in str(raised.value)
 
 
+@windows_path_length_only
 def test_the_batch_directory_creation_names_a_too_long_path(
     tmp_path, source_path, monkeypatch
 ):
