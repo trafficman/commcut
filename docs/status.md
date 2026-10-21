@@ -170,7 +170,11 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   neither importer window grows a guard and an import survives its window being
   closed; the run is two phases, so the transfer question still comes after the read
   and before the plan; and the run is **cancellable**, keeping everything it had
-  already written. → [importing.md](importing.md#the-import-runs-off-the-gui-thread)
+  already written. The **summary is the end of the session**: it offers **Back to
+  main menu** as its default, and choosing it closes the window that started the
+  import, which is what brings the menu back — an Ok that dropped the user back
+  into a screen with nothing left to do was a screen offering nothing. →
+  [importing.md](importing.md#the-import-runs-off-the-gui-thread)
   **copy / link / move is asked as a modal on every run, with copy pre-selected every
   run** — not remembered, because the backend already fixes copy as the only transfer
   safe to assume and a remembered answer would quietly un-fix that. `move` is

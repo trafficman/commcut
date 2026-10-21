@@ -30,7 +30,7 @@ import time
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QPlainTextEdit, QPushButton, QWidget
 
 import importer.importrun as importrun_module
 from editor_stub import ensure_qapp
@@ -318,6 +318,35 @@ class Recorder:
         return Recorder.answer
 
 
+class FakeSummary:
+    """The import summary, without a modal in the way.
+
+    A real `ImportSummaryDialog` blocks on `exec()` until somebody presses a
+    button, and under `QT_QPA_PLATFORM=offscreen` nobody does. The stub records
+    the body and the parent it was given, and answers with the action the test
+    asked for.
+    """
+
+    #: Every summary that was shown, in order.
+    shown: list = []
+    #: What the next summary answers with.
+    action = importrun_module.ACTION_STAY
+
+    def __init__(self, body, parent=None):
+        self.body = body
+        self.parent = parent
+        FakeSummary.shown.append(self)
+
+    def exec(self):
+        return 1
+
+    def chosen_action(self):
+        return FakeSummary.action
+
+    def deleteLater(self):
+        pass
+
+
 class FakeDialog(QObject):
     """A progress dialog that records what it was told.
 
@@ -359,8 +388,8 @@ class FakeDialog(QObject):
 def run_env(qapp, tmp_path, monkeypatch):
     """An import folder holding one clip, an empty library, and nothing blocking.
 
-    The transfer question is stubbed out: it is a modal under `offscreen` and it
-    blocks on nobody. What is left is the run.
+    The transfer question and the summary are stubbed out: both are modals under
+    `offscreen` and they block on nobody. What is left is the run.
     """
     import_root = tmp_path / "import"
     library_root = tmp_path / "export"
@@ -370,7 +399,10 @@ def run_env(qapp, tmp_path, monkeypatch):
 
     Recorder.seen = []
     Recorder.parents = []
+    FakeSummary.shown = []
+    FakeSummary.action = importrun_module.ACTION_STAY
     monkeypatch.setattr(importrun_module, "QMessageBox", Recorder)
+    monkeypatch.setattr(importrun_module, "ImportSummaryDialog", FakeSummary)
     monkeypatch.setattr(importrun_module, "ask_transfer",
                         lambda _parent, _root: TRANSFER_COPY)
     return str(import_root), str(library_root), str(tmp_path / "settings.json")
@@ -554,10 +586,8 @@ def test_the_run_copies_the_clip_and_says_so(run_env):
     assert result is not None
     assert len(result.written) == 1
     assert _library_videos(library_root), "nothing landed in the library"
-    assert Recorder.seen, "the run said nothing at all"
-    title, message = Recorder.seen[0]
-    assert title == "Import finished"
-    assert "Imported 1 clip(s)" in message
+    assert FakeSummary.shown, "the run said nothing at all"
+    assert "Imported 1 clip(s)" in FakeSummary.shown[0].body
 
 
 def test_a_failure_is_reported_and_nothing_further_is_written(run_env, monkeypatch):
@@ -656,10 +686,10 @@ def test_the_summary_is_shown_on_the_window_that_started_the_run(run_env, qapp):
     finally:
         window.deleteLater()
 
-    assert Recorder.parents, "the run showed nothing at all"
-    assert Recorder.parents[0] is window, (
-        f"the summary was shown on {Recorder.parents[0]!r} rather than on the "
-        f"window that started the run"
+    assert FakeSummary.shown, "the run showed nothing at all"
+    assert FakeSummary.shown[0].parent is window, (
+        f"the summary was shown on {FakeSummary.shown[0].parent!r} rather than on "
+        f"the window that started the run"
     )
 
 
@@ -676,7 +706,9 @@ def test_the_summary_survives_its_window_being_closed(qapp, tmp_path, monkeypatc
 
     Recorder.seen = []
     Recorder.parents = []
+    FakeSummary.shown = []
     monkeypatch.setattr(importrun_module, "QMessageBox", Recorder)
+    monkeypatch.setattr(importrun_module, "ImportSummaryDialog", FakeSummary)
     monkeypatch.setattr(importrun_module, "ask_transfer",
                         lambda _parent, _root: TRANSFER_COPY)
 
@@ -688,7 +720,106 @@ def test_the_summary_survives_its_window_being_closed(qapp, tmp_path, monkeypatc
     importrun_module.confirm_and_import(
         window, str(import_root), str(library_root), str(tmp_path / "settings.json"))
 
-    assert Recorder.parents, "the run showed nothing at all"
-    assert Recorder.parents[0] is None, (
+    assert FakeSummary.shown, "the run showed nothing at all"
+    assert FakeSummary.shown[0].parent is None, (
         "the summary was parented to a window whose C++ object is gone"
     )
+
+
+def test_back_to_main_menu_closes_the_window_that_started_the_import(run_env,
+                                                                      monkeypatch):
+    """The summary is the end of the session.
+
+    The window that started the import has nothing left to offer — its own
+    **Import Now** would find nothing left to import — so the summary offers
+    the main menu, and choosing it closes that window. Closing is what brings
+    the menu back: the shell watches for the window's `destroyed` signal.
+    """
+    import_root, library_root, settings = run_env
+    FakeSummary.action = importrun_module.ACTION_MENU
+    window = QWidget()
+    closed = []
+    window.close = lambda: (closed.append(True), True)[1]
+
+    importrun_module.confirm_and_import(window, import_root, library_root, settings)
+
+    assert closed, "the window that started the import was left open"
+
+
+def test_staying_leaves_the_window_that_started_the_import_open(run_env,
+                                                                monkeypatch):
+    """The other half of the rule: a user who wants to look at the folder first
+    should not have to leave the app to do it.
+    """
+    import_root, library_root, settings = run_env
+    FakeSummary.action = importrun_module.ACTION_STAY
+    window = QWidget()
+    closed = []
+    window.close = lambda: (closed.append(True), True)[1]
+
+    importrun_module.confirm_and_import(window, import_root, library_root, settings)
+
+    assert not closed, "the window was closed although the user chose to stay"
+
+
+def test_the_summary_offers_the_way_back_to_the_main_menu(qapp):
+    """The real dialog, not the stub: the summary is the end of the session, so
+    it has to carry the way out of it.
+
+    **Back to main menu** is the default, so pressing Enter takes the user where
+    they are going rather than back to a screen they are finished with.
+    """
+    dialog = importrun_module.ImportSummaryDialog("Imported 1 clip(s).")
+    try:
+        buttons = {button.text(): button
+                   for button in dialog.findChildren(QPushButton)}
+        assert "Back to main menu" in buttons, (
+            f"the summary offered {sorted(buttons)}"
+        )
+        assert buttons["Back to main menu"].isDefault(), (
+            "Back to main menu is not the default, so Enter does not take the "
+            "user where they are going"
+        )
+        assert "Stay in this window" in buttons
+        assert dialog.windowTitle() == "Import finished"
+    finally:
+        dialog.deleteLater()
+
+
+def test_choosing_the_main_menu_is_recorded(qapp):
+    """The button the user pressed, which is what the run acts on."""
+    dialog = importrun_module.ImportSummaryDialog("Imported 1 clip(s).")
+    try:
+        buttons = {button.text(): button
+                   for button in dialog.findChildren(QPushButton)}
+        buttons["Back to main menu"].click()
+
+        assert dialog.chosen_action() == importrun_module.ACTION_MENU
+    finally:
+        dialog.deleteLater()
+
+
+def test_a_dismissed_summary_says_staying(qapp):
+    """Escape and the window close button land here too, and staying is the safe
+    reading of an unasked question: the import is done either way, and the window
+    behind still has its own way out.
+    """
+    dialog = importrun_module.ImportSummaryDialog("Imported 1 clip(s).")
+    try:
+        assert dialog.chosen_action() == importrun_module.ACTION_STAY
+    finally:
+        dialog.deleteLater()
+
+
+def test_the_summary_shows_what_the_run_did(qapp):
+    """The body is the run's own account of itself, in a box that can be read
+    and copied."""
+    dialog = importrun_module.ImportSummaryDialog("Imported 12 clip(s).\n"
+                                                  "The videos are still there.")
+    try:
+        boxes = dialog.findChildren(QPlainTextEdit)
+        assert boxes, "the summary had nowhere to show what the run did"
+        assert "Imported 12 clip(s)." in boxes[0].toPlainText()
+        assert boxes[0].isReadOnly()
+    finally:
+        dialog.deleteLater()

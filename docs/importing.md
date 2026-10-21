@@ -809,6 +809,32 @@ already holds the same tags as *already present*. The window-manager close butto
 the progress dialog means the same thing — stop, never abandon — because a dialog
 that closed while the copy went on would hide a run the user could not see.
 
+### The summary is the end of the session
+
+The dialog that appears when the run finishes is **not** a notice over the window
+that started it — it *is* the end of that window's reason to exist. The Tagged
+Library Mesh's **Import Now** would find nothing left to import, and the Library
+Mesh Tag Editor's report says every clip has been dealt with, so an Ok that dropped
+the user back into either of them was a screen offering nothing.
+
+So the summary is `ImportSummaryDialog` in `importer/importrun.py`, built in code
+for the reason `editor/editor.py:ExportSummaryDialog` gives its own, and it carries
+**Back to main menu** as its default button. Choosing it **closes** the window that
+started the import, which is what brings the main menu back: the shell watches for
+the window's `destroyed` signal, and a window is closed rather than hidden because
+closing is what runs its `closeEvent`.
+
+**Stay in this window** is still offered, and it is not a courtesy: the window
+behind has its own buttons — the clips still needing tags, the report of what was
+written — and a user who wants to look at the import folder first should not have to
+leave the app to do it. Escape and the window close button answer as *stay*, which
+is the safe reading of an unasked question: the import is done either way, and the
+window behind still has its own way out.
+
+The other outcomes of a run — nothing to import, the run could not be done, the run
+was cancelled — keep their plain message boxes. They are not endings: the user
+still has to decide what to do about a folder that could not be read.
+
 ### Writing the records is off the GUI thread too
 
 `importer/values.py`'s **Apply** rewrites every record in `import/`, one write per

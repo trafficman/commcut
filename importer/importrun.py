@@ -50,8 +50,11 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
     QRadioButton,
     QVBoxLayout,
 )
@@ -397,6 +400,79 @@ class ImportWorker(QObject):
         self.finished.emit()
 
 
+#: What the user chose on the summary screen. `menu` closes the window that
+#: started the import, and closing it is what hands the main menu back.
+ACTION_MENU = 'menu'
+ACTION_STAY = 'stay'
+
+
+class ImportSummaryDialog(QDialog):
+    """What the import did, and the end of the session.
+
+    Shown once the import has run, over the window that started it. Built in
+    code rather than loaded from a `.ui` file, for the reason
+    `editor/editor.py:ExportSummaryDialog` gives its own: it is a transient
+    modal with no layout worth designing, and nothing has to be added to the
+    packaged `.ui` payload for it.
+
+    **It is the end of the session, not a notice over it.** The window behind
+    has nothing left to offer — its own **Import Now** would find nothing left
+    to import — so the summary offers the main menu rather than an Ok that
+    drops the user back into a screen they are finished with. The window is
+    *closed* rather than hidden, because closing is what brings the menu back.
+    """
+
+    def __init__(self, body: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import finished")
+        self._action = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._body_box(body))
+        layout.addLayout(self._button_row())
+
+    def _body_box(self, body: str) -> QPlainTextEdit:
+        """The summary, in a box that can be read and copied.
+
+        A plain text edit rather than a label, because the summary is a list of
+        lines and some of them are long: a label would either clip them or
+        wrap them into something the line breaks no longer mean.
+        """
+        box = QPlainTextEdit(body)
+        box.setReadOnly(True)
+        box.setMinimumSize(420, 120)
+        return box
+
+    def _button_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addStretch(1)
+        # **Staying is still an offer.** The window behind has its own buttons
+        # — the clips still needing tags, the report of what was written — and
+        # a user who wants to look at the folder first should not have to
+        # leave the app to do it.
+        stay = QPushButton("Stay in this window")
+        stay.clicked.connect(lambda: self._choose(ACTION_STAY))
+        row.addWidget(stay)
+        back = QPushButton("Back to main menu")
+        back.setDefault(True)
+        back.clicked.connect(lambda: self._choose(ACTION_MENU))
+        row.addWidget(back)
+        return row
+
+    def _choose(self, action):
+        self._action = action
+        self.accept()
+
+    def chosen_action(self) -> str:
+        """The button pressed, or staying if the dialog was dismissed.
+
+        Escape and the window close button land here too, and staying is the
+        safe reading of an unasked question: the import is done either way, and
+        the window behind still has its own way out.
+        """
+        return self._action or ACTION_STAY
+
+
 @dataclass(frozen=True)
 class ImportOutcome:
     """What one import run did, in the shape the summary screen shows.
@@ -592,10 +668,7 @@ class ImportRun(QObject):
                 "Nothing further was written.")
             return None
         if outcome.kind == "done":
-            QMessageBox.information(
-                parent, "Import finished",
-                "\n".join(_summary_body(outcome.result, outcome.plan,
-                                        self._library_root)))
+            self._show_finished(parent, outcome.result, outcome.plan)
             return outcome.result
         if outcome.kind == "failed":
             QMessageBox.warning(
@@ -622,6 +695,25 @@ class ImportRun(QObject):
         # "declined" — the user cancelled the transfer question. There is
         # nothing to report: they said so themselves.
         return None
+
+    def _show_finished(self, parent, result, plan) -> None:
+        """The import is over: say what it did, and offer the way out.
+
+        The summary is the **end of the session**. The window that started the
+        import has nothing left to offer — its own **Import Now** would find
+        nothing left to import — so the dialog offers the main menu, and
+        choosing it closes that window, which is what brings the menu back.
+
+        The dialog is released before the answer is acted on, so closing the
+        window behind it does not destroy a dialog that is still running.
+        """
+        body = "\n".join(_summary_body(result, plan, self._library_root))
+        dialog = ImportSummaryDialog(body, parent=parent)
+        dialog.exec()
+        action = dialog.chosen_action()
+        dialog.deleteLater()
+        if action == ACTION_MENU and parent is not None:
+            parent.close()
 
 
 def confirm_and_import(parent, root: str, library_root: str, settings_path: str):
