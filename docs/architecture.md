@@ -222,6 +222,13 @@ vocabulary sync, the Untagged Library Mesh's load, the Tagged Library Mesh's loa
 and the tag editor's duration probe. They share one shape, and two details of it are
 load-bearing.
 
+**A sixth thread belongs to no window.** The Library Importer's import run owns its
+own: the thread is local to the run and the run waits for it, so neither importer
+window grows a guard, and an import survives the window that started it being closed
+half way through — a half-written library is worse than a closed window. The rules
+below still apply to it, and the one that changes is the guard: there is no
+`closeEvent` to hang a refusal off, because the run waits for the thread itself.
+
 **A thread has to be told to stop.** `thread.started.connect(worker.run)` runs the
 worker's slot inside the thread's `exec()` loop, and a slot returning does not
 leave that loop. Nothing ends the thread except the worker emitting `finished` and
@@ -229,7 +236,9 @@ leave that loop. Nothing ends the thread except the worker emitting `finished` a
 exit, including the cancelled and failed paths, and `_start_probe`/`_start_worker`
 connect it to `thread.quit`. Without that connection the thread spins forever,
 `thread.finished` never fires, and every teardown hung off it silently never
-runs.
+runs. The import run ends its thread the same way, and the run that is *not* a
+window's has one extra path: the user declining the transfer question, which asks
+the worker to abort rather than importing anything.
 
 **Teardown hangs off `thread.finished`, never off the worker's own signal.** A
 worker's `finished` is emitted from *inside* the still-running thread, so deleting
@@ -248,8 +257,8 @@ permanently un-closable, and the shell's rule above stops it from being replaced
 left two live windows up before the abort.
 
 Tests cover this with real `QThread`s and the real event loop, in
-`tests/test_mesh_window.py`, `tests/test_values_window.py` and `tests/test_queue.py`.
-See [testing.md](testing.md).
+`tests/test_mesh_window.py`, `tests/test_values_window.py`, `tests/test_queue.py`
+and `tests/test_import_run.py`. See [testing.md](testing.md).
 
 ## The main menu
 

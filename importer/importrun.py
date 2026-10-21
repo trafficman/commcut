@@ -14,6 +14,14 @@ dialog, the summary, and the planning and execution calls around them. Every rul
 about what an import does belongs to `shared/importing.py`, which holds no Qt type;
 this module adds none of its own.
 
+**The import runs off the GUI thread.** Reading the folders, planning the
+destinations and copying the clips are all on a worker thread behind a progress
+dialog: a run over eight hundred clips is hours of copying, and a blocked GUI
+thread cannot even show the user how far along it is. The thread belongs to the
+*run* rather than to the window that started it, so neither importer window grows
+a thread guard, and an import survives the window being closed half way through —
+a half-written library is worse than a closed window.
+
 **The transfer question is asked every time, and defaults to copy.** Not remembered,
 because the safe default and the remembered one are the same answer on every run
 except the ones where the user remembered something else — and on those the user is
@@ -25,7 +33,19 @@ the user to work it out from the word "move".
 from __future__ import annotations
 
 import os
+import threading
+from dataclasses import dataclass
 
+from PySide6.QtCore import (
+    Q_ARG,
+    QEventLoop,
+    QMetaObject,
+    QObject,
+    Qt,
+    QThread,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -50,7 +70,8 @@ from shared.importing import (
     execute_import,
     plan_import,
 )
-from shared.loading import LoadingDialog
+from shared.loading import CancelOnCloseDialog
+from shared.session import widget_is_alive
 
 def leftover_count(root: str) -> int:
     """Clips in `root` whose record is still missing a tag they need.
@@ -223,6 +244,386 @@ def _source_fate(plan) -> str:
     return "The videos are still in the import folder; this run copied them."
 
 
+class ImportWorker(QObject):
+    """Runs one import off the GUI thread, in two phases.
+
+    Plain data in, signals out, never a widget — the shape of
+    `settings/settings.py:213` and `editor/editor.py:271`. The worker holds the
+    two catalogs and the schemes it read and the plan it resolved, and nothing a
+    widget could reach into.
+
+    **The two phases are what keep the transfer question where it belongs.** The
+    first phase reads the import folder and the library; the second one plans and
+    copies. The question is asked on the GUI thread between them, so it comes
+    *after* the read (there is no point asking what to do with eight hundred
+    videos that are not there) and *before* the plan (so `move` can never be
+    chosen into an out-of-space failure).
+
+    `finished` is emitted exactly once on every path, including a refused
+    preflight and a failed copy, so the thread has one place that tears it down.
+    The broad `except Exception` is deliberate: an unhandled exception in a
+    `QThread` slot reaches PySide6's abort path, and `install_excepthook` does not
+    stop it.
+    """
+
+    #: Which folder is being read, the clips read so far, and the record now
+    #: being read.
+    read_progress = Signal(str, int, str)
+    #: The import folder has been read and holds something to import.
+    read_done = Signal(object)
+    #: The plan is resolved, and the copy is about to start.
+    planned = Signal(object)
+    #: Clips started so far, and the clip now running.
+    progressed = Signal(int, str)
+    #: The run finished: the `ImportResult`, and the `ImportPlan` it came from.
+    done = Signal(object, object)
+    #: The run could not be done, and why.
+    failed = Signal(str)
+    #: The import folder holds no clip with a readable record.
+    nothing_to_import = Signal()
+    #: The plan resolved to no clips. Carries the plan, for the skip list.
+    nothing_importable = Signal(object)
+    #: The read was cancelled.
+    cancelled = Signal()
+    #: Emitted on every path. This is the signal the thread's teardown hangs off.
+    finished = Signal()
+
+    def __init__(self, root, library_root, settings_path, cancel_event=None):
+        super().__init__()
+        self.root = root
+        self.library_root = library_root
+        self.settings_path = settings_path
+        self.cancel_event = cancel_event or threading.Event()
+        self._catalog = None
+        self._library_catalog = None
+        self._schemes = None
+
+    @Slot()
+    def read(self):
+        """Phase 1: read the import folder and the library.
+
+        The library is read here rather than at plan time, so both folders are
+        read in one phase — and so the walks are off the GUI thread, which
+        matters because the library is a network share as often as it is a local
+        folder.
+        """
+        try:
+            self._catalog = build_catalog(
+                self.root,
+                on_progress=self._read_progress("the import folder"),
+                should_cancel=self.cancel_event.is_set,
+            )
+            self._library_catalog = build_catalog(
+                self.library_root,
+                on_progress=self._read_progress("your library"),
+                should_cancel=self.cancel_event.is_set,
+            )
+            self._schemes = load_export_schemes(self.settings_path)
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception("the import could not be read", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+            self.finished.emit()
+            return
+
+        if self.cancel_event.is_set() or self._catalog.cancelled:
+            self.cancelled.emit()
+            self.finished.emit()
+            return
+        if not self._catalog.clips:
+            self.nothing_to_import.emit()
+            self.finished.emit()
+            return
+        if self._catalog.problems:
+            log(f"{len(self._catalog.problems)} record(s) in {self.root} could not "
+                f"be read, so those clips were not imported")
+        self.read_done.emit(self._catalog)
+
+    def _read_progress(self, label):
+        """A progress callback that says which folder it is walking.
+
+        `build_catalog` carries no total — `os.walk` cannot know one — so the
+        bar stays indeterminate until the plan is resolved.
+        """
+        def report(found, relative_path):
+            self.read_progress.emit(label, found, relative_path)
+        return report
+
+    @Slot(str)
+    def import_clips(self, transfer):
+        """Phase 2: resolve the destinations, then copy the clips."""
+        try:
+            plan = plan_import(
+                candidates_from_catalog(self._catalog),
+                self._schemes,
+                self.library_root,
+                transfer=transfer,
+                existing=self._library_catalog,
+                # The boundary a `move` may not climb past when it prunes the
+                # folders it emptied. Stated rather than inferred: inferring it
+                # from the candidates would put the deletion boundary in the same
+                # place as the data.
+                source_root=self.root,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception("the import could not be planned", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+            self.finished.emit()
+            return
+
+        if not plan.clips:
+            self.nothing_importable.emit(plan)
+            self.finished.emit()
+            return
+
+        self.planned.emit(plan)
+        try:
+            result = execute_import(
+                plan,
+                on_progress=self.progressed.emit,
+                should_cancel=self.cancel_event.is_set,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception("the import could not be run", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+            self.finished.emit()
+            return
+
+        self.done.emit(result, plan)
+        self.finished.emit()
+
+    @Slot()
+    def abort(self):
+        """The user declined the transfer question: end the run, import nothing."""
+        self.finished.emit()
+
+
+@dataclass(frozen=True)
+class ImportOutcome:
+    """What one import run did, in the shape the summary screen shows.
+
+    `kind` is the only field the summary branches on; the rest carry what that
+    kind has to say. "done" is the only one with a result, because it is the
+    only one where something was written.
+    """
+
+    kind: str
+    result: object = None
+    plan: object = None
+    message: str = ""
+
+
+class ImportRun(QObject):
+    """One import run: the worker, the thread it runs on, and the dialog above them.
+
+    **The run owns the thread, not the window that started it.** The thread is
+    local to the run and the run waits for it, so an import survives the window
+    that started it being closed half way through — a half-written library is
+    worse than a closed window. It is also why neither importer window has to
+    grow a thread guard of its own.
+
+    The dialog is application-modal and parentless. Modal, so the window behind
+    it cannot start a second import over the same destinations; parentless, so
+    that closing the window does not take the run down with it.
+
+    The transfer question is parented to the *dialog* rather than to the window:
+    a dialog that is a child of a modal window is not blocked by it, so the
+    question is still usable while the progress dialog is up.
+
+    It is a `QObject` so that the worker's signals reach it **queued**: a bound
+    method of a plain Python object would be called in the thread that emitted
+    the signal, and the handlers below touch the dialog.
+    """
+
+    def __init__(self, parent, root, library_root, settings_path):
+        super().__init__()
+        self._parent = parent
+        self._root = root
+        self._library_root = library_root
+        self._cancel = threading.Event()
+        self._worker = ImportWorker(root, library_root, settings_path,
+                                     cancel_event=self._cancel)
+        self._thread = QThread()
+        self._worker.moveToThread(self._thread)
+        self._dialog = CancelOnCloseDialog(
+            "Reading the import folder…", cancellable=True, modal=True,
+            title="Import")
+        self._dialog.set_range(0, 0)
+        self._loop = QEventLoop()
+        self._outcome = None
+        self._total = 0
+        self._wire()
+
+    def _wire(self):
+        # The first phase starts with the thread: `started` runs the slot inside
+        # the thread's `exec()` loop, and a slot returning does not leave it.
+        self._thread.started.connect(self._worker.read)
+        self._worker.read_progress.connect(self._on_read_progress)
+        self._worker.read_done.connect(self._on_read_done)
+        self._worker.planned.connect(self._on_planned)
+        self._worker.progressed.connect(self._on_progressed)
+        self._worker.done.connect(self._on_done)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.nothing_to_import.connect(self._on_nothing_to_import)
+        self._worker.nothing_importable.connect(self._on_nothing_importable)
+        self._worker.cancelled.connect(self._on_cancelled)
+        self._dialog.canceled.connect(self._on_cancel_requested)
+        # The thread ends when the worker says so, and the teardown hangs off
+        # `thread.finished` (invariant 14): the worker's own signal is emitted
+        # from inside the still-running thread, so deleting the thread on it
+        # would destroy a live one.
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._loop.quit)
+
+    def go(self):
+        """Run the import, and wait for it to finish.
+
+        The nested event loop is what makes this a *run* rather than a freeze:
+        the GUI thread stays free inside it, so the dialog repaints and the
+        worker's queued signals land. It quits on `thread.finished` rather than
+        on the worker's signal, so the thread has really stopped by the time
+        this returns.
+        """
+        self._dialog.show()
+        self._thread.start()
+        self._loop.exec()
+        # The loop quits on `thread.finished`, so the thread has already stopped
+        # and this returns at once. The timeout is the same one the editor's
+        # pre-scan and the scanner's use: it is a formality, not the mechanism.
+        self._thread.wait(5000)
+        self._thread.deleteLater()
+        self._dialog.close()
+        self._dialog.deleteLater()
+
+    # -- the worker's word -------------------------------------------------
+
+    def _on_read_progress(self, label, found, relative_path):
+        """Progress arrives with no total — `os.walk` cannot know one."""
+        self._dialog.set_message(f"Reading {label}…\n{relative_path}")
+
+    def _on_read_done(self, catalog):
+        """The folder has been read: ask the question, then let the worker import."""
+        try:
+            transfer = ask_transfer(self._dialog, self._root)
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception("the transfer question could not be asked", error)
+            transfer = None
+        if transfer is None:
+            self._outcome = ImportOutcome("declined")
+            self._abort()
+            return
+        self._dialog.set_message("Importing…")
+        if not self._start_import(transfer):
+            self._abort()
+
+    def _on_planned(self, plan):
+        """The plan is resolved, so the bar gets a real denominator."""
+        self._total = len(plan.clips)
+        self._dialog.set_range(0, max(self._total, 1))
+
+    def _on_progressed(self, done, path):
+        message = f"Imported {done} of {self._total} clip(s)"
+        if path:
+            message += f"\n{path}"
+        self._dialog.set_message(message)
+
+    def _on_done(self, result, plan):
+        self._outcome = ImportOutcome("done", result=result, plan=plan)
+
+    def _on_failed(self, message):
+        self._outcome = ImportOutcome("failed", message=message)
+
+    def _on_nothing_to_import(self):
+        self._outcome = ImportOutcome("empty")
+
+    def _on_nothing_importable(self, plan):
+        self._outcome = ImportOutcome("nothing", plan=plan)
+
+    def _on_cancelled(self):
+        self._outcome = ImportOutcome("cancelled")
+
+    def _on_cancel_requested(self):
+        """The user asked for the run to stop."""
+        self._cancel.set()
+        self._dialog.set_message("Cancelling…")
+
+    # -- across the thread boundary ----------------------------------------
+
+    def _start_import(self, transfer):
+        """Hand the transfer to the worker thread, and start the second phase.
+
+        The call is **queued**, so it runs in the worker thread rather than in
+        the GUI thread that made it. A direct call would run the whole import on
+        the GUI thread again, which is the thing this change exists to stop.
+        """
+        started = QMetaObject.invokeMethod(
+            self._worker, "import_clips", Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, transfer))
+        if not started:
+            log("the import could not be started: the worker did not take the "
+                "transfer")
+        return started
+
+    def _abort(self):
+        """End the run without importing anything."""
+        stopped = QMetaObject.invokeMethod(
+            self._worker, "abort", Qt.ConnectionType.QueuedConnection)
+        if not stopped:
+            # The worker did not take it, so the thread is still waiting for
+            # something. Stopping the thread directly is the only way out.
+            self._thread.quit()
+
+    # -- the report --------------------------------------------------------
+
+    def report(self):
+        """Say what the run did, and hand back its result."""
+        outcome = self._outcome
+        # The run can outlive the window that started it, so the summary's parent
+        # has to be checked rather than assumed. `widget_is_alive` answers a
+        # question; the widget or `None` is what the dialog wants.
+        parent = self._parent
+        if parent is not None and not widget_is_alive(parent):
+            parent = None
+        if outcome is None:
+            log("the import run ended without saying what it did")
+            QMessageBox.warning(
+                parent, "The import could not be run",
+                "The import stopped without saying what it did.\n\n"
+                "Nothing further was written.")
+            return None
+        if outcome.kind == "done":
+            QMessageBox.information(
+                parent, "Import finished",
+                "\n".join(_summary_body(outcome.result, outcome.plan,
+                                        self._library_root)))
+            return outcome.result
+        if outcome.kind == "failed":
+            QMessageBox.warning(
+                parent, "The import could not be run",
+                f"{outcome.message}\n\nNothing further was written.")
+            return None
+        if outcome.kind == "empty":
+            QMessageBox.information(
+                parent, "Nothing to import",
+                f"No clip in {self._root} has a readable record yet, so there is "
+                f"nothing to import. A clip's tags have to be settled before it "
+                f"can go into your library.")
+            return None
+        if outcome.kind == "nothing":
+            body = ["Nothing could be imported:"]
+            body.extend(f"  - {skip}" for skip in outcome.plan.skipped)
+            QMessageBox.information(parent, "Nothing to import", "\n".join(body))
+            return None
+        if outcome.kind == "cancelled":
+            QMessageBox.information(
+                parent, "The import was cancelled",
+                "The import was cancelled before anything was written.")
+            return None
+        # "declined" — the user cancelled the transfer question. There is
+        # nothing to report: they said so themselves.
+        return None
+
+
 def confirm_and_import(parent, root: str, library_root: str, settings_path: str):
     """Import everything in `root` that has a record, and report what happened.
 
@@ -231,65 +632,22 @@ def confirm_and_import(parent, root: str, library_root: str, settings_path: str)
     with a message rather than a silent no-op, because "nothing happened" is
     indistinguishable from "it did not work" unless somebody says which.
 
-    The transfer question comes **before** the plan is built and therefore before the
-    space preflight, so `move` can never be chosen into an out-of-space failure and
-    `copy` can be refused before anything is written rather than half way through.
+    **The work happens off the GUI thread**, behind a progress dialog, because a
+    run over eight hundred clips is hours of copying and a blocked GUI thread
+    cannot even show the user how far along it is.
+
+    The transfer question comes **after** the read, so it is not asked about a
+    folder that turns out to hold nothing, and **before** the plan is built and
+    therefore before the space preflight, so `move` can never be chosen into an
+    out-of-space failure and `copy` can be refused before anything is written
+    rather than half way through.
 
     A failure is caught and reported rather than raised. This is called from a button
     handler, and an exception escaping one of those reaches the event loop and takes
     down whichever window raised — `Shell.open_safely` exists so a window does not
     *build* that way, and a failure after it is up has to be caught here.
     """
-    catalog = build_catalog(root)
-    if not catalog.clips:
-        QMessageBox.information(
-            parent, "Nothing to import",
-            f"No clip in {root} has a readable record yet, so there is nothing to "
-            f"import. A clip's tags have to be settled before it can go into your "
-            f"library.")
-        return None
-    if catalog.problems:
-        log(f"{len(catalog.problems)} record(s) in {root} could not be read, so "
-            f"those clips were not imported")
+    run = ImportRun(parent, root, library_root, settings_path)
+    run.go()
+    return run.report()
 
-    transfer = ask_transfer(parent, root)
-    if transfer is None:
-        return None
-
-    progress = LoadingDialog("Importing...", cancellable=False, modal=False,
-                             title="Import")
-    try:
-        plan = plan_import(
-            candidates_from_catalog(catalog),
-            load_export_schemes(settings_path),
-            library_root,
-            transfer=transfer,
-            existing=build_catalog(library_root),
-            # The boundary a `move` may not climb past when it prunes the folders it
-            # emptied. Stated rather than inferred: inferring it from the candidates
-            # would put the deletion boundary in the same place as the data.
-            source_root=root,
-        )
-        if not plan.clips:
-            body = ["Nothing could be imported:"]
-            body.extend(f"  - {skip}" for skip in plan.skipped)
-            QMessageBox.information(parent, "Nothing to import", "\n".join(body))
-            return None
-        result = execute_import(
-            plan,
-            on_progress=lambda done, path: progress.set_message(
-                f"Imported {done} clip(s)\n{path}"),
-        )
-    except Exception as error:  # noqa: BLE001 - reported, never raised
-        log_exception("the import could not be run", error)
-        QMessageBox.warning(
-            parent, "The import could not be run",
-            f"{type(error).__name__}: {error}\n\nNothing further was written.")
-        return None
-    finally:
-        progress.deleteLater()
-
-    QMessageBox.information(
-        parent, "Import finished",
-        "\n".join(_summary_body(result, plan, library_root)))
-    return result

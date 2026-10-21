@@ -762,6 +762,51 @@ and both windows call it. Two copies of that screen would drift. It is only
 presentation; every rule about what an import does belongs to `shared/importing.py`,
 which holds no Qt type.
 
+### The import runs off the GUI thread
+
+Reading the folders, planning the destinations and copying the clips are all on a
+worker thread, behind a progress dialog. They used to be on the GUI thread, which
+for a library of eight hundred clips meant a frozen app for the length of the copy
+— and a progress dialog that was built, given its messages, and never shown.
+
+The **run** owns the thread, not the window that started it: the thread is local to
+the run and the run waits for it. So neither importer window grows a thread guard,
+and an import survives the window being closed half way through — a half-written
+library is worse than a closed window. It is the one thread in the app that no
+window owns; see
+[architecture.md](architecture.md#ending-a-worker-thread).
+
+The run is **two phases**, and the order is the point:
+
+1. The worker reads the import folder and the library, and says what it found.
+2. The GUI thread asks the transfer question.
+3. The worker plans and copies.
+
+The question comes *after* the read, so it is not asked about eight hundred videos
+that are not there, and *before* the plan, so `move` can never be chosen into an
+out-of-space failure. Both folders are read in the first phase, so the export folder
+is walked once per run rather than once per plan — and both reads are off the GUI
+thread, which matters because the library is a network share as often as it is a
+local folder.
+
+**A run can be cancelled.** `execute_import` already stopped at a clip boundary, so
+the Cancel link is honest: everything the run had already written is kept, and
+running it again finishes the rest, because `plan_import` treats a destination that
+already holds the same tags as *already present*. The window-manager close button on
+the progress dialog means the same thing — stop, never abandon — because a dialog
+that closed while the copy went on would hide a run the user could not see.
+
+### Writing the records is off the GUI thread too
+
+`importer/values.py`'s **Apply** rewrites every record in `import/`, one write per
+clip, and it used to do that on the GUI thread behind a progress dialog that was
+never shown. It is now on a worker thread — but a thread the **window** owns,
+because `on_apply` is a method of that window, and a thread still running when its
+owner is destroyed aborts the process. The window is disabled while the records are
+written, and the progress dialog is deliberately parentless: a disabled parent's
+children are disabled too, so a Cancel link that belonged to the window would not
+work.
+
 ### What happens to the videos: copy, link, or move
 
 The transfer is asked as a **modal, every run**, and **copy is pre-selected every

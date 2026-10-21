@@ -17,6 +17,10 @@ Provides two interchangeable indicators:
   (e.g. the editor's batch export, the scanner's full-source blackdetect scan).
   It stays up for the duration of the task and reports progress via signals.
 
+- ``CancelOnCloseDialog`` is the same dialog for work that is *writing*, where
+  the window-manager close button has to mean "stop" rather than "leave the work
+  running behind a closed dialog" (e.g. the importer's import run).
+
 Both share the same visual language: the commcut banner centered above a
 status message. The goal is that every long-running operation in the app
 presents the same face to the user, with the same cancel semantics and the same
@@ -204,9 +208,20 @@ class LoadingDialog(QDialog):
 
     canceled = Signal()
 
-    def _on_cancel_clicked(self):
+    def request_cancel(self):
+        """Ask the work to stop.
+
+        The dialog is disabled and `canceled` is emitted. **The dialog stays
+        up**: the work is still running, and the caller is the one that knows
+        when it has actually stopped. A dialog that vanished here would leave
+        the user looking at a window that no longer answers, with the work
+        still running behind it.
+        """
         self.setEnabled(False)
         self.canceled.emit()
+
+    def _on_cancel_clicked(self):
+        self.request_cancel()
         if self.isModal():
             self.reject()
 
@@ -222,3 +237,29 @@ class LoadingDialog(QDialog):
 
     def set_value(self, value: int):
         self._progress.setValue(int(value))
+
+
+class CancelOnCloseDialog(LoadingDialog):
+    """A progress dialog whose close button means "stop", never "abandon".
+
+    The window-manager close button on a plain :class:`LoadingDialog` closes
+    the dialog and leaves the work running behind it. That is harmless for a
+    scan whose result lands on a timeline nobody is watching, and wrong for a
+    run that is *writing* — a half-written library is worse than a window the
+    user closed.
+
+    So the close is turned into a cancel request: the dialog stays up (showing
+    "Cancelling…") and the work stops at its next safe point, which for
+    `shared/importing.py` means the clip boundary that keeps everything already
+    written. The same reading `settings/settings.py` gives a window-manager
+    close on a running sync.
+    """
+
+    def closeEvent(self, event):
+        event.ignore()
+        self.request_cancel()
+
+    def _on_cancel_clicked(self):
+        # Not the base class's version: that one rejects a modal dialog, which
+        # would hide it and unblock the app while the work is still finishing.
+        self.request_cancel()

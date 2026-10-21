@@ -17,6 +17,7 @@ so a test exercises the code the app runs.
 """
 
 import os
+import threading
 import time
 
 import pytest
@@ -66,6 +67,18 @@ class StubWorker(values_module.ValueWorker):
     See `tests/test_mesh_window.py`'s version: `moveToThread` onto a thread with no
     running event loop leaves the worker bound to it, so every signal is queued to a
     loop that never runs and the window's slots never fire.
+    """
+
+    def moveToThread(self, thread):
+        pass
+
+
+class StubTranslateWorker(values_module.TranslateWorker):
+    """The real apply worker with its thread affinity stubbed, for the same reason.
+
+    The window's own close guard refuses to close while `_apply_thread` is set, so
+    a worker that never terminates would leave the window permanently un-closable —
+    which is the failure `docs/testing.md` says a faked thread cannot catch.
     """
 
     def moveToThread(self, thread):
@@ -161,6 +174,7 @@ def window_factory(qapp, monkeypatch, tmp_path, folder):
     """
     shell = FakeShell()
     monkeypatch.setattr(values_module, "ValueWorker", StubWorker)
+    monkeypatch.setattr(values_module, "TranslateWorker", StubTranslateWorker)
     monkeypatch.setattr(values_module, "QThread", FakeThread)
     monkeypatch.setattr(values_module, "shell", lambda: shell)
     monkeypatch.setattr(values_module.QMessageBox, "question",
@@ -765,9 +779,116 @@ def test_the_window_becomes_closable_once_it_finished_reading(real_thread_window
 
     assert _pump_until(qapp, lambda: window._thread is None), (
         "the window still holds its loading thread, so its closeEvent refuses to "
-        "close and the shell can never replace it")
+        "close and the shell can never replace it"
+    )
 
     assert window.close(), "and with no thread left, closing it must work"
+
+
+@pytest.fixture
+def real_thread_apply(qapp, monkeypatch, tmp_path, folder):
+    """A window over real threads, with only the roots and the message boxes stubbed.
+
+    The Apply is a second thread of this window's own, so a faked thread would
+    prove nothing about it: the thing to check is that the records are written off
+    the GUI thread and that the thread ends by itself.
+    """
+    monkeypatch.setattr(values_module, "export_folder",
+                        lambda: str(tmp_path / "library"))
+    monkeypatch.setattr(values_module, "vocabulary_path",
+                        lambda: str(tmp_path / "vocabulary.json"))
+    monkeypatch.setattr(values_module, "import_folder", lambda: str(tmp_path))
+    monkeypatch.setattr(values_module.QMessageBox, "question",
+                        staticmethod(Recorder.question))
+    monkeypatch.setattr(values_module.QMessageBox, "warning",
+                        staticmethod(Recorder.warning))
+    monkeypatch.setattr(values_module.QMessageBox, "information",
+                        staticmethod(Recorder.information))
+
+    os.makedirs(str(tmp_path / "library"), exist_ok=True)
+    window = values_module.ValuesWindow(root=str(folder),
+                                        library_root=str(tmp_path / "library"))
+    window._thread.deleteLater = lambda: None
+    yield window, qapp
+
+    for thread in (window._thread, window._apply_thread):
+        if _running(thread):
+            # Stopped rather than left to Qt: a spinning thread destroyed at
+            # interpreter shutdown is a `qFatal`, and would abort the whole run.
+            thread.quit()
+            thread.wait(10000)
+    qapp.processEvents()
+    window._thread = None
+    window._apply_thread = None
+    window.close()
+    window.deleteLater()
+
+
+def test_the_apply_writes_the_records_off_the_gui_thread(real_thread_apply,
+                                                        monkeypatch):
+    """The Apply used to write every record on the GUI thread, behind a progress
+    dialog that was never shown.
+
+    Asserted on the effect — the thread the records were written on — and not on
+    the wiring that is supposed to produce it.
+    """
+    window, qapp = real_thread_apply
+    assert _pump_until(qapp, lambda: window._thread is None), (
+        "the window never finished reading"
+    )
+
+    answer_everything(window, {("network", "CN"): "Cartoon Network"})
+
+    gui = threading.get_ident()
+    seen = []
+    real = values_module.execute_translation
+
+    def spy(plan, **kwargs):
+        seen.append(threading.get_ident())
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(values_module, "execute_translation", spy)
+
+    window.on_apply()
+    thread = window._apply_thread
+    assert thread is not None, "the apply did not start a thread of its own"
+    assert _pump_until(qapp, lambda: not _running(thread)), (
+        "the apply thread never terminated: the worker's slot returned but nothing "
+        "quit the QThread's event loop"
+    )
+    # The window's own teardown is on `thread.finished`, so waiting for it is
+    # waiting for the report to have been shown as well.
+    assert _pump_until(qapp, lambda: window._apply_thread is None)
+
+    assert seen, "the records were never written"
+    assert seen[0] != gui, "the records were written on the GUI thread"
+
+    tags = {clip.relative_path: clip.tag_dict()
+            for clip in build_catalog(window.root).clips}
+    assert tags["Toonami/A.mp4"]["network"] == "Cartoon Network"
+    assert "2 record(s) rewritten" in window.ui.labelQuestion.text()
+
+
+def test_the_window_refuses_to_close_while_it_is_writing(real_thread_apply):
+    """A thread still running when its owner is destroyed aborts the process, and
+    `docs/status.md` records what that looks like: a `qFatal` with nothing in the
+    log.
+    """
+    window, qapp = real_thread_apply
+    assert _pump_until(qapp, lambda: window._thread is None), (
+        "the window never finished reading"
+    )
+
+    answer_everything(window, {("network", "CN"): "Cartoon Network"})
+    window.on_apply()
+
+    assert window._apply_thread is not None
+    window.close()
+
+    assert window._apply_thread is not None, (
+        "the window closed while its apply thread was still running"
+    )
+
 
 
 def test_the_builder_takes_the_application_first_and_the_folders_after():

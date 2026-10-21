@@ -163,6 +163,14 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   both paths. → [importing.md](importing.md#the-tagged-library-mesh)
 - **One import screen** (`importer/importrun.py`): the transfer question, the
   progress dialog and the summary, called by both windows that end at the import.
+  **The import runs off the GUI thread** — the folders are read, the destinations
+  planned and the clips copied on a worker thread behind a progress dialog, because
+  eight hundred clips is hours of copying and a blocked GUI thread cannot even show
+  how far along it is. The **run** owns the thread rather than the window, so
+  neither importer window grows a guard and an import survives its window being
+  closed; the run is two phases, so the transfer question still comes after the read
+  and before the plan; and the run is **cancellable**, keeping everything it had
+  already written. → [importing.md](importing.md#the-import-runs-off-the-gui-thread)
   **copy / link / move is asked as a modal on every run, with copy pre-selected every
   run** — not remembered, because the backend already fixes copy as the only transfer
   safe to assume and a remembered answer would quietly un-fix that. `move` is
@@ -471,6 +479,20 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
   files now
   also carry a `real_thread_*` fixture on a real `QThread` and the real event loop.
   → [testing.md](testing.md)
+- **The Library Importer's import ran on the GUI thread, behind a progress dialog
+  that was never shown.** `confirm_and_import` read both folders, planned the
+  destinations and copied every clip on the thread that draws the windows, and the
+  `LoadingDialog` it built was given its messages and never `show()`n — so a large
+  import froze the app for the length of the copy with nothing on screen to say how
+  far along it was. The Tagged Library Mesh's **Apply** had the same pair of faults
+  for the same reason: one record write per clip, on the GUI thread, behind a dialog
+  nobody saw. Both are on worker threads now, with a progress dialog that is shown,
+  a progress bar with a real denominator, and a Cancel that stops the run at a
+  record or clip boundary and keeps everything already written. The import's thread
+  belongs to the **run** rather than to the window, which is why neither importer
+  window grew a guard; the Apply's belongs to its window, because `on_apply` is a
+  method of that window and a thread still running when its owner is destroyed
+  aborts the process. → [importing.md](importing.md#the-import-runs-off-the-gui-thread)
 - **A window with an mpv player must shut it down before it is destroyed, and
   that was not being done.** `create_mpv_player` hands mpv the native handle of
   a child frame, so a player left alive when the window closes has outlived the

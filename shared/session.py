@@ -366,7 +366,7 @@ class Shell(QObject):
         if window is not self._current:
             return
         self._current = None
-        if not _alive(self._menu):
+        if not widget_is_alive(self._menu):
             # Shutting down. Windows are destroyed in an arbitrary order and the
             # menu can be one of the first, so there is nothing left to bring
             # back to.
@@ -388,12 +388,24 @@ class Shell(QObject):
             window.activateWindow()
 
 
-def _alive(widget):
+def widget_is_alive(widget):
     """True while a widget's C++ object still exists.
 
     A closed window is still a Python object, and at shutdown Qt destroys them
     in an arbitrary order, so "I have a reference to it" says nothing about
     whether it can still be used.
+
+    **Public because it is a rule, not an implementation detail.** A long run
+    can outlive the window that started it — the importer's import run keeps
+    copying after its window is closed — and anything that names the window
+    afterwards has to ask this first. A widget whose C++ object has gone raises
+    `RuntimeError` from PySide6 when it is used, so the check has to happen
+    before the use and not after it.
+
+    **It answers a question; it does not return the widget.** A caller that
+    wants the widget or `None` has to ask the question itself — passing the
+    answer straight on as a parent would hand PySide6 a bool where it wants a
+    widget, and it raises a `TypeError` naming the wrong signature.
     """
     try:
         import shiboken6

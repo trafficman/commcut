@@ -51,7 +51,7 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox
 from shared.catalog import build_catalog, problem_summary
 from shared.diagnostics import log_exception
 from shared.exporting import export_folder
-from shared.loading import LoadingDialog
+from shared.loading import CancelOnCloseDialog
 from shared.session import shell
 from shared.ui_loader import UiLoader, adopt_title
 from shared.values import (
@@ -114,6 +114,48 @@ class ValueWorker(QObject):
         self.ready.emit(session, summary)
 
 
+class TranslateWorker(QObject):
+    """Rewrites the records, off the GUI thread.
+
+    One record write per clip, and a library of eight hundred clips is eight
+    hundred writes — on the GUI thread that is a frozen window for the length of
+    it, behind a progress dialog that was never even shown.
+
+    The plan is built on the GUI thread and handed over: it is a frozen
+    dataclass of plain data, and building it there keeps this worker to the one
+    thing that actually costs time.
+
+    The wide `except` is deliberate: an unhandled exception in a `QThread` slot
+    reaches PySide6's abort path, and `install_excepthook` does not stop it.
+    """
+
+    done = Signal(object, object)
+    failed = Signal(str)
+    progressed = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, plan, cancel_event=None):
+        super().__init__()
+        self.plan = plan
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = execute_translation(
+                self.plan,
+                on_progress=self.progressed.emit,
+                should_cancel=self.cancel_event.is_set,
+            )
+        except Exception as error:  # noqa: BLE001 - reported, never raised
+            log_exception("the translated records could not be written", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+            return
+        finally:
+            self.finished.emit()
+        self.done.emit(result, self.plan)
+
+
 def _question_text(entry, matches) -> str:
     """The one question, with its counts attached.
 
@@ -174,6 +216,15 @@ class ValuesWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: ValueWorker | None = None
         self._cancel = threading.Event()
+
+        #: The Apply's own thread. Separate from the read's, because the two
+        #: cannot be alive at once — the read finishes long before the user has
+        #: answered every question — and because a window owns its threads.
+        self._apply_thread: QThread | None = None
+        self._apply_worker: TranslateWorker | None = None
+        self._apply_cancel = threading.Event()
+        self._apply_dialog = None
+        self._apply_total = 0
 
         self.ui.comboValue.currentTextChanged.connect(self._refresh_translate)
         self.ui.buttonTranslate.clicked.connect(self.on_translate)
@@ -454,26 +505,84 @@ class ValuesWindow(QMainWindow):
         if not plan.clips:
             self._show_done(0, ())
             return
+        self._start_apply(plan)
 
-        progress = LoadingDialog("Rewriting records...", cancellable=False,
-                                 modal=False, title="Tagged Library Mesh")
-        try:
-            result = execute_translation(
-                plan,
-                on_progress=lambda done, path: progress.set_message(
-                    f"Rewrote {done} record(s)\n{path}"),
-            )
-        except Exception as error:  # noqa: BLE001 - reported, never raised
-            log_exception("the translated records could not be written", error)
-            QMessageBox.warning(
-                self, "The changes could not be written",
-                f"{type(error).__name__}: {error}\n\nNo further records were "
-                f"written.")
-            return
-        finally:
-            progress.deleteLater()
+    def _start_apply(self, plan) -> None:
+        """Rewrite the records on a worker thread, behind a progress dialog.
 
+        **The window owns this thread**, not the run: `on_apply` is a method of
+        this window, and a thread still running when its owner is destroyed
+        aborts the process — a `qFatal` that never reaches the log.
+
+        The dialog is deliberately parentless: the window is disabled while the
+        records are written, and a disabled parent's children are disabled too,
+        so a Cancel link that belonged to the window would not work.
+        """
+        self._apply_cancel = threading.Event()
+        worker = TranslateWorker(plan, cancel_event=self._apply_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # `thread.quit` is what ends the thread: `started` runs the slot inside
+        # the thread's exec() loop, and a slot returning does not leave it.
+        worker.finished.connect(thread.quit)
+        worker.done.connect(self._on_apply_done)
+        worker.failed.connect(self._on_apply_failed)
+        worker.progressed.connect(self._on_apply_progressed)
+        thread.finished.connect(self._on_apply_stopped)
+        self._apply_worker = worker
+        self._apply_thread = thread
+        self._apply_total = len(plan.clips)
+
+        self.setEnabled(False)
+        dialog = CancelOnCloseDialog(
+            "Rewriting records…", cancellable=True, modal=False,
+            title="Tagged Library Mesh")
+        dialog.set_range(0, max(self._apply_total, 1))
+        dialog.canceled.connect(self._on_apply_cancel_requested)
+        dialog.show()
+        self._apply_dialog = dialog
+
+        thread.start()
+
+    def _on_apply_progressed(self, done, path):
+        message = f"Rewrote {done} of {self._apply_total} record(s)"
+        if path:
+            message += f"\n{path}"
+        if self._apply_dialog is not None:
+            self._apply_dialog.set_message(message)
+
+    def _on_apply_done(self, result, plan):
         self._show_done(result.committed, result.failed + plan.skipped)
+
+    def _on_apply_failed(self, message):
+        QMessageBox.warning(
+            self, "The changes could not be written",
+            f"{message}\n\nNo further records were written.")
+
+    def _on_apply_cancel_requested(self):
+        self._apply_cancel.set()
+        if self._apply_dialog is not None:
+            self._apply_dialog.set_message("Cancelling…")
+
+    def _on_apply_stopped(self):
+        """The apply thread has really stopped, so the close guard can come off.
+
+        Only now is it safe to clear `_apply_thread`: `closeEvent` uses it to
+        refuse closing, and clearing it one signal early lets the window be
+        destroyed while the thread it owns is still alive.
+        """
+        dialog, self._apply_dialog = self._apply_dialog, None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+        thread, self._apply_thread = self._apply_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._apply_worker = self._apply_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        self.setEnabled(True)
 
     def _show_done(self, written: int, failures) -> None:
         """After writing: what changed, and whether the Tag Editor is needed."""
@@ -550,14 +659,19 @@ class ValuesWindow(QMainWindow):
     # -- closing ----------------------------------------------------------
 
     def closeEvent(self, event):
-        """Refuse to close while the folder is still being read.
+        """Refuse to close while the folder is still being read, or while the
+        records are still being written.
 
-        A `QThread` still running when its owner is destroyed aborts the process, and
-        `docs/status.md` records what that looks like: a `qFatal` with nothing in the
-        log.
+        A `QThread` still running when its owner is destroyed aborts the process,
+        and `docs/status.md` records what that looks like: a `qFatal` with nothing
+        in the log.
         """
         if self._thread is not None:
             self._cancel.set()
+            event.ignore()
+            return
+        if self._apply_thread is not None:
+            self._apply_cancel.set()
             event.ignore()
             return
         super().closeEvent(event)

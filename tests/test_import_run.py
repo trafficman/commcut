@@ -17,10 +17,20 @@ deliberate rather than incidental:
 The dialog is built and inspected rather than exec'd, for the reason
 `tests/test_mesh_window.py` gives its own: a modal under `QT_QPA_PLATFORM=offscreen`
 blocks on nobody and hangs the run.
+
+The run itself is on a worker thread, so the last section here drives it: the copy
+happens off the GUI thread, the read comes before the question and the plan after
+it, the progress reaches a dialog, a cancel keeps what was already written, and the
+thread ends by itself.
 """
 
+import os
+import threading
+import time
+
 import pytest
-from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtWidgets import QLabel, QWidget
 
 import importer.importrun as importrun_module
 from editor_stub import ensure_qapp
@@ -30,6 +40,8 @@ from shared.importing import (
     TRANSFER_MOVE,
     TRANSFERS,
 )
+from shared.records import ClipRecord, RECORD_EXTENSION, write_record
+from shared.session import widget_is_alive
 
 
 @pytest.fixture(scope="module")
@@ -248,3 +260,435 @@ def test_the_move_summary_says_the_folders_went_too():
 
     assert "moved out of the import folder" in fate
     assert "folder that emptied was removed" in fate
+
+
+# ---------------------------------------------------------------------------
+# The run
+# ---------------------------------------------------------------------------
+#
+# The question and the summary are decided above. What is decided here is the run
+# they hang off: that the work happens off the GUI thread, that the read comes
+# before the question and the plan after it, that the progress reaches a dialog,
+# that a cancel keeps what was already written, and that the thread ends by itself.
+
+#: The four tags an export needs, so a clip has somewhere to land.
+REQUIRED = {
+    "title": "Worlds Finest", "network": "Cartoon Network",
+    "filler_type": "Promo", "time_period": "2000s",
+}
+
+
+def plant_clip(root, relative, tags=None):
+    """A video with a record beside it, as another commcut install leaves one."""
+    path = os.path.join(str(root), *relative.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\0" * 16)
+    write_record(os.path.splitext(path)[0] + RECORD_EXTENSION, ClipRecord(
+        source="theirs.mp4", segment_index=0, start=0.0, duration=30.0,
+        tags=tuple((tags or REQUIRED).items()),
+        clip_id="12345678-1234-4123-8123-123456789abc",
+    ))
+    return path
+
+
+class Recorder:
+    """A `QMessageBox` that records instead of blocking.
+
+    The **parent** is recorded as well as the text, because it is part of the
+    call: PySide6 raises a `TypeError` naming the wrong signature if the parent
+    is anything but a widget or `None`, and a stub that accepts whatever it is
+    given would never notice.
+    """
+
+    answer = 0
+    seen: list = []
+    parents: list = []
+
+    @staticmethod
+    def information(parent, title, message, *_buttons, default=0):
+        Recorder.parents.append(parent)
+        Recorder.seen.append((title, message))
+        return Recorder.answer
+
+    @staticmethod
+    def warning(parent, title, message, *_buttons, default=0):
+        Recorder.parents.append(parent)
+        Recorder.seen.append((title, message))
+        return Recorder.answer
+
+
+class FakeDialog(QObject):
+    """A progress dialog that records what it was told.
+
+    The real one is a widget, and this one records the same calls, so the test can
+    assert that the progress reached a dialog without a window on screen.
+    """
+
+    canceled = Signal()
+
+    def __init__(self, message, cancellable=False, parent=None, modal=True,
+                 title="commcut"):
+        super().__init__()
+        self.messages = [message]
+        self.ranges = []
+        self.values = []
+        self.shown = False
+        self.closed = False
+
+    def set_range(self, minimum, maximum):
+        self.ranges.append((minimum, maximum))
+
+    def set_value(self, value):
+        self.values.append(value)
+
+    def set_message(self, message):
+        self.messages.append(message)
+
+    def show(self):
+        self.shown = True
+
+    def close(self):
+        self.closed = True
+
+    def deleteLater(self):
+        pass
+
+
+@pytest.fixture
+def run_env(qapp, tmp_path, monkeypatch):
+    """An import folder holding one clip, an empty library, and nothing blocking.
+
+    The transfer question is stubbed out: it is a modal under `offscreen` and it
+    blocks on nobody. What is left is the run.
+    """
+    import_root = tmp_path / "import"
+    library_root = tmp_path / "export"
+    os.makedirs(str(import_root), exist_ok=True)
+    os.makedirs(str(library_root), exist_ok=True)
+    plant_clip(import_root, "CN/Promo/Worlds Finest.mp4")
+
+    Recorder.seen = []
+    Recorder.parents = []
+    monkeypatch.setattr(importrun_module, "QMessageBox", Recorder)
+    monkeypatch.setattr(importrun_module, "ask_transfer",
+                        lambda _parent, _root: TRANSFER_COPY)
+    return str(import_root), str(library_root), str(tmp_path / "settings.json")
+
+
+def _library_videos(library_root):
+    """Every video in the library, however deep it landed."""
+    found = []
+    for _directory, _subdirectories, names in os.walk(str(library_root)):
+        found.extend(name for name in names if name.endswith(".mp4"))
+    return found
+
+
+def test_the_copy_runs_off_the_gui_thread(run_env, monkeypatch):
+    """The whole point of the change.
+
+    The GUI thread is the one that would freeze, so the copy has to happen on
+    another one. The assertion is on the effect — the thread the copy ran on —
+    and not on the wiring that is supposed to produce it.
+    """
+    import_root, library_root, settings = run_env
+    gui = threading.get_ident()
+    seen = []
+    real = importrun_module.execute_import
+
+    def spy(plan, **kwargs):
+        seen.append(threading.get_ident())
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(importrun_module, "execute_import", spy)
+
+    importrun_module.confirm_and_import(None, import_root, library_root, settings)
+
+    assert seen, "the import never ran"
+    assert seen[0] != gui, "the copy ran on the GUI thread"
+
+
+def test_the_gui_thread_is_not_blocked_while_the_copy_runs(run_env, monkeypatch):
+    """The freeze the user reported: the whole import ran on the GUI thread, so
+    the app did not answer for the length of the copy.
+
+    A queued slot on the GUI thread is the proof: it can only be delivered while
+    the event loop is running, so a slot that arrives *before* the copy finishes
+    is a slot the GUI thread was free to deliver.
+    """
+    import_root, library_root, settings = run_env
+    order = []
+
+    class Probe(QObject):
+        ticked = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self.ticked.connect(self._deliver, Qt.QueuedConnection)
+
+        def _deliver(self):
+            order.append("gui")
+
+    probe = Probe()
+    real = importrun_module.execute_import
+
+    def slow_execute(plan, **kwargs):
+        probe.ticked.emit()
+        time.sleep(0.2)
+        order.append("copy")
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(importrun_module, "execute_import", slow_execute)
+
+    importrun_module.confirm_and_import(None, import_root, library_root, settings)
+
+    assert order[:2] == ["gui", "copy"], (
+        "the GUI thread was blocked while the copy ran — a queued slot could not "
+        "be delivered until the copy had finished"
+    )
+
+
+def test_the_read_comes_before_the_question_and_the_plan_after_it(
+        run_env, monkeypatch):
+    """The order the question depends on.
+
+    Before the read, the question would be asked about a folder that turns out to
+    hold nothing. After the plan, `move` could be chosen into an out-of-space
+    failure — the space preflight is part of the plan.
+    """
+    import_root, library_root, settings = run_env
+    order = []
+    asked_under = []
+    dialogs = []
+    real_build = importrun_module.build_catalog
+    real_plan = importrun_module.plan_import
+
+    class Recording(FakeDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            dialogs.append(self)
+
+    def spy_build(root, *args, **kwargs):
+        order.append("read")
+        return real_build(root, *args, **kwargs)
+
+    def spy_plan(*args, **kwargs):
+        order.append("plan")
+        return real_plan(*args, **kwargs)
+
+    def ask(parent, _root):
+        order.append("question")
+        asked_under.append(parent)
+        return TRANSFER_COPY
+
+    monkeypatch.setattr(importrun_module, "build_catalog", spy_build)
+    monkeypatch.setattr(importrun_module, "plan_import", spy_plan)
+    monkeypatch.setattr(importrun_module, "ask_transfer", ask)
+    monkeypatch.setattr(importrun_module, "CancelOnCloseDialog", Recording)
+
+    importrun_module.confirm_and_import(None, import_root, library_root, settings)
+
+    assert order.index("read") < order.index("question")
+    assert order.index("question") < order.index("plan")
+    # The question is a child of the progress dialog rather than of the window:
+    # a dialog that is a child of a modal window is not blocked by it, so the
+    # question is still usable while the progress dialog is up.
+    assert asked_under and asked_under[0] is dialogs[0]
+
+
+def test_an_empty_folder_says_so_without_asking(qapp, tmp_path, monkeypatch):
+    """The question is not asked about eight hundred videos that are not there."""
+    import_root = tmp_path / "import"
+    library_root = tmp_path / "export"
+    os.makedirs(str(import_root), exist_ok=True)
+    os.makedirs(str(library_root), exist_ok=True)
+
+    asked = []
+    Recorder.seen = []
+    monkeypatch.setattr(importrun_module, "QMessageBox", Recorder)
+    monkeypatch.setattr(importrun_module, "ask_transfer",
+                        lambda _parent, _root: asked.append(True) or TRANSFER_COPY)
+
+    result = importrun_module.confirm_and_import(
+        None, str(import_root), str(library_root), str(tmp_path / "settings.json"))
+
+    assert result is None
+    assert not asked, "the question was asked about a folder with nothing in it"
+    assert Recorder.seen, "the run said nothing at all"
+    assert Recorder.seen[0][0] == "Nothing to import"
+
+
+def test_the_progress_reaches_the_dialog(run_env, monkeypatch):
+    """The dialog is the only way the user knows how far along the run is."""
+    import_root, library_root, settings = run_env
+    dialogs = []
+
+    class Recording(FakeDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            dialogs.append(self)
+
+    monkeypatch.setattr(importrun_module, "CancelOnCloseDialog", Recording)
+
+    importrun_module.confirm_and_import(None, import_root, library_root, settings)
+
+    assert dialogs, "no progress dialog was built"
+    dialog = dialogs[0]
+    assert dialog.shown, "the progress dialog was never shown"
+    assert any("Imported" in message for message in dialog.messages), (
+        f"the dialog never reported a copy: {dialog.messages}"
+    )
+    assert dialog.ranges and dialog.ranges[-1][1] == 1, (
+        "the progress bar never got a denominator"
+    )
+
+
+def test_the_run_copies_the_clip_and_says_so(run_env):
+    """The end of the happy path: the clip is in the library, and the summary says
+    it is."""
+    import_root, library_root, settings = run_env
+
+    result = importrun_module.confirm_and_import(
+        None, import_root, library_root, settings)
+
+    assert result is not None
+    assert len(result.written) == 1
+    assert _library_videos(library_root), "nothing landed in the library"
+    assert Recorder.seen, "the run said nothing at all"
+    title, message = Recorder.seen[0]
+    assert title == "Import finished"
+    assert "Imported 1 clip(s)" in message
+
+
+def test_a_failure_is_reported_and_nothing_further_is_written(run_env, monkeypatch):
+    """A failure is answered with a message rather than raised: this is called from
+    a button handler, and an exception escaping one of those takes the window down.
+    """
+    import_root, library_root, settings = run_env
+
+    def boom(plan, **kwargs):
+        raise RuntimeError("the disk fell over")
+
+    monkeypatch.setattr(importrun_module, "execute_import", boom)
+
+    result = importrun_module.confirm_and_import(
+        None, import_root, library_root, settings)
+
+    assert result is None
+    assert Recorder.seen, "the failure was not reported"
+    title, message = Recorder.seen[0]
+    assert title == "The import could not be run"
+    assert "the disk fell over" in message
+    assert not _library_videos(library_root)
+
+
+def test_a_cancelled_run_keeps_what_it_had_already_written(qapp, tmp_path):
+    """The rule a cancel leans on.
+
+    A run that did not finish keeps the clips it committed and says so, and a
+    re-run skips what landed — so cancelling is a pause, not a mess.
+    """
+    import_root = tmp_path / "import"
+    library_root = tmp_path / "export"
+    os.makedirs(str(import_root), exist_ok=True)
+    os.makedirs(str(library_root), exist_ok=True)
+    plant_clip(import_root, "CN/Promo/A.mp4")
+    # A second clip with its own title, so the two land in different places: two
+    # clips with the same tags are one destination, and the second is refused
+    # before the run starts.
+    plant_clip(import_root, "CN/Promo/B.mp4", tags={**REQUIRED, "title": "Toonami"})
+
+    cancel = threading.Event()
+    worker = importrun_module.ImportWorker(
+        str(import_root), str(library_root), str(tmp_path / "settings.json"),
+        cancel_event=cancel)
+
+    results = []
+    worker.done.connect(lambda result, plan: results.append(result))
+    worker.progressed.connect(lambda done, path: cancel.set())
+
+    worker.read()
+    worker.import_clips(TRANSFER_COPY)
+
+    assert len(results) == 1, "the run did not finish"
+    result = results[0]
+    assert result.cancelled, "the run was not reported as cancelled"
+    assert len(result.written) == 1, (
+        "the clip copied before the cancel was thrown away"
+    )
+    assert len(_library_videos(library_root)) == 1
+
+
+def test_the_import_thread_ends_by_itself(run_env, monkeypatch):
+    """`thread.started.connect(worker.run)` runs the worker's slot inside the
+    thread's `exec()` loop, and a slot returning does not leave it — so nothing but
+    the worker's own `finished` ends the thread.
+
+    Asserted on the effect: a thread still running when its owner is destroyed
+    aborts the process, which is invisible in the log.
+    """
+    import_root, library_root, settings = run_env
+    run = importrun_module.ImportRun(None, import_root, library_root, settings)
+    thread = run._thread
+
+    run.go()
+
+    try:
+        assert not thread.isRunning(), "the import thread was still running"
+    except RuntimeError:
+        # A deleted C++ object is not running either, which is the outcome the
+        # teardown wants.
+        pass
+
+
+def test_the_summary_is_shown_on_the_window_that_started_the_run(run_env, qapp):
+    """The summary is a dialog *on* the window that started the run.
+
+    PySide6 raises a `TypeError` naming the wrong signature when the parent is
+    anything but a widget or `None` — and a bool is not a widget — so this pins
+    the shape of the argument, not just that a summary appeared.
+    """
+    import_root, library_root, settings = run_env
+    window = QWidget()
+    try:
+        importrun_module.confirm_and_import(
+            window, import_root, library_root, settings)
+    finally:
+        window.deleteLater()
+
+    assert Recorder.parents, "the run showed nothing at all"
+    assert Recorder.parents[0] is window, (
+        f"the summary was shown on {Recorder.parents[0]!r} rather than on the "
+        f"window that started the run"
+    )
+
+
+def test_the_summary_survives_its_window_being_closed(qapp, tmp_path, monkeypatch):
+    """The run outlives the window that started it — a half-written library is
+    worse than a closed window — so the summary cannot be parented to a window
+    whose C++ object has gone. PySide6 raises a `RuntimeError` on that.
+    """
+    import_root = tmp_path / "import"
+    library_root = tmp_path / "export"
+    os.makedirs(str(import_root), exist_ok=True)
+    os.makedirs(str(library_root), exist_ok=True)
+    plant_clip(import_root, "CN/Promo/Worlds Finest.mp4")
+
+    Recorder.seen = []
+    Recorder.parents = []
+    monkeypatch.setattr(importrun_module, "QMessageBox", Recorder)
+    monkeypatch.setattr(importrun_module, "ask_transfer",
+                        lambda _parent, _root: TRANSFER_COPY)
+
+    window = QWidget()
+    window.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not widget_is_alive(window), "the window was not actually closed"
+
+    importrun_module.confirm_and_import(
+        window, str(import_root), str(library_root), str(tmp_path / "settings.json"))
+
+    assert Recorder.parents, "the run showed nothing at all"
+    assert Recorder.parents[0] is None, (
+        "the summary was parented to a window whose C++ object is gone"
+    )
