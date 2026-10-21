@@ -241,7 +241,8 @@ class ValuesWindow(QMainWindow):
             widget.setVisible(False)
 
         if session is None:
-            self._set_question_enabled(False)
+            # `_start_worker` puts the window into its loading state, which is
+            # what disables the question controls until there is a question.
             self._start_worker()
         else:
             self._on_ready(session, "")
@@ -263,11 +264,43 @@ class ValuesWindow(QMainWindow):
         thread.finished.connect(self._on_stopped)
         self._worker = worker
         self._thread = thread
+        self._show_loading()
         thread.start()
+
+    def _show_loading(self) -> None:
+        """What the window says while it reads the folder.
+
+        The read is two catalog walks, and the library is a network share as
+        often as it is a local folder, so the window is open for a while before
+        it has anything to ask. It has to say so: opening on an empty panel is a
+        window that looks broken, and opening on an empty panel with a live
+        **Import Now** is a window that lies about what it will do — pressing
+        it would file the whole library without the review this window exists
+        to perform, and before the first question there is nothing for its
+        "without writing the changes above" to refer to.
+
+        **Hidden rather than disabled**, like the answer row and like the
+        Untagged Library Mesh's onward buttons: a control that cannot do
+        anything yet is not a control to leave on screen. A failed read leaves
+        it hidden, which is right — there is nothing to import if the folder
+        could not be read.
+        """
+        self._set_question_enabled(False)
+        self._set_answer_row_shown(False)
+        self.ui.labelQuestion.setText(
+            f"Reading the records in:\n{self.root}\n\n"
+            f"The tag values in them are being matched against the ones your "
+            f"library already uses."
+        )
+        self.ui.labelProgress.setText(f"Reading {self.root}...")
+        self.ui.buttonImportPlan.setVisible(False)
 
     def _on_ready(self, session, summary: str) -> None:
         self.session = session
         self._intro = summary
+        # The window has read the folder, so the review it was opened for is
+        # real and **Import Now** has something to refer to.
+        self.ui.buttonImportPlan.setVisible(True)
         if not session.entries():
             self._show_empty()
             return

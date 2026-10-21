@@ -715,6 +715,19 @@ destination, so a clip already imported under the old value is not matched again
 library by `plan_import` — it would be imported a **second time** under a new name.
 The flow puts the fork before the import for that reason.
 
+**The window says it is reading, and offers nothing else until it is done.** It opens
+on a background read — the import folder and the library, two catalog walks, and the
+library is a network share as often as it is a local folder — so it is open for a
+while before it has a question to ask. It says so: the progress label names the
+folder and the worker's own messages say which of the two is being walked, and the
+panel says what is being matched. The answer row and **Import Now** are **hidden**
+until the read is done, rather than disabled: a control that cannot do anything yet
+is not a control to leave on screen. A live **Import Now** on a window that has not
+asked a question yet would file the whole library without the review this window
+exists to perform, with nothing for its "without writing the changes above" to refer
+to. The Untagged Library Mesh and the Library Mesh Tag Editor hide their onward
+buttons the same way.
+
 ### Why not `MeshSession`
 
 It is tempting to run the existing window again in a "tagged" mode. That would be

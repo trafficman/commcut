@@ -85,6 +85,18 @@ class StubTranslateWorker(values_module.TranslateWorker):
         pass
 
 
+class SilentWorker(values_module.ValueWorker):
+    """A worker whose read never finishes, so the window stays loading.
+
+    The read is two catalog walks, and the library is a network share as often as
+    it is a local folder, so the window is open for a while before it has anything
+    to ask. This is what that state looks like from the outside.
+    """
+
+    def run(self):
+        pass
+
+
 class FakeThread(QThread):
     """A real QThread that runs its worker synchronously."""
 
@@ -208,6 +220,18 @@ def window_factory(qapp, monkeypatch, tmp_path, folder):
         window.deleteLater()
 
 
+@pytest.fixture
+def loading_window(window_factory, monkeypatch):
+    """A window whose read has not finished.
+
+    The `window_factory` fixture's worker is swapped for one that never
+    answers, so the window is caught in the state it is in while the real read
+    is still running — which is the state the user sees first.
+    """
+    monkeypatch.setattr(values_module, "ValueWorker", SilentWorker)
+    return window_factory()
+
+
 def answering(window):
     """Whether the window is still asking a question.
 
@@ -217,6 +241,49 @@ def answering(window):
     which it should, but that is a separate test and not the loop's business.
     """
     return window.session.pending() != ()
+
+
+def test_the_window_says_it_is_reading_while_it_reads(loading_window):
+    """The read is two catalog walks, and the library is a network share as often
+    as it is a local folder, so the window is open for a while before it has
+    anything to ask.
+
+    An empty panel is a window that looks broken. `isHidden()` rather than
+    `isVisible()`, because a widget inside a window nobody called `show()` on is
+    never visible — the same trap `answering()` documents.
+    """
+    window = loading_window
+
+    assert "Reading" in window.ui.labelProgress.text()
+    assert "Reading" in window.ui.labelQuestion.text()
+    assert str(window.root) in window.ui.labelQuestion.text()
+
+
+def test_import_now_is_not_offered_while_the_window_is_still_reading(loading_window):
+    """A live **Import Now** on a window that has not asked a question yet is a
+    screen that lies about what it will do: pressing it would file the whole
+    library without the review this window exists to perform, and before the
+    first question there is nothing for its "without writing the changes above"
+    to refer to.
+
+    Hidden rather than disabled, like the answer row: a control that cannot do
+    anything yet is not a control to leave on screen.
+    """
+    window = loading_window
+
+    assert window.ui.buttonImportPlan.isHidden()
+    assert window.ui.comboValue.isHidden(), (
+        "the answer row is on screen before there is a question to answer"
+    )
+
+
+def test_import_now_is_offered_once_the_window_has_read_the_folder(window_factory):
+    """The other half of the rule: the review the window was opened for is real
+    once it has read the folder, so the way past it is offered.
+    """
+    window = window_factory()
+
+    assert not window.ui.buttonImportPlan.isHidden()
 
 
 def question_is(window, key):
