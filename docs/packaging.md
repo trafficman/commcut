@@ -374,6 +374,38 @@ every machine a developer has. `core.py` is excluded from the sweep: nothing
 imports it, PyInstaller never sees it, and it is kept only as history. Wiring it
 back into a window would reintroduce the pop-ups without failing the sweep.
 
+## The path limit is not ours to raise
+
+Windows' `MAX_PATH` is 260 characters for a complete absolute path, and the
+shipped build cannot go past it. Windows relaxes that for a process that
+declares `<ws2:longPathAware>true</ws2:longPathAware>` in its application
+manifest **and** runs on a machine where `LongPathsEnabled` is set under
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`. The registry value is off
+by default, and `packaging/commcut.spec` declares no application manifest, so
+the shipped exe asks for nothing in particular and the app may not rely on the
+relaxed limit.
+
+**What the machine does is not the app's to depend on.** CPython opens the
+files it writes with a `\\?\`-prefixed path, so its own writes can go past 260;
+the bundled `ffmpeg.exe` does the same for its output, so the encode is not the
+limit either. What *is* limited is the app's **reads** — the library walk and
+the destination existence checks — and those are what the export and the
+Library Manager are built on. A process that is not long-path-aware fails those
+with `ERROR_PATH_NOT_FOUND` (3), which is "the system cannot find the path
+specified": a path that is not missing, reported as missing, with
+`os.path.exists()` returning `False` for it without raising.
+
+The same machine can therefore behave two ways: a source run, where
+`python.exe` carries the long-path-aware flag, reaches past 260 while the
+shipped exe does not. That is why the app enforces the limit rather than
+discovering it — a limit that differed between the developer's machine and the
+user's would be a limit nobody could rely on.
+
+So the app refuses a destination that does not fit **before** anything is
+written, and says so by name, by length, and by which part of the path to
+shorten. The rule and the message live in `shared/paths.py`; see
+[naming-and-organization.md](naming-and-organization.md#the-absolute-path-has-to-fit-the-filesystem).
+
 ## Resolving the binaries at runtime
 
 `get_binary_path(name)` returns the absolute path of a binary, and it is the

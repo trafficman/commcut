@@ -173,8 +173,7 @@ implements the portable folder policy:
 - Prefix Windows device names (`CON`, `NUL`, `COM1`, `LPT1`, and superscript
   variants) with `_`.
 - Reject empty-after-cleanup values and invalid Unicode.
-- Enforce 255 UTF-8 bytes per component and 4096 UTF-8 bytes for the relative
-  path.
+- Enforce 255 UTF-8 bytes per component.
 - Provide `normalized_validation_key()` (NFC plus `casefold()`) for future
   case-insensitive collision checks without lowercasing displayed names.
 
@@ -191,6 +190,50 @@ and malformed syntax, reuses the portable component policy, prefixes reserved
 device names, appends `.mp4`, and includes the extension in the 255-byte
 filename limit. Raw `.cmct` tag values remain unchanged.
 
+### The absolute path has to fit the filesystem
+
+The 255-byte rule above is about a *name*. The whole path is a different
+subject, and it is the one Windows actually refuses: `MAX_PATH` is **260 UTF-16
+code units** for the complete absolute path, and macOS' `PATH_MAX` is 1024
+bytes and Linux' is 4096. These are the filesystem's limits, not commcut's, and
+the app does not depend on Windows' relaxation of them — see
+[packaging.md](packaging.md#the-path-limit-is-not-ours-to-raise).
+
+`shared/paths.py` owns the rule:
+
+- `ABSOLUTE_PATH_LIMITS` — the limit and the unit, per platform.
+- `absolute_path_limit()` / `path_size()` — the limit, and a path's length in
+  the unit that limit is counted in. On Windows that is UTF-16 code units, so a
+  character outside the Basic Multilingual Plane counts as two, which `len()`
+  would not see.
+- `absolute_path_error()` — the plan-time refusal. It measures the
+  *directory*, because three names land inside it: the clip, its record
+  (`.cnfo` is one character longer than `.mp4`), and a staged temporary file
+  (`STAGED_NAME_LENGTH`, which both `shared/ffmpeg.py` and `shared/records.py`
+  stage in the destination directory). The longest of them decides.
+- `export_root_error()` — an export root that is itself over the limit, which
+  cannot hold any clip at all.
+- `describe_path_error()` — the runtime half: it turns an `OSError` that is
+  really an over-long path into the same message, and leaves every other error
+  as it was.
+
+**The refusal is the whole point.** Windows reports an over-long path as
+`ERROR_PATH_NOT_FOUND` — "the system cannot find the path specified" — because
+the limit is hit while the *directory* portion is being resolved. A path that
+is not missing is reported as missing, and `os.path.exists()` returns `False`
+for it without raising. So the app refuses at plan time, where it can name the
+path, its length, the limit, and the three parts of it (the export folder, the
+folder scheme, and the file name), instead of discovering the limit at the
+write with a message that says nothing.
+
+The plan-time refusals are in `shared/exporting.py` (the export planner, the
+preflight, and the export-folder rule), `shared/importing.py` (the import
+planner, as a skip), `shared/retagging.py` (the re-tag planner and the
+alignment scan), and `shared/sources.py` (the `.cmct` sidecar beside a source
+video). The runtime translation is in `shared/ffmpeg.py`,
+`shared/importing.py`, `shared/retagging.py`, `shared/sharing.py`,
+`shared/catalog.py`, and `shared/sources.py`.
+
 ## Export pipeline
 
 The editor export flow is `editor/editor.py:on_export` →
@@ -204,8 +247,9 @@ keep-segment (libx264/aac, **not** `-c copy`) beneath `export/`.
 rendered stem, appends `.mp4`, and combines it with the folder scheme's safe
 components. The planner resolves the entire keep-segment batch before starting
 ffmpeg and fails on missing required tags, invalid durations, duplicate
-normalized paths, existing/case-variant destinations, reparse points, or unsafe
-plan components. `execute_export_plan` then runs the plan; ffmpeg writes unique
+normalized paths, existing/case-variant destinations, reparse points, unsafe
+plan components, or a destination the platform's path limit cannot address.
+`execute_export_plan` then runs the plan; ffmpeg writes unique
 temporary MP4s and atomically commits them without overwriting, and per-clip
 failures are returned as a partial result (`ExportExecutionResult` with
 `ExportClipFailure` entries) rather than aborting the batch.
@@ -592,8 +636,9 @@ editor for folder schemes:
 - The save refuses the whole set atomically when the folder is unusable, exactly
   as it does for a scheme, and the rules live in
   `shared/exporting.py:export_folder_setting_error` so the window and the
-  resolver cannot disagree. Three of them: the path must be absolute; it must not
-  be `import/`, inside it, or contain it; and it must not be an existing file.
+  resolver cannot disagree. Four of them: the path must be absolute; it must not
+  be `import/`, inside it, or contain it; it must not be an existing file; and
+  it must be short enough for the platform to address a clip inside it.
   The overlap check `casefold()`s both paths **on every platform**, not through
   `os.path.normcase` — that folds on Windows and is a no-op on POSIX, and macOS
   ships a case-insensitive filesystem by default, so `.../IMPORT` *is*

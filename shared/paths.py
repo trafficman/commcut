@@ -11,15 +11,24 @@ A group may contain one tag expression and arbitrary literal path text, but
 folder schemes do not support nested groups or pipe-based OR groups.  The public
 renderer returns validated, display-cased components rather than a raw path so
 future callers can safely join them beneath a chosen export root.
+
+This module also owns the **path length** rules, because they are the
+filesystem's and not commcut's: a component is limited by `NAME_MAX`, and the
+whole absolute path is limited by whatever the platform accepts.  See
+"Absolute path length" below.
 """
 
 from __future__ import annotations
 
+import errno
+import os
 import re
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from shared.diagnostics import log
+from shared.environment import os_key
 from shared.scheme import (
     GroupNode,
     LiteralNode,
@@ -43,7 +52,6 @@ REQUIRED_FOLDER_TAG_NAMES: frozenset[str] = frozenset({
     "time_period",
 })
 MAX_FOLDER_COMPONENT_BYTES = 255
-MAX_FOLDER_RELATIVE_PATH_BYTES = 4096
 
 _INVALID_COMPONENT_CHARACTERS = re.compile(
     r"[\x00-\x1f\x7f-\x9f<>:\"/\\|?*]+"
@@ -305,15 +313,6 @@ def _validate_rendered_path(
             context=context,
         )
 
-    relative_path = "/".join(components)
-    if _utf8_length(
-        relative_path,
-        error_type=error_type,
-        context=context,
-    ) > MAX_FOLDER_RELATIVE_PATH_BYTES:
-        raise error_type(
-            f"{context} exceeds {MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
-        )
     return tuple(components)
 
 
@@ -400,6 +399,258 @@ def _validate_scheme_nodes(nodes: Sequence[Node]) -> None:
         rendered,
         error_type=FolderSchemeError,
         context="Folder scheme",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Absolute path length
+# ---------------------------------------------------------------------------
+
+#: The longest absolute path this platform accepts, and the unit it is counted
+#: in.
+#:
+#: Windows' ``MAX_PATH`` is 260 **UTF-16 code units** -- not characters and not
+#: bytes -- and it applies to the whole absolute path, the directory portion
+#: included.  macOS' ``PATH_MAX`` is 1024 bytes and Linux' is 4096.
+#:
+#: This is the filesystem's limit and not one commcut chose, and the app may
+#: not rely on Windows' relaxation of it: that needs both a ``longPathAware``
+#: application manifest and a machine-wide registry value, and the registry
+#: value is off by default.  The shipped build declares no manifest, and the
+#: app's *reads* -- the library walk, the destination existence checks -- are
+#: limited even where its own writes are not.  So the limit is enforced rather
+#: than discovered, and it is the same limit on every machine.
+ABSOLUTE_PATH_LIMITS = {
+    'windows': (260, 'utf-16'),
+    'darwin': (1024, 'utf-8'),
+    'linux': (4096, 'utf-8'),
+}
+
+#: What the platform is called in a message about a path that is too long.
+_PLATFORM_NAMES = {
+    'windows': 'Windows',
+    'darwin': 'macOS',
+    'linux': 'Linux',
+}
+
+#: The longest file name this app stages in a destination directory before
+#: renaming it into place.
+#:
+#: ``tempfile.mkstemp`` puts eight random characters between the prefix and
+#: the suffix, and both writers stage in the *destination* directory, so a
+#: staged path can be longer than the path it becomes: a short clip name in a
+#: deep folder fails on its own temporary file rather than on the clip.
+#:
+#: ``.commcut-export-`` + 8 + ``.mp4`` and ``.commcut-record-`` + 8 + ``.tmp``
+#: are both 28.  A test measures the real staged names and fails if this
+#: constant stops covering them.
+STAGED_NAME_LENGTH = 28
+
+#: The Windows errors that an over-long path can produce.  The limit is hit
+#: while the *directory* portion is being resolved, so Windows reports it as
+#: "path not found" (3) rather than as "filename too long" (206) -- and the
+#: error alone therefore does not say which happened.  The length is the
+#: discriminator.
+_WINDOWS_LENGTH_ERRORS = frozenset({3, 206})
+
+
+def _path_profile() -> tuple[int, str]:
+    """The (limit, unit) pair for this platform."""
+    return ABSOLUTE_PATH_LIMITS.get(os_key(), ABSOLUTE_PATH_LIMITS['linux'])
+
+
+def absolute_path_limit() -> int:
+    """The longest absolute path this platform's filesystem accepts."""
+    return _path_profile()[0]
+
+
+def path_unit_name() -> str:
+    """What this platform counts a path's length in: 'characters' or 'bytes'."""
+    return 'characters' if _path_profile()[1] == 'utf-16' else 'bytes'
+
+
+def platform_name() -> str:
+    """What this platform is called in a message."""
+    return _PLATFORM_NAMES.get(os_key(), 'this platform')
+
+
+def path_size(path: str) -> int:
+    """The path's length in the unit this platform's limit is counted in.
+
+    On Windows that is UTF-16 code units, so a character outside the Basic
+    Multilingual Plane counts as two -- which `len()` would not see.
+    """
+    _limit, unit = _path_profile()
+    if unit == 'utf-16':
+        return len(path.encode('utf-16-le')) // 2
+    return len(path.encode('utf-8'))
+
+
+def _longest_name(video_name: str, record_name: str) -> tuple[int, str]:
+    """The longest name commcut writes into a destination directory, and what it is.
+
+    Three names land beside each other: the clip, its record (one character
+    longer than the clip, because ``.cnfo`` is longer than ``.mp4``), and a
+    staged temporary file.
+    """
+    if STAGED_NAME_LENGTH >= max(len(video_name), len(record_name)):
+        return STAGED_NAME_LENGTH, "a staged temporary file"
+    if len(record_name) > len(video_name):
+        return len(record_name), "the clip's record"
+    return len(video_name), "the clip's file name"
+
+
+#: What to do about a path that is too long, when the caller has nothing
+#: better to say.  The three levers are the same whichever window refused:
+#: the tag values, the folder scheme, and where the library lives.
+DEFAULT_PATH_ADVICE = (
+    "Shorten the tag values, the folder organization scheme, or move the "
+    "export folder to a shorter path."
+)
+
+#: The same advice for a runtime failure, which can come from any of the
+#: folders the app writes to rather than only from the export root.
+RUNTIME_PATH_ADVICE = (
+    "Shorten the tag values, the folder organization scheme, or the folder "
+    "you are writing to."
+)
+
+
+def absolute_path_error(
+    root: str,
+    relative_components: Sequence[str],
+    record_relative_components: Sequence[str] | None = None,
+    label: str = "",
+    advice: str | None = None,
+) -> str | None:
+    """Why this destination cannot be written, or None when it can.
+
+    The rule is the filesystem's: the whole absolute path has to fit the
+    platform's limit.  What is measured is the *directory*, because three names
+    land inside it -- the clip, its record, and a staged temporary file -- and
+    the longest of them decides.
+
+    `root` is the export root the destination is relative to, and
+    `record_relative_components` the record's own components; a record's
+    filename is one character longer than the clip's, so it is measured rather
+    than assumed.  `advice` is the closing sentence; the default names the
+    levers an export has.
+    """
+    if not relative_components:
+        return None
+
+    root_path = os.path.normpath(root)
+    full_path = os.path.join(root_path, *relative_components)
+    directory = os.path.dirname(full_path)
+    video_name = relative_components[-1]
+    record_name = (
+        record_relative_components[-1]
+        if record_relative_components
+        else video_name
+    )
+
+    folder_length = path_size(directory)
+    name_length, name_kind = _longest_name(video_name, record_name)
+    needed = folder_length + 1 + name_length
+    limit = absolute_path_limit()
+    if needed <= limit:
+        return None
+
+    root_length = path_size(root_path)
+    scheme_length = max(folder_length - root_length - 1, 0)
+    unit = path_unit_name()
+    platform = platform_name()
+    subject = (
+        f"{label} cannot be written" if label
+        else "The destination cannot be written"
+    )
+    log(
+        f"path too long: {full_path} needs {needed} {unit}, "
+        f"{platform} allows {limit}"
+    )
+    return (
+        f"{subject}: the path is too long for {platform}.\n"
+        f"\n"
+        f"  {full_path}\n"
+        f"\n"
+        f"The folder is {folder_length} {unit} and commcut writes {name_kind} of "
+        f"{name_length} {unit} beside it, so the longest path this folder needs "
+        f"is {needed} {unit}. {platform} allows {limit}.\n"
+        f"\n"
+        f"That is {root_length} {unit} for the folder it is written under, "
+        f"{scheme_length} for the path below it, and {path_size(video_name)} "
+        f"for the file name.\n"
+        f"\n"
+        f"{advice or DEFAULT_PATH_ADVICE}"
+    )
+
+
+def export_root_error(root: str) -> str | None:
+    """Why this export root is itself unusable, or None when it is fine.
+
+    A root that is already over the platform's limit cannot hold any clip, so
+    it is refused where it is chosen rather than at the first export.
+    """
+    root_path = os.path.normpath(root)
+    length = path_size(root_path)
+    limit = absolute_path_limit()
+    if length <= limit:
+        return None
+    unit = path_unit_name()
+    platform = platform_name()
+    return (
+        f"That export folder is too long: {length} {unit}, and {platform} "
+        f"allows {limit}. It leaves no room for the folder scheme or the file "
+        f"name. Choose a shorter folder."
+    )
+
+
+def is_too_long_path(error: OSError) -> bool:
+    """Whether this error is a path that is too long, rather than a missing one."""
+    path = getattr(error, 'filename', None)
+    if not isinstance(path, str) or not path:
+        return False
+    if os_key() == 'windows':
+        if getattr(error, 'winerror', None) not in _WINDOWS_LENGTH_ERRORS:
+            return False
+        return path_size(path) > absolute_path_limit()
+    return error.errno == errno.ENAMETOOLONG
+
+
+def describe_path_error(error: OSError) -> str:
+    """A message for an OSError, naming a too-long path when that is the cause.
+
+    Windows reports an over-long path as "the system cannot find the path
+    specified", because the limit is hit while the directory portion is being
+    resolved -- so a path that is not missing is reported as missing.  A path
+    under the limit that could not be found really is missing, and keeps the
+    error's own wording.
+    """
+    path = getattr(error, 'filename', None)
+    if not isinstance(path, str) or not path or not is_too_long_path(error):
+        return error.strerror or str(error)
+
+    unit = path_unit_name()
+    platform = platform_name()
+    limit = absolute_path_limit()
+    length = path_size(path)
+    log(
+        f"path too long: {path} is {length} {unit}, the limit is {limit}")
+
+    if length > limit:
+        return (
+            f"The path is too long for {platform} ({length} {unit}; the "
+            f"limit is {limit}):\n"
+            f"\n"
+            f"  {path}\n"
+            f"\n"
+            f"{RUNTIME_PATH_ADVICE}"
+        )
+    return (
+        f"A path component is too long for {platform} (the limit is "
+        f"{MAX_FOLDER_COMPONENT_BYTES} bytes):\n"
+        f"\n"
+        f"  {path}"
     )
 
 

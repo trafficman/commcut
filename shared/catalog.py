@@ -33,6 +33,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from shared.paths import describe_path_error
 from shared.records import (
     RECORD_EXTENSION,
     REASON_UNREADABLE,
@@ -295,7 +296,7 @@ def build_catalog(
     def note_walk_error(error: OSError) -> None:
         problems.append(CatalogProblem(
             _relative(root, error.filename) if error.filename else "",
-            str(error),
+            describe_path_error(error),
             reason=REASON_WALK_ERROR,
         ))
 

@@ -316,7 +316,13 @@ def is_frozen():
     return bool(getattr(sys, 'frozen', False))
 
 
-def _os_key():
+def os_key():
+    """The platform this is running on: 'windows', 'darwin' or 'linux'.
+
+    The app's one answer to "which OS is this", so that no other module
+    spells `platform.system().lower()` a second time. `shared/paths.py` reads
+    it to pick the path-length limit its platform imposes.
+    """
     return platform.system().lower()
 
 
@@ -443,7 +449,7 @@ def _bin_dir():
     binaries sit beside the executable in the shipped onedir layout instead of
     inside a temporary extraction directory.
     """
-    folder = _OS_BIN_FOLDERS.get(_os_key())
+    folder = _OS_BIN_FOLDERS.get(os_key())
     if folder is None:
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
@@ -458,13 +464,13 @@ def bin_dir():
 
 def _binary_filename(binary_name):
     """This platform's filename for a bundled binary: ffmpeg, ffmpeg.exe, ..."""
-    return f"{binary_name}{'.exe' if _os_key() == 'windows' else ''}"
+    return f"{binary_name}{'.exe' if os_key() == 'windows' else ''}"
 
 
 def _system_bin_candidates(binary_name):
     """Absolute paths searched for a binary on a platform that does not bundle."""
     filename = _binary_filename(binary_name)
-    for directory in _SYSTEM_BIN_DIRS.get(_os_key(), ()):
+    for directory in _SYSTEM_BIN_DIRS.get(os_key(), ()):
         yield os.path.join(directory, filename)
 
 
@@ -497,10 +503,10 @@ def system_lib_dirs():
     looked in, and a list that silently dropped the ones not present would be a
     worse error message than a longer one.
     """
-    directories = list(_SYSTEM_LIB_DIRS.get(_os_key(), ()))
+    directories = list(_SYSTEM_LIB_DIRS.get(os_key(), ()))
 
     multiarch = sysconfig.get_config_var('MULTIARCH')
-    if _os_key() == 'linux' and multiarch:
+    if os_key() == 'linux' and multiarch:
         directories.append(os.path.join(_MULTIARCH_LIB_ROOT, multiarch))
 
     return tuple(directories)
@@ -528,13 +534,13 @@ def get_binary_path(binary_name):
     if os.path.exists(bundled):
         return bundled
 
-    if _os_key() in _BUNDLED_BINARY_PLATFORMS:
+    if os_key() in _BUNDLED_BINARY_PLATFORMS:
         raise FileNotFoundError(
             f"Could not find {_binary_filename(binary_name)} in the bundled "
             f"binaries folder:\n\n{bundled}\n\n"
             f"This build bundles its own ffmpeg and will not fall back to a "
             f"system copy, so restore bin/"
-            f"{_OS_BIN_FOLDERS[_os_key()]}/ beside the executable and try "
+            f"{_OS_BIN_FOLDERS[os_key()]}/ beside the executable and try "
             f"again."
         )
 
@@ -590,7 +596,7 @@ def resolve_mpv_library():
             )
         return os.path.abspath(override)
 
-    names = _MPV_LIBRARY_NAMES.get(_os_key())
+    names = _MPV_LIBRARY_NAMES.get(os_key())
     if not names:
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
@@ -619,7 +625,7 @@ def resolve_mpv_library():
     # loads: `ctypes.CDLL` does not care about a soname. Every candidate it
     # considered is added to the failure listing below, so a wrong guess is
     # visible rather than mysterious.
-    pattern = _MPV_LIBRARY_PATTERNS.get(_os_key())
+    pattern = _MPV_LIBRARY_PATTERNS.get(os_key())
     if pattern:
         for directory in directories:
             try:
@@ -665,7 +671,7 @@ def load_mpv_library(path=None):
     if path is None:
         path = resolve_mpv_library()
 
-    if _os_key() == 'darwin':
+    if os_key() == 'darwin':
         # Secondary measure, for libmpv's own transitive dylibs. Effective
         # because a PyInstaller app is not SIP-protected. Skipped on Linux,
         # where LD_LIBRARY_PATH semantics for runtime dlopen are murkier.
@@ -703,7 +709,7 @@ def mpv_import_context():
     path = resolve_mpv_library()
     load_mpv_library(path)
 
-    wanted = _MPV_LOOKUP_NAMES.get(_os_key(), ('mpv',))
+    wanted = _MPV_LOOKUP_NAMES.get(os_key(), ('mpv',))
     original = ctypes.util.find_library
 
     def find_library(name, *args, **kwargs):
@@ -720,7 +726,7 @@ def mpv_import_context():
 
 def video_output():
     """The mpv video output driver to use on this platform."""
-    key = _os_key()
+    key = os_key()
     if key not in MPV_VIDEO_OUTPUT:
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
@@ -756,7 +762,7 @@ def mpv_gpu_context():
     --gpu-context=help`` lists what a build supports, and ``x11egl`` is
     the alternative X11 backend. See docs/source-install.md.
     """
-    key = _os_key()
+    key = os_key()
     if key not in MPV_GPU_CONTEXT:
         raise EnvironmentError(
             f"Unsupported operating system: {platform.system()}")
@@ -800,7 +806,7 @@ def force_xcb_on_wayland():
     # module-level import here would be a cycle.
     from shared.diagnostics import log
 
-    if _os_key() != 'linux':
+    if os_key() != 'linux':
         return
     if os.environ.get('QT_QPA_PLATFORM'):
         return
@@ -835,7 +841,7 @@ def no_console_kwargs():
     Returns a fresh dict every call, so a caller that merges it into other
     keyword arguments cannot corrupt anyone else's.
     """
-    if _os_key() == 'windows':
+    if os_key() == 'windows':
         return {'creationflags': subprocess.CREATE_NO_WINDOW}
     return {}
 
@@ -880,7 +886,7 @@ def _register_bin_dir():
     if not os.path.isdir(bin_dir):
         return None
 
-    if _os_key() == 'windows' and hasattr(os, 'add_dll_directory'):
+    if os_key() == 'windows' and hasattr(os, 'add_dll_directory'):
         try:
             handle = os.add_dll_directory(bin_dir)
         except OSError:

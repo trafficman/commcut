@@ -545,6 +545,82 @@ def test_a_failed_copy_leaves_nothing_behind(
 
 
 # ---------------------------------------------------------------------------
+# A path the platform cannot address
+# ---------------------------------------------------------------------------
+
+def _windows_too_long(path):
+    """The error Windows raises for a path over its limit.
+
+    It is "the system cannot find the path specified", because the limit is hit
+    while the *directory* portion is being resolved -- so a path that is not
+    missing is reported as missing.
+    """
+    error = OSError(3, "The system cannot find the path specified", path)
+    error.winerror = 3
+    return error
+
+
+def test_a_too_long_path_is_not_reported_as_a_filesystem_without_hardlinks(
+    tmp_path, monkeypatch
+):
+    """The fallback blamed the filesystem and told the user to export to a
+    local disk, which is a confidently wrong instruction for a path thirty
+    characters too long."""
+    long_path = "C:\\" + "A" * 300
+
+    def refuse(*args, **kwargs):
+        raise _windows_too_long(long_path)
+
+    monkeypatch.setattr(os, "link", refuse)
+    monkeypatch.setattr(os, "open", refuse)
+
+    with pytest.raises(OSError) as raised:
+        shared_ffmpeg._commit_temporary_output("temporary.mp4", long_path)
+
+    message = str(raised.value)
+    assert "too long" in message
+    assert "hard links" not in message
+    assert long_path in message
+
+
+def test_a_filesystem_without_hardlinks_still_gets_that_advice(
+    tmp_path, monkeypatch
+):
+    """The advice is right for the case it was written for, and only that one."""
+    def refuse(*args, **kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", refuse)
+    monkeypatch.setattr(os, "open", refuse)
+
+    with pytest.raises(OSError) as raised:
+        shared_ffmpeg._commit_temporary_output(
+            "temporary.mp4", str(tmp_path / "Clip.mp4"))
+
+    assert "hard links" in str(raised.value)
+
+
+def test_the_batch_directory_creation_names_a_too_long_path(
+    tmp_path, source_path, monkeypatch
+):
+    """The tree is created before the per-clip loop, so a failure there took
+    the whole batch down with a bare `[WinError 3]` and named no clip."""
+    root = tmp_path / "library"
+    plan = make_plan(root, [(0, 0.0, 2.0, ("Network", "First.mp4"))])
+    install_fake_ffmpeg(monkeypatch, Encoding())
+
+    def refuse(*args, **kwargs):
+        raise _windows_too_long("C:\\" + "A" * 300)
+
+    monkeypatch.setattr(os, "makedirs", refuse)
+
+    with pytest.raises(OSError) as raised:
+        execute_export_plan(source_path, plan, ffmpeg_path="ffmpeg")
+
+    assert "too long" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------
 # The clip record written beside each export
 # ---------------------------------------------------------------------------
 

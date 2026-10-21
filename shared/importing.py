@@ -69,7 +69,12 @@ from shared.exporting import (
     validate_export_parent,
 )
 from shared.naming import compile_filename_scheme
-from shared.paths import compile_folder_scheme, normalized_validation_key
+from shared.paths import (
+    absolute_path_error,
+    compile_folder_scheme,
+    describe_path_error,
+    normalized_validation_key,
+)
 from shared.records import (
     RECORD_EXTENSION,
     ClipRecord,
@@ -151,6 +156,7 @@ def candidates_from_catalog(catalog: Catalog) -> tuple[ImportCandidate, ...]:
 #: report; `ImportSkip.reason_text` is what the person reads.
 REASON_MISSING_TAGS = "missing-required-tags"
 REASON_UNKNOWN_TAG = "unknown-tag"
+REASON_INVALID_TAGS = "invalid-tags"
 REASON_INVALID_DURATION = "invalid-duration"
 REASON_NO_DURATION = "no-duration"
 REASON_PATH_TOO_LONG = "path-too-long"
@@ -184,7 +190,7 @@ class ImportSkip:
         return f"{self.source_path}{target}: {self.reason_text}"
 
 
-def _reason_for_plan_error(error: ExportPlanError) -> str:
+def _reason_for_plan_error(error: Exception) -> str:
     """Map a shared planner's complaint onto an import skip reason.
 
     `plan_clip_destination` is shared, so its messages are worded for whichever
@@ -192,13 +198,21 @@ def _reason_for_plan_error(error: ExportPlanError) -> str:
     of the import's, at the cost of reading prose -- the same trade
     `shared.records.record_error_reason` makes, and pins with tests for the same
     reason.
+
+    The length refusals are the ones that name a size, and they are grouped:
+    a component over `NAME_MAX` and a path over the platform's limit are the
+    same problem to a person, and both are this reason.
     """
     message = str(error)
     if "missing required tags" in message:
         return REASON_MISSING_TAGS
     if "unknown tag" in message:
         return REASON_UNKNOWN_TAG
-    return REASON_PATH_TOO_LONG
+    if "too long" in message or (
+        "exceeds" in message and "bytes" in message
+    ):
+        return REASON_PATH_TOO_LONG
+    return REASON_INVALID_TAGS
 
 
 # ---------------------------------------------------------------------------
@@ -390,10 +404,26 @@ def plan_import(
                 filename_scheme=filename_scheme,
                 label=label,
             )
-        except ExportPlanError as error:
+        except ValueError as error:
+            # `ExportPlanError` and both scheme errors are `ValueError`s, so
+            # this catches a render failure and a name over `NAME_MAX` as well
+            # as the planner's own refusals.
             skipped.append(ImportSkip(
                 source_path=candidate.source_path, relative_path="",
                 reason=_reason_for_plan_error(error), reason_text=str(error),
+            ))
+            continue
+
+        length_error = absolute_path_error(
+            root,
+            destination.relative_components,
+            destination.record_relative_components,
+            label,
+        )
+        if length_error is not None:
+            skipped.append(ImportSkip(
+                source_path=candidate.source_path, relative_path="",
+                reason=REASON_PATH_TOO_LONG, reason_text=length_error,
             ))
             continue
 
@@ -462,7 +492,7 @@ def plan_import(
                 source_path=candidate.source_path, relative_path="",
                 reason=REASON_UNREADABLE_SOURCE,
                 reason_text=f"{label} could not be read: "
-                            f"{error.strerror or error}",
+                            f"{describe_path_error(error)}",
             ))
             continue
 
@@ -771,7 +801,7 @@ def execute_import(
                 reason=REASON_TRANSFER_FAILED,
                 reason_text=f"{os.path.basename(clip.source_path)} could not be "
                             f"{_TRANSFER_PAST[plan.transfer]}: "
-                            f"{error.strerror or error}",
+                            f"{describe_path_error(error)}",
             ))
             continue
 

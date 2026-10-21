@@ -46,13 +46,13 @@ def bin_dir_for(root):
     platform but Windows; the mapping is the module's table, and the tests that
     assert the table itself are the ones below that check it directly.
     """
-    folder = environment._OS_BIN_FOLDERS[environment._os_key()]
+    folder = environment._OS_BIN_FOLDERS[environment.os_key()]
     return os.path.join(root, "bin", folder)
 
 
 def bundles_its_own_binaries():
     """True when this platform expects its binaries in bin/<os>/."""
-    return environment._os_key() in environment._BUNDLED_BINARY_PLATFORMS
+    return environment.os_key() in environment._BUNDLED_BINARY_PLATFORMS
 
 
 # The .ui files, as they are looked up in code. Kept as (folder, name) pairs so

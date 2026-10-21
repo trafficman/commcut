@@ -125,6 +125,43 @@ def test_a_destination_another_clip_holds_is_refused_naming_it(library):
     assert "CN/Promo/2000s/Beta.mp4" in str(raised.value)
 
 
+def test_a_destination_the_platform_cannot_address_is_refused(library):
+    """The clip's own root is the export root, so the length of the path is
+    known before anything moves."""
+    clip = clip_of(library, "CN/Promo/2000s/Alpha.mp4")
+    deep = compile_folder_scheme(
+        "{network}/{filler_type}/{time_period}/{title}/{title}/{title}")
+
+    with pytest.raises(ExportPlanError, match="too long"):
+        plan_retag(
+            clip=clip, tags=tags_for("T" * 200),
+            folder_scheme=deep, filename_scheme=FILENAME_SCHEME,
+            catalog=library[1],
+        )
+
+
+def test_the_align_scan_reports_a_too_long_destination_as_an_error(tmp_path):
+    """Not a mismatch: a clip whose destination cannot be addressed cannot be
+    aligned either, and offering a fix that cannot work is worse than saying
+    so."""
+    from shared.catalog import build_catalog
+    from shared.retagging import find_misaligned_clips
+
+    root = str(tmp_path / "export")
+    write_clip(root, "CN/Promo/2000s/Long.mp4", tags_for("T" * 200),
+               clip_id="33333333-3333-3333-3333-333333333333")
+    catalog = build_catalog(root)
+    deep = compile_folder_scheme(
+        "{network}/{filler_type}/{time_period}/{title}/{title}/{title}")
+
+    result = find_misaligned_clips(catalog, deep, FILENAME_SCHEME)
+
+    assert result.misaligned == ()
+    assert result.errors
+    assert "too long" in result.errors[0][1]
+
+
+
 def test_saving_unchanged_tags_rewrites_the_record_in_place(library):
     root, catalog, clips = library
     clip = clips["CN/Promo/2000s/Alpha.mp4"]

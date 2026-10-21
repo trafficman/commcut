@@ -50,6 +50,7 @@ from shared.exporting import (
     ExportPlanError,
     plan_clip_destination,
 )
+from shared.paths import absolute_path_error, describe_path_error
 from shared.records import ClipRecord, new_clip_id, write_record
 
 
@@ -108,13 +109,15 @@ def plan_retag(*, clip: CatalogClip, tags: Mapping[str, str],
     """Resolve a clip's new tags to a destination, or refuse by name.
 
     The refusals are the export planner's own — a missing required tag,
-    a render error (an empty filename, a scheme that renders nothing),
-    a relative path over the UTF-8 byte ceiling, all raised by
-    `plan_clip_destination` — plus the occupied-destination rule, which
-    is the `DestinationIndex` claim the import planner uses, unchanged:
-    every other clip in the catalog has already claimed where it lives,
-    and a destination one of them holds is refused naming the clip that
-    holds it.
+    a render error (an empty filename, a scheme that renders nothing) —
+    plus the occupied-destination rule, which is the `DestinationIndex`
+    claim the import planner uses, unchanged: every other clip in the
+    catalog has already claimed where it lives, and a destination one of
+    them holds is refused naming the clip that holds it.
+
+    A destination the platform's path limit cannot hold is refused here
+    too, and named: the export root is the clip's own, so the length of
+    the path is known before anything moves.
 
     Returns the destination: the canonical tags and both component
     tuples. Whether saving is a move or a record rewrite in place is
@@ -126,6 +129,15 @@ def plan_retag(*, clip: CatalogClip, tags: Mapping[str, str],
         tags=tags, folder_scheme=folder_scheme,
         filename_scheme=filename_scheme, label=label,
     )
+
+    length_error = absolute_path_error(
+        _export_root(clip),
+        destination.relative_components,
+        destination.record_relative_components,
+        label,
+    )
+    if length_error is not None:
+        raise ExportPlanError(length_error)
 
     index = DestinationIndex()
     for other in catalog.clips:
@@ -276,6 +288,10 @@ def find_misaligned_clips(
     clip's actual ``relative_path``. A clip whose tags cannot render
     (a missing required tag, an unknown key) is reported as an error,
     not a mismatch: it cannot be aligned until a person fixes the tags.
+    A clip whose *destination* is longer than the platform's path limit
+    is reported as an error for the same reason — it cannot be aligned
+    either, and calling it a mismatch would offer a fix that cannot
+    work.
 
     The catalog is consumed read-only. Nothing here writes to disk, so
     this function is the reusable half of the maintenance feature: a
@@ -313,6 +329,15 @@ def find_misaligned_clips(
             )
         except ExportPlanError as error:
             errors.append((label, str(error)))
+            continue
+        length_error = absolute_path_error(
+            _export_root(clip),
+            destination.relative_components,
+            destination.record_relative_components,
+            label,
+        )
+        if length_error is not None:
+            errors.append((label, length_error))
             continue
         if not retag_is_in_place(clip, destination):
             misaligned.append(MisalignedClip(
@@ -398,7 +423,8 @@ def align_misaligned_clips(
             aligned += 1
             on_progress(aligned, clip.relative_path)
         except (OSError, ValueError) as error:
-            errors.append((label, str(error)))
+            errors.append((label, describe_path_error(error)
+                           if isinstance(error, OSError) else str(error)))
 
     return AlignmentResult(
         aligned=aligned,

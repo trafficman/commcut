@@ -23,8 +23,10 @@ from shared.naming import (
 from shared.paths import (
     DEFAULT_FOLDER_SCHEME,
     FolderSchemeError,
-    MAX_FOLDER_RELATIVE_PATH_BYTES,
+    absolute_path_error,
     compile_folder_scheme,
+    describe_path_error,
+    export_root_error,
     normalized_validation_key,
     render_folder_components,
     sanitize_path_component,
@@ -114,6 +116,9 @@ def export_folder_setting_error(value: str) -> str | None:
     2. not `import/`, not inside it, and not containing it
     3. not the share folder, not inside it, and not containing it
     4. not an existing file
+    5. short enough -- a root that is already longer than the platform's path
+       limit cannot hold any clip at all, so it is refused where it is chosen
+       rather than at the first export
 
     A blank value is **not** an error: it is how the user asks for the default,
     and `export_folder()` reads it that way.
@@ -166,7 +171,7 @@ def export_folder_setting_error(value: str) -> str | None:
             f"{candidate}"
         )
 
-    return None
+    return export_root_error(candidate)
 
 
 def export_folder() -> str:
@@ -535,11 +540,10 @@ def plan_clip_destination(
     """Resolve one clip's tags to a destination, or raise naming this clip.
 
     Everything between "a clip has these tags" and "this is where it goes": tag
-    canonicalization, the required-tag rule, both schemes, sanitation, and the
-    UTF-8 byte ceiling on the relative path. Shared with `plan_import`, so the two
-    planners cannot come to disagree about where a clip lands — which is the one
-    thing an importer most has to get right, since it is putting somebody else's
-    library next to this user's.
+    canonicalization, the required-tag rule, both schemes, and sanitation. Shared
+    with `plan_import`, so the two planners cannot come to disagree about where a
+    clip lands — which is the one thing an importer most has to get right, since
+    it is putting somebody else's library next to this user's.
 
     `label` is how this clip is named in an error ("Segment 3", or an imported
     filename).
@@ -552,21 +556,9 @@ def plan_clip_destination(
     filename = sanitize_filename_stem(stem, OUTPUT_EXTENSION)
     record = record_filename(filename, RECORD_EXTENSION)
 
-    relative_components = (*folder_components, filename)
-    record_components = (*folder_components, record)
-    if (
-        len("/".join(relative_components).encode("utf-8"))
-        > MAX_FOLDER_RELATIVE_PATH_BYTES
-        or len("/".join(record_components).encode("utf-8"))
-        > MAX_FOLDER_RELATIVE_PATH_BYTES
-    ):
-        raise ExportPlanError(
-            f"{label} relative destination exceeds "
-            f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
-        )
     return ClipDestination(
-        relative_components=relative_components,
-        record_relative_components=record_components,
+        relative_components=(*folder_components, filename),
+        record_relative_components=(*folder_components, record),
         tags=tuple(sorted(canonical.items())),
     )
 
@@ -599,6 +591,9 @@ def _is_link_or_reparse_point(path: str) -> bool:
 
 def _validate_export_root(export_root: str) -> str:
     root = os.path.abspath(os.fspath(export_root))
+    root_error = export_root_error(root)
+    if root_error is not None:
+        raise ExportPlanError(root_error)
     nearest_existing: str | None = None
     ancestor = root
     while True:
@@ -633,7 +628,7 @@ def _walk_existing_entries(root: str) -> dict[tuple[str, ...], set[tuple[str, ..
         return existing
 
     def raise_walk_error(error: OSError) -> None:
-        raise error
+        raise ExportPlanError(describe_path_error(error)) from error
 
     for current_root, directory_names, file_names in os.walk(
         root,
@@ -762,11 +757,6 @@ def _validate_record_components(
     destination = os.path.abspath(os.path.join(root, *record_components))
     if os.path.commonpath((root, destination)) != root:
         errors.append(f"{record_label} escapes the export root")
-        return
-    if len("/".join(record_components).encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES:
-        errors.append(
-            f"{record_label} exceeds {MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
-        )
 
 
 def _validate_plan_structure(plan: ExportPlan) -> str:
@@ -826,11 +816,15 @@ def _validate_plan_structure(plan: ExportPlan) -> str:
         else:
             destination_owners[key] = position
         safe_plan_entries.append((position, components))
-        if len("/".join(components).encode("utf-8")) > MAX_FOLDER_RELATIVE_PATH_BYTES:
-            errors.append(
-                f"Plan entry {position} exceeds "
-                f"{MAX_FOLDER_RELATIVE_PATH_BYTES} UTF-8 bytes"
-            )
+
+        length_error = absolute_path_error(
+            root,
+            components,
+            clip.record_relative_components,
+            label,
+        )
+        if length_error is not None:
+            errors.append(length_error)
 
         _validate_record_components(clip, label, root, errors)
 
@@ -992,6 +986,16 @@ def plan_export(
             )
         except (ExportPlanError, FilenameSchemeError, FolderSchemeError, ValueError) as error:
             errors.append(str(error))
+            continue
+
+        length_error = absolute_path_error(
+            root,
+            destination.relative_components,
+            destination.record_relative_components,
+            label,
+        )
+        if length_error is not None:
+            errors.append(length_error)
             continue
 
         clip = PlannedExportClip(

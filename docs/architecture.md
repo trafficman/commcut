@@ -623,12 +623,18 @@ The shared modules are:
    the shared tag helpers, keeps `{title}` as the filename requirement, and
    supports `{a,b}` fallback, `[...]` AND groups, `[{a}|{b}]` OR groups,
    nested groups, and `\`-escaping.
- - `shared/paths.py` — restricted folder-scheme compiler and resolver.
-   `compile_folder_scheme()` validates the path-specific grammar;
-   `render_folder_components()` sanitizes tag leaves and returns safe,
-   display-cased relative components; `format_folder_components()` is for
-   previews. Portable component sanitation also lives here for reuse by
-   filename export.
+  - `shared/paths.py` — restricted folder-scheme compiler and resolver.
+    `compile_folder_scheme()` validates the path-specific grammar;
+    `render_folder_components()` sanitizes tag leaves and returns safe,
+    display-cased relative components; `format_folder_components()` is for
+    previews. Portable component sanitation also lives here for reuse by
+    filename export. It also owns the **path length** rules, because they are
+    the filesystem's and not commcut's: `ABSOLUTE_PATH_LIMITS` (260 UTF-16
+    code units on Windows, 1024 bytes on macOS, 4096 on Linux),
+    `absolute_path_error()` for the plan-time refusal, and
+    `describe_path_error()` for the runtime one. See
+    [naming-and-organization.md](naming-and-organization.md#the-absolute-path-has-to-fit-the-filesystem).
+
 - `shared/exporting.py` — non-Qt settings snapshot and pure named-export
   planner. It validates the segment model and every destination, enforces the
   four required tags, compiles both schemes, materializes session tag locks,

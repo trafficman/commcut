@@ -24,6 +24,7 @@ from shared.importing import (
     REASON_MISSING_TAGS,
     REASON_NO_DURATION,
     REASON_OUT_OF_SPACE,
+    REASON_PATH_TOO_LONG,
     REASON_RECORD_FAILED,
     REASON_TRANSFER_FAILED,
     TRANSFER_COPY,
@@ -263,9 +264,53 @@ def test_a_missing_duration_is_refused(schemes, tmp_path):
     video = clip_in(tmp_path, "None")
 
     plan = plan_import([candidate(video, duration=None)], schemes,
-                       str(tmp_path / "library"))
+                        str(tmp_path / "library"))
 
     assert plan.skipped[0].reason == REASON_NO_DURATION
+
+
+def test_a_clip_whose_destination_is_too_long_is_skipped(schemes, tmp_path):
+    """The importer writes into this user's own library, so a destination the
+    platform cannot address is a skip with a name -- not a failure at the
+    write, and not a "file not found" for a file that is not missing."""
+    video = clip_in(tmp_path, "Too Long")
+    # Every component is a legal name; it is the whole path that is too long.
+    deep = ExportSchemes(
+        file_scheme="{title}",
+        folder_scheme=(
+            "{network}/{block}/{type}/{time_period}/{special}/{show}"
+        ),
+    )
+    long_tags = {
+        "title": "T" * 40,
+        "network": "N" * 60,
+        "filler_type": "F" * 60,
+        "time_period": "P" * 60,
+        "block": "B" * 60,
+        "special": "S" * 60,
+        "show": "W" * 60,
+    }
+
+    plan = plan_import(
+        [candidate(video, tags=long_tags)], deep, str(tmp_path / "library"))
+
+    assert plan.clips == ()
+    assert plan.skipped[0].reason == REASON_PATH_TOO_LONG
+    assert "too long" in plan.skipped[0].reason_text
+
+
+def test_a_component_too_long_to_be_a_name_is_skipped(schemes, tmp_path):
+    """The other half of the same rule: a name over `NAME_MAX` is refused
+    before it reaches the filesystem, and it is refused as a skip."""
+    video = clip_in(tmp_path, "Too Long")
+
+    plan = plan_import(
+        [candidate(video, tags={**REQUIRED, "network": "N" * 250})],
+        schemes, str(tmp_path / "library"))
+
+    assert plan.clips == ()
+    assert plan.skipped[0].reason == REASON_PATH_TOO_LONG
+
 
 
 def test_two_clips_resolving_to_one_destination_gives_one_clip_and_a_named_refusal(

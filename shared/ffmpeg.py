@@ -29,6 +29,7 @@ from shared.exporting import (
     preflight_export_plan,
     validate_export_parent,
 )
+from shared.paths import describe_path_error, is_too_long_path
 from shared.records import (
     ClipRecord,
     RecordError,
@@ -129,11 +130,23 @@ def _commit_temporary_output(temporary_path: str, destination: str) -> None:
         except FileExistsError:
             raise
         except OSError as copy_error:
+            for candidate in (copy_error, link_error):
+                if is_too_long_path(candidate):
+                    raise OSError(describe_path_error(candidate)) from copy_error
             raise OSError(
                 f"Could not write {destination}: this filesystem supports "
                 f"neither hard links ({link_error}) nor an exclusive create "
                 f"({copy_error}). Export to a local disk instead."
             ) from copy_error
+
+
+#: The name an export is staged under, in the destination directory, before it
+#: is published at its real name.  Its length is budgeted by
+#: `shared/paths.py:STAGED_NAME_LENGTH`, because a staged path can be longer
+#: than the path it becomes.
+_TEMP_PREFIX = ".commcut-export-"
+
+_TEMP_SUFFIX = ".mp4"
 
 
 #: How often a running ffmpeg is polled for a cancel request. This is the
@@ -206,8 +219,8 @@ def _run_planned_clip(
     parent = os.path.dirname(destination)
     validate_export_parent(export_root, relative_parent)
     descriptor, temporary_path = tempfile.mkstemp(
-        prefix=".commcut-export-",
-        suffix=".mp4",
+        prefix=_TEMP_PREFIX,
+        suffix=_TEMP_SUFFIX,
         dir=parent,
     )
     temporary_stat = os.fstat(descriptor)
@@ -369,8 +382,8 @@ def execute_export_plan(
     try:
         for directory in parent_directories:
             os.makedirs(directory, exist_ok=True)
-    except OSError:
-        raise
+    except OSError as error:
+        raise OSError(describe_path_error(error)) from error
 
     preflight_export_plan(plan)
     written: list[str] = []
@@ -443,7 +456,11 @@ def execute_export_plan(
                 ExportClipFailure(
                     segment_index=clip.segment_index,
                     destination=clip.relative_path,
-                    message=str(error),
+                    message=(
+                        describe_path_error(error)
+                        if isinstance(error, OSError)
+                        else str(error)
+                    ),
                 )
             )
 

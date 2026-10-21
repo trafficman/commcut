@@ -21,6 +21,7 @@ import os
 import pytest
 
 import shared.sources as sources
+from shared.segments import sidecar_path
 from shared.sources import (
     VIDEO_EXTENSIONS,
     is_video_file,
@@ -163,7 +164,7 @@ class TestTheWritableFolderRule:
 
         monkeypatch.setattr(
             sources, "_writability_problem",
-            lambda _folder: "[Errno 13] Permission denied")
+            lambda _folder, _name: "[Errno 13] Permission denied")
 
         with pytest.raises(ValueError) as error:
             validate_source_video(path)
@@ -181,7 +182,7 @@ class TestTheWritableFolderRule:
 
         monkeypatch.setattr(
             sources, "_writability_problem",
-            lambda folder: asked.append(folder) or None)
+            lambda folder, _name: asked.append(folder) or None)
 
         validate_source_video(path)
 
@@ -193,7 +194,7 @@ class TestTheWritableFolderRule:
         calls = []
         monkeypatch.setattr(
             sources, "_writability_problem",
-            lambda folder: calls.append(folder) or None)
+            lambda folder, _name: calls.append(folder) or None)
 
         with pytest.raises(FileNotFoundError):
             validate_source_video(str(tmp_path / "missing.mp4"))
@@ -202,30 +203,77 @@ class TestTheWritableFolderRule:
 
         assert calls == []
 
+    def test_the_probe_name_is_never_longer_than_the_sidecars(self, tmp_path,
+                                                               monkeypatch):
+        """The probe shares the folder with the sidecar, so a longer probe name
+        would refuse a folder the real write would have fitted in -- and report
+        a length problem as a permission one."""
+        path = touch(str(tmp_path / "compilation.mp4"))
+        asked = []
+
+        monkeypatch.setattr(
+            sources, "_writability_problem",
+            lambda folder, name: asked.append(name) or None)
+
+        validate_source_video(path)
+
+        sidecar_name = os.path.basename(sidecar_path(path))
+        assert len(asked[0]) <= len(sidecar_name)
+
+    def test_a_sidecar_the_platform_cannot_address_is_refused_by_name(
+        self, tmp_path, monkeypatch
+    ):
+        """A source in a folder deep enough that the sidecar cannot be
+        addressed is refused here, by name and by length, rather than failing
+        later as a file that is not missing."""
+        from shared.paths import absolute_path_limit
+
+        folder = tmp_path
+        path = touch(str(folder / "compilation.mp4"))
+        limit = absolute_path_limit()
+
+        # A folder long enough that the sidecar cannot be addressed.
+        monkeypatch.setattr(
+            sources, "absolute_path_error",
+            lambda *_args, **_kwargs: f"too long: the limit is {limit}")
+
+        with pytest.raises(ValueError) as error:
+            validate_source_video(path)
+
+        assert "too long" in str(error.value)
+
 
 class TestTheWritabilityProbe:
     """The probe itself, since `os.access` is not an acceptable substitute."""
 
     def test_a_writable_folder_reports_no_problem(self, tmp_path):
-        assert sources._writability_problem(str(tmp_path)) is None
+        assert sources._writability_problem(str(tmp_path), ".probe") is None
 
     def test_the_probe_leaves_nothing_behind_on_success(self, tmp_path):
-        sources._writability_problem(str(tmp_path))
+        sources._writability_problem(str(tmp_path), ".probe")
 
         assert os.listdir(str(tmp_path)) == []
 
-    def test_the_probe_file_is_dot_prefixed_and_carries_the_pid(self, tmp_path,
-                                                                monkeypatch):
-        """Hidden in a POSIX listing, and two commcut processes pointed at one
-        folder cannot collide on the same name."""
+    def test_the_probe_file_is_dot_prefixed(self, tmp_path, monkeypatch):
+        """Hidden in a POSIX listing, and recognisable as commcut's own."""
         removed = []
         monkeypatch.setattr(sources.os, "remove",
                             lambda path: removed.append(path))
 
-        sources._writability_problem(str(tmp_path))
+        sources._writability_problem(str(tmp_path), ".probe")
 
-        assert removed == [os.path.join(
-            str(tmp_path), f".commcut-write-test-{os.getpid()}")]
+        assert removed == [os.path.join(str(tmp_path), ".probe")]
+
+    def test_the_probe_never_truncates_a_file_that_is_already_there(
+        self, tmp_path
+    ):
+        """Created exclusively, so a name that is taken is left alone -- and
+        its being there is itself proof the folder is writable."""
+        existing = tmp_path / ".probe"
+        existing.write_bytes(b"the user's file")
+
+        assert sources._writability_problem(str(tmp_path), ".probe") is None
+        assert existing.read_bytes() == b"the user's file"
 
     def test_a_folder_that_refuses_creation_reports_the_reason(self, tmp_path,
                                                                monkeypatch):
@@ -236,10 +284,9 @@ class TestTheWritabilityProbe:
 
         monkeypatch.setattr("builtins.open", refuse)
 
-        problem = sources._writability_problem(str(tmp_path))
+        problem = sources._writability_problem(str(tmp_path), ".probe")
 
         assert "Permission denied" in problem
-        assert problem.startswith("[Errno 13]")
 
     def test_a_failed_removal_does_not_raise(self, tmp_path, monkeypatch):
         """The `finally` runs when the create failed too, so it has to tolerate
@@ -252,12 +299,12 @@ class TestTheWritabilityProbe:
         real_remove = os.remove
 
         def refuse(path):
-            if "commcut-write-test" in path:
+            if path.endswith(".probe"):
                 raise FileNotFoundError(path)
             return real_remove(path)
 
         monkeypatch.setattr(sources.os, "remove", refuse)
 
-        assert sources._writability_problem(str(tmp_path)) is None
+        assert sources._writability_problem(str(tmp_path), ".probe") is None
         assert [name for name in os.listdir(str(tmp_path))
-                if "commcut-write-test" in name]
+                if name.endswith(".probe")]

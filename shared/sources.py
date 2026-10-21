@@ -31,6 +31,9 @@ segments answers *what is in it*, and segments never imports this module.
 
 import os
 
+from shared.paths import absolute_path_error, describe_path_error
+from shared.segments import sidecar_path
+
 
 #: Extensions offered in the file dialog and accepted by `is_video_file`.
 
@@ -48,7 +51,7 @@ def is_video_file(path):
     return (os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS)
 
 
-def _writability_problem(folder):
+def _writability_problem(folder, probe_name):
     """None when a file can be created in `folder`, else why one cannot.
 
     A real probe rather than `os.access(folder, os.W_OK)`. That call is advisory
@@ -58,22 +61,29 @@ def _writability_problem(folder):
     removing a file is the only test that cannot be wrong in the direction that
     matters, which is the direction where the check exists.
 
-    The name is dot-prefixed so it is hidden in a POSIX listing and unlikely to
-    collide with anything, and it is removed on both paths -- a process that dies
-    between the two leaves one empty file, which is the right size of mess for a
-    check.
+    `probe_name` has to be **no longer than the name the sidecar will have**,
+    because the probe shares the folder with it. A probe name longer than the
+    real one refuses a folder the real write would have fitted in, and reports
+    a length problem as a permission one.
+
+    The file is created exclusively, so a name that is already taken is never
+    truncated -- and its being there is itself proof the folder is writable.
     """
-    probe = os.path.join(folder, f".commcut-write-test-{os.getpid()}")
+    probe = os.path.join(folder, probe_name)
+    created = False
     try:
-        with open(probe, "wb"):
-            pass
+        with open(probe, "xb"):
+            created = True
+    except FileExistsError:
+        return None
     except OSError as error:
-        return str(error)
+        return describe_path_error(error)
     finally:
-        try:
-            os.remove(probe)
-        except OSError:
-            pass
+        if created:
+            try:
+                os.remove(probe)
+            except OSError:
+                pass
     return None
 
 
@@ -83,7 +93,7 @@ def validate_source_video(path):
     The one supported way to turn a selection into a source path, called from the
     scanner and the editor so the two cannot disagree about what may be opened.
 
-    Four rules, each refused with a message written for a person:
+    Five rules, each refused with a message written for a person:
 
     1. not empty
     2. exists, and is a file rather than a folder
@@ -91,6 +101,7 @@ def validate_source_video(path):
        this rule, because "All files" is one click away
     4. its folder is writable, because the `.cmct` sidecar is written *beside*
        the video
+    5. the sidecar's own path is short enough for the platform to address
 
     Rule 4 is the one that is not about the file. `shared/segments.py:sidecar_path`
     puts the sidecar next to the source, and the editor rewrites it on every
@@ -101,6 +112,11 @@ def validate_source_video(path):
     same out of the editor's Stage with the user's tags unsaved, and "The editor
     window could not start" if the placeholder is the first write. None of them
     named the folder.
+
+    Rule 5 is the sidecar's own length. A source in a folder deep enough that
+    the sidecar cannot be addressed is refused here, by name and by length,
+    rather than failing later as a "file not found" for a file that is not
+    missing.
 
     This is a pre-flight and not a guarantee -- a folder can become read-only
     mid-session, and a network share can go away -- so the editor's own write
@@ -125,7 +141,21 @@ def validate_source_video(path):
         )
 
     folder = os.path.dirname(resolved)
-    problem = _writability_problem(folder)
+    sidecar = sidecar_path(resolved)
+    length_error = absolute_path_error(
+        folder,
+        [os.path.basename(sidecar)],
+        label="The .cmct file beside the video",
+        advice=(
+            "Move the video to a folder with a shorter path, or give it a "
+            "shorter name."
+        ),
+    )
+    if length_error is not None:
+        raise ValueError(length_error)
+
+    stem = os.path.splitext(os.path.basename(resolved))[0]
+    problem = _writability_problem(folder, f".{stem}")
     if problem is not None:
         raise ValueError(
             f"commcut has to write a .cmct file beside the video, and it "

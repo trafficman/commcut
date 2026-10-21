@@ -375,7 +375,7 @@ def test_a_dropped_video_in_a_folder_that_cannot_be_written_is_refused(menu, mon
 
     monkeypatch.setattr(
         sources_module, "_writability_problem",
-        lambda _folder: "[Errno 13] Permission denied")
+        lambda _folder, _name: "[Errno 13] Permission denied")
 
     _drop(menu, menu.source)
 
@@ -539,7 +539,7 @@ def test_a_video_in_a_folder_that_cannot_be_written_is_refused(menu, monkeypatch
 
     monkeypatch.setattr(
         sources_module, "_writability_problem",
-        lambda _folder: "[Errno 13] Permission denied")
+        lambda _folder, _name: "[Errno 13] Permission denied")
 
     with pytest.raises(ValueError) as error:
         validate_source_video(str(menu.source))

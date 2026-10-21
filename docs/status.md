@@ -81,8 +81,8 @@ Detail in [scanner.md](scanner.md).
   sanitation, portable component validation, and safe relative component output.
 - Export planning (`shared/exporting.py`): strict model/settings validation,
   four-tag requirements, lock materialization, normalized within-batch and
-  existing-destination collision checks, complete relative-path limits, and
-  reparse-point/traversal defenses.
+  existing-destination collision checks, the platform's absolute-path length
+  limit, and reparse-point/traversal defenses.
 - Named export (full-segment transcode in `shared/ffmpeg.export_named_model`,
   wired to the `exportButton` in `editor/editor.py`): persists the in-memory
   model, applies session locks, loads both schemes, plans all keep-segments,
@@ -409,6 +409,18 @@ Detail in [packaging.md](packaging.md) and [source-install.md](source-install.md
 
 ## Known gaps and traps
 
+- **A path has to fit the filesystem, and on Windows that is 260 characters.**
+  This is a permanent limitation, not a gap to be closed: the limit is Windows',
+  it applies to the whole absolute path, and the app does not depend on
+  Windows' relaxation of it (that needs a manifest flag the shipped build does
+  not declare and a registry value that is off by default). The app refuses a
+  destination that does not fit *before* it writes anything, and names the
+  path, its length, the limit, and which part of it to shorten — because
+  Windows reports an over-long path as "the system cannot find the path
+  specified", so a path that is not missing is otherwise reported as missing.
+  The rule is in `shared/paths.py`; the reasoning is in
+  [packaging.md](packaging.md#the-path-limit-is-not-ours-to-raise) and
+  [naming-and-organization.md](naming-and-organization.md#the-absolute-path-has-to-fit-the-filesystem).
 - `prototypes/` contains earlier iterations of the editor. Treat them
   as historical — the active code is in `editor/` (and the scanner in
   `scanner/`).

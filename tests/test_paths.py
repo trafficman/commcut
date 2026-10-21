@@ -1,5 +1,7 @@
 """Tests for strict folder path scheme compilation and rendering."""
 
+import os
+
 import pytest
 
 from shared.scheme import GroupNode, LiteralNode
@@ -8,12 +10,20 @@ from shared.paths import (
     DEFAULT_FOLDER_SCHEME,
     MAX_FOLDER_COMPONENT_BYTES,
     REQUIRED_FOLDER_TAG_NAMES,
+    STAGED_NAME_LENGTH,
     FolderRenderError,
     FolderScheme,
     FolderSchemeError,
+    absolute_path_error,
+    absolute_path_limit,
     compile_folder_scheme,
+    describe_path_error,
     format_folder_components,
+    is_too_long_path,
     normalized_validation_key,
+    path_size,
+    path_unit_name,
+    platform_name,
     render_folder_components,
     sanitize_path_component,
 )
@@ -352,7 +362,14 @@ def test_sanitizer_rejects_empty_and_oversized_components():
         sanitize_path_component("A" * (MAX_FOLDER_COMPONENT_BYTES + 1))
 
 
-def test_total_relative_path_length_is_validated(required_tags):
+def test_a_rendered_relative_path_is_not_limited_by_its_own_length(required_tags):
+    """The relative path has no rule of its own any more.
+
+    A relative path is always shorter than the absolute path that contains it,
+    so a limit on it could never bind once the platform's limit on the whole
+    path exists.  What is left is the per-component rule, which is `NAME_MAX`
+    and is checked where the component is built.
+    """
     repeated_year = "/".join(["{year}"] * 17)
     text = f"{repeated_year}/{{network}}/{{type}}/{{time_period}}"
     scheme = compile_folder_scheme(text)
@@ -361,8 +378,10 @@ def test_total_relative_path_length_is_validated(required_tags):
         "year": "Y" * MAX_FOLDER_COMPONENT_BYTES,
     }
 
-    with pytest.raises(FolderRenderError, match="exceeds 4096 UTF-8 bytes"):
-        render_folder_components(scheme, tags)
+    components = render_folder_components(scheme, tags)
+
+    assert all(len(component.encode("utf-8")) <= MAX_FOLDER_COMPONENT_BYTES
+               for component in components)
 
 
 # ---------------------------------------------------------------------------
@@ -417,3 +436,166 @@ def test_render_uses_source_when_compiled_nodes_are_mutated(required_tags):
         "Promo",
         "2000s",
     )
+
+
+# ---------------------------------------------------------------------------
+# The absolute path length
+# ---------------------------------------------------------------------------
+
+def _root_of_length(length):
+    """An absolute root path of exactly `length` characters."""
+    prefix = os.path.abspath(os.sep)
+    return prefix + "A" * (length - len(prefix))
+
+
+def test_the_limit_is_the_platforms_own():
+    """Windows' 260 is UTF-16 code units, macOS' 1024 and Linux' 4096 are bytes.
+
+    These are the filesystem's limits, not commcut's, and they are the numbers
+    the refusal quotes.
+    """
+    import sys
+
+    expected = {"win32": 260, "darwin": 1024, "linux": 4096}
+    key = {"win32": "windows", "darwin": "darwin", "linux": "linux"}[
+        sys.platform
+    ]
+
+    assert absolute_path_limit() == expected[sys.platform]
+    assert path_unit_name() == ("characters" if key == "windows" else "bytes")
+
+
+def test_a_destination_that_exactly_fits_is_accepted():
+    limit = absolute_path_limit()
+    # A short name, so the staged temporary file is the longest one written
+    # beside it, and the folder is sized to leave exactly room for it.
+    root = _root_of_length(limit - 1 - STAGED_NAME_LENGTH)
+
+    assert absolute_path_error(root, ["Clip.mp4"], ["Clip.cnfo"]) is None
+
+
+def test_a_destination_one_character_over_is_refused():
+    limit = absolute_path_limit()
+    root = _root_of_length(limit - STAGED_NAME_LENGTH)
+
+    error = absolute_path_error(root, ["Clip.mp4"], ["Clip.cnfo"])
+
+    assert error is not None
+    assert "too long" in error
+
+
+def test_the_refusal_names_the_path_the_length_the_limit_and_the_split():
+    limit = absolute_path_limit()
+    root = _root_of_length(limit - STAGED_NAME_LENGTH + 1)
+
+    error = absolute_path_error(
+        root, ["Clip.mp4"], ["Clip.cnfo"], label="Segment 3")
+
+    assert error is not None
+    assert error.startswith("Segment 3 cannot be written")
+    assert os.path.join(root, "Clip.mp4") in error
+    assert str(limit) in error
+    assert "characters" in error or "bytes" in error
+    # The three parts the person has to choose between.
+    assert f"{len(root)} " in error
+    assert "the file name" in error
+    assert "Shorten the tag values" in error
+
+
+def test_the_refusal_accounts_for_the_staged_temporary_file():
+    """A short clip name in a deep folder fails on its own temporary file.
+
+    The staged name is longer than the clip's, so the folder is measured
+    against the staged name and not against the name the user sees.
+    """
+    limit = absolute_path_limit()
+    root = _root_of_length(limit - 1 - STAGED_NAME_LENGTH + 1)
+
+    error = absolute_path_error(root, ["a.mp4"], ["a.cnfo"])
+
+    assert error is not None
+    assert "staged temporary file" in error
+
+
+def test_a_record_one_character_longer_than_the_clip_is_measured_separately():
+    limit = absolute_path_limit()
+    # Names long enough that the record, not the staged file, is the longest
+    # one written beside the clip: the record is one character longer, and it
+    # is measured on its own rather than assumed from the clip.
+    clip_name = "C" * 40 + ".mp4"
+    record_name = "C" * 40 + ".cnfo"
+    root = _root_of_length(limit - 1 - len(record_name))
+
+    assert absolute_path_error(root, [clip_name]) is None
+    assert absolute_path_error(root, [clip_name], [record_name]) is None
+    assert absolute_path_error(
+        root, [clip_name], ["C" * 41 + ".cnfo"]) is not None
+
+
+def test_path_size_counts_a_character_outside_the_bmp_as_two_units():
+    """Windows counts UTF-16 code units, and `len()` would not see it."""
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("the UTF-16 unit is a Windows rule")
+
+    assert path_size("a") == 1
+    assert path_size("\U0001F600") == 2
+    assert path_size("café") == 4
+
+
+def test_the_staged_name_budget_covers_every_writer(tmp_path):
+    """The constant cannot drift: measure the names the app really stages.
+
+    Both writers stage in the *destination* directory, so a staged path can be
+    longer than the path it becomes, and the budget is what keeps a plan that
+    passes from failing at the write.
+    """
+    import tempfile
+
+    from shared import ffmpeg, records
+
+    for prefix, suffix in (
+        (ffmpeg._TEMP_PREFIX, ffmpeg._TEMP_SUFFIX),
+        (records._TEMP_PREFIX, records._TEMP_SUFFIX),
+    ):
+        descriptor, path = tempfile.mkstemp(
+            prefix=prefix, suffix=suffix, dir=str(tmp_path))
+        os.close(descriptor)
+        os.remove(path)
+
+        assert len(os.path.basename(path)) <= STAGED_NAME_LENGTH
+
+
+def test_a_missing_file_is_not_reported_as_a_path_that_is_too_long():
+    """Windows says "path not found" for an over-long path, and the length is
+    what tells the two apart."""
+    error = OSError(3, "The system cannot find the path specified")
+    error.filename = "C:\\short\\name.mp4"
+    error.winerror = 3
+
+    assert not is_too_long_path(error)
+    assert describe_path_error(error) == (
+        "The system cannot find the path specified")
+
+
+def test_a_path_that_is_too_long_is_reported_as_one():
+    limit = absolute_path_limit()
+    long_path = "C:\\" + "A" * limit
+
+    error = OSError(3, "The system cannot find the path specified")
+    error.filename = long_path
+    error.winerror = 3
+
+    assert is_too_long_path(error)
+    message = describe_path_error(error)
+    assert "too long" in message
+    assert long_path in message
+    assert platform_name() in message
+
+
+def test_an_error_with_no_path_is_left_alone():
+    error = OSError(13, "Permission denied")
+
+    assert not is_too_long_path(error)
+    assert describe_path_error(error) == "Permission denied"

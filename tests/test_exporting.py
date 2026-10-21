@@ -19,6 +19,7 @@ from shared.exporting import (
     ExportPlanError,
     ExportSchemes,
     ExportSettingsError,
+    ExportPlan,
     default_export_folder,
     export_folder,
     export_folder_setting_error,
@@ -30,6 +31,7 @@ from shared.exporting import (
 )
 from shared.naming import compile_filename_scheme
 from shared.paths import DEFAULT_FOLDER_SCHEME
+from shared.paths import absolute_path_limit
 from shared.paths import compile_folder_scheme
 from shared.records import RECORD_EXTENSION
 from shared.segments import SegmentModel
@@ -244,6 +246,22 @@ def test_a_folder_that_does_not_exist_yet_is_fine(install_root, tmp_path):
 
     assert export_folder() == str(chosen)
     assert export_folder_setting_error(str(chosen)) is None
+
+
+def test_an_export_folder_the_platform_cannot_address_is_refused(install_root):
+    """A root that is already over the platform's limit cannot hold any clip,
+    so it is refused where it is chosen rather than at the first export."""
+    limit = absolute_path_limit()
+    too_long = str(install_root / ("A" * (limit + 10)))
+
+    error = export_folder_setting_error(too_long)
+
+    assert error is not None
+    assert "too long" in error
+    assert str(limit) in error
+    write_settings(install_root, {EXPORT_FOLDER_KEY: too_long})
+    with pytest.raises(ExportSettingsError):
+        export_folder()
 
 
 def test_the_refusal_says_where_to_fix_it(install_root):
@@ -589,20 +607,71 @@ def test_a_stem_the_record_cannot_name_refuses_the_batch(tmp_path):
 
 
 def test_a_stem_that_fits_both_names_is_accepted(tmp_path):
-    root = tmp_path / "library"
+    """`.cnfo` is one character longer than `.mp4`, so a 250-character stem is
+    legal for both.
+
+    This is the *component* rule, and it is a rule about the name: whether the
+    whole path fits the platform is a different rule with a test of its own.
+    """
     stem = "T" * 250
+    destination = plan_clip_destination(
+        tags={
+            "title": stem,
+            "network": "Cartoon Network",
+            "filler_type": "Promo",
+            "time_period": "2000s",
+        },
+        folder_scheme=compile_folder_scheme(DEFAULT_FOLDER_SCHEME),
+        filename_scheme=compile_filename_scheme("{title}"),
+        label="clip",
+    )
+
+    assert destination.relative_components[-1] == stem + ".mp4"
+    assert destination.record_relative_components[-1] == stem + RECORD_EXTENSION
+
+
+def test_plan_export_refuses_a_destination_the_platform_cannot_address(tmp_path):
+    """The whole absolute path has to fit, and the refusal says by how much.
+
+    Windows reports an over-long path as "the system cannot find the path
+    specified", so a plan that did not check this would fail mid-encode with an
+    error that names a file that is not missing.
+    """
+    limit = absolute_path_limit()
     model = make_model(tags_list=[{
-        "title": stem,
-        "network": "Cartoon Network",
-        "filler_type": "Promo",
-        "time_period": "2000s",
+        "title": "X" * 250,
+        "network": "N",
+        "filler_type": "T",
+        "time_period": "P",
     }])
-    schemes = ExportSchemes(file_scheme="{title}",
-                            folder_scheme=DEFAULT_FOLDER_SCHEME)
 
-    plan = plan_export(model, schemes, str(root))
+    with pytest.raises(ExportPlanError) as error:
+        plan_export(
+            model,
+            ExportSchemes("{title}", "{network}/{type}/{time_period}"),
+            str(tmp_path / "library"),
+        )
 
-    assert plan.clips[0].record_relative_components[-1].endswith(RECORD_EXTENSION)
+    message = str(error.value)
+    assert "too long" in message
+    assert str(limit) in message
+    assert "Segment 1" in message
+
+
+def test_preflight_refuses_a_hand_built_plan_whose_destination_is_too_long(
+    tmp_path,
+):
+    """A plan nobody planned is still checked, because the preflight is the
+    last thing before anything is written."""
+    root = tmp_path / "library"
+    long_folder = "C" * 200
+    plan = ExportPlan(
+        export_root=str(root),
+        clips=(make_clip(components=(long_folder, "Clip.mp4")),),
+    )
+
+    with pytest.raises(ExportPlanError, match="too long"):
+        preflight_export_plan(plan)
 
 
 def test_preflight_rejects_a_record_written_outside_its_clips_folder(tmp_path):
@@ -756,23 +825,6 @@ def test_plan_export_converts_numeric_overflow_to_typed_error(
 
     with pytest.raises(ExportPlanError, match="duration must be a finite"):
         plan_export(model, schemes, str(tmp_path / "library"))
-
-
-def test_plan_export_checks_complete_relative_path_byte_limit(
-    tmp_path,
-):
-    year_components = "/".join(["{year}"] * 16)
-    text = f"{year_components}/{{network}}/{{type}}/{{time_period}}"
-    model = make_model(tags_list=[{
-        "title": "X" * 250,
-        "network": "N",
-        "filler_type": "T",
-        "time_period": "P",
-        "year": "Y" * 245,
-    }])
-
-    with pytest.raises(ExportPlanError, match="relative destination exceeds 4096"):
-        plan_export(model, ExportSchemes("{title}", text), str(tmp_path / "library"))
 
 
 def test_plan_export_rejects_symlinked_root_ancestor(

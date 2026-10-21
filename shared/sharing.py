@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterable, Sequence
 
 from shared.importing import _format_bytes
 from shared.records import RECORD_EXTENSION
-from shared.paths import sanitize_path_component
+from shared.paths import describe_path_error, sanitize_path_component
 from shared.scheme import canonical_tag_name
 from shared.vocabulary import value_dedup_key
 
@@ -512,7 +512,10 @@ def extract_share_zip(
                 os.path.basename(zip_path))[0]
         extract_dir = _unique_extraction_target(dest_root, root_name)
         staging = extract_dir + PART_EXTENSION
-        os.makedirs(staging, exist_ok=True)
+        try:
+            os.makedirs(staging, exist_ok=True)
+        except OSError as error:
+            raise OSError(describe_path_error(error)) from error
 
         on_progress(0, total)
         done = 0
@@ -537,10 +540,12 @@ def extract_share_zip(
                 if not rel:
                     continue
                 target = os.path.join(staging, rel)
-                os.makedirs(os.path.dirname(target) or staging, exist_ok=True)
-
-                with archive.open(info) as src, open(target, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                try:
+                    os.makedirs(os.path.dirname(target) or staging, exist_ok=True)
+                    with archive.open(info) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                except OSError as error:
+                    raise OSError(describe_path_error(error)) from error
                 done += 1
                 on_progress(done, total)
 
