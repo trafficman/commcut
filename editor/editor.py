@@ -56,6 +56,7 @@ from shared.tag_form import (
     field_text,
     set_field_text,
 )
+from shared.tag_locks import TagLocks
 from PySide6.QtCore import Qt, QEventLoop, QFile, QObject, QUrl, Signal, Slot, QThread
 from PySide6.QtGui import QDesktopServices
 
@@ -421,7 +422,7 @@ class MediaPlayer(QMainWindow):
         # --- editing state ---
         self.segment_model = SegmentModel.load(sidecar_path(self.media_path))
         self.current_index = 0
-        self.tag_locks = {}  # tag key → locked value, carried across unedited segments
+        self.tag_locks = TagLocks()  # pinned tag values, carried across unedited segments
 
         # --- export state ---
         # All four stay non-None only while a batch is running, and all four
@@ -617,7 +618,7 @@ class MediaPlayer(QMainWindow):
         around the write so the dirty flag isn't set by it.
         """
         unedited = not self._is_segment_edited(self.current_index)
-        overrides = self.tag_locks if unedited else None
+        overrides = self.tag_locks.as_dict() if unedited else None
         self.ui.tagForm.write_tags(tags, overrides)
 
     def _is_segment_edited(self, index):
@@ -632,15 +633,13 @@ class MediaPlayer(QMainWindow):
         *not* updated by field edits: a lock is a value that propagates to
         later segments, so a field that stops matching it is a segment
         deliberately deviating from the lock, and the toggle says so.
+
+        The derivation itself is `shared/tag_locks.py:TagLocks.is_engaged`, and
+        the rendering is `shared/tag_form.py:TagForm.refresh_lock_buttons` —
+        because the Library Mesh Tag Editor shows the same form and carries a
+        value forward the same way.
         """
-        for namespace in _LOCK_BUTTONS:
-            btn = self.ui.tagForm.lock_button(namespace)
-            locked = self.tag_locks.get(namespace)
-            current = field_text(self.ui.tagForm.field(namespace))
-            desired = locked is not None and locked == current
-            btn.blockSignals(True)
-            btn.setChecked(desired)
-            btn.blockSignals(False)
+        self.ui.tagForm.refresh_lock_buttons(self.tag_locks)
 
     def on_toggle_lock(self, key, checked):
         """Pin (or release) the current field value as a lock, then re-render.
@@ -651,9 +650,9 @@ class MediaPlayer(QMainWindow):
         this value" or "release the pin".
         """
         if checked:
-            self.tag_locks[key] = field_text(self.ui.tagForm.field(key))
+            self.tag_locks.pin(key, field_text(self.ui.tagForm.field(key)))
         else:
-            self.tag_locks.pop(key, None)
+            self.tag_locks.release(key)
         self._refresh_lock_buttons()
 
     def on_tag_edited(self, key, text):
@@ -675,7 +674,7 @@ class MediaPlayer(QMainWindow):
         do not carry over, so the new segment, the form, and the export-time
         lock materialization in shared.exporting all agree.
         """
-        return {key: value for key, value in self.tag_locks.items() if value}
+        return self.tag_locks.inherited()
 
     def _missing_required_labels(self):
         """Display names of the required tags the active segment still lacks.
@@ -925,7 +924,8 @@ class MediaPlayer(QMainWindow):
             self.dirty = False
             self._update_stage_button()
             return (
-                model_with_tag_locks(self.segment_model, self.tag_locks),
+                model_with_tag_locks(self.segment_model,
+                                     self.tag_locks.as_dict()),
                 load_export_schemes(settings_path()),
                 export_folder(),
             )

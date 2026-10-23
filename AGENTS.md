@@ -82,7 +82,7 @@ export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
 (the `.cnfo`), `retagging` (the re-tag plan and transaction), `sharing`
 (the share filter, plan, naming and zip write), `vocabulary`,
-`mesh`, `values`, `tag_form`, `splash`, `icons`,
+`mesh`, `values`, `tag_form`, `tag_locks`, `splash`, `icons`,
 `ui_loader`. `environment` also owns `settings_path()` and the fixed
 `import_folder()`. Per-module detail: [docs/architecture.md](docs/architecture.md).
 

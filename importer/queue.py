@@ -17,7 +17,7 @@ missing a tag it needs, because a required tag was removed — come back here, a
 `is_already_done` picks up exactly them. So this window is reached from either
 mesh, and `docs/importing.md` says which endings each offers.
 
-Five decisions shape it:
+Six decisions shape it:
 
 - **A settled clip's `.cnfo` is written to `import/` immediately.** The tagged
   import then takes over unchanged — `build_catalog`, `candidates_from_catalog`,
@@ -25,6 +25,14 @@ Five decisions shape it:
   one rather than forking it. It also means an eight-hundred-clip session has a
   save point per clip. Resume asks `missing_required_tags(record)`, *not* "is
   there a record", because a half-tagged record exists and is not finished.
+- **A value can be locked, and it carries to the next clip.** The editor's
+  lock — a pinned value, engaged only while the field holds it — is offered
+  here too, because a queue *does* have a next clip, and an untidy import is
+  the same tag retyped for every clip. The rules live in
+  `shared/tag_locks.py`, so the two windows cannot drift apart. The order the
+  sources are consulted in is **entered > record > autofill > locked > empty**:
+  the folder structure outranks a lock, because a lock is a value carried from
+  a neighbouring clip while the folder's answer is about this one.
 - **Settling a clip records its suggestable tags.** A confirmed tag goes into
   `vocabulary.json` the moment it is confirmed, as it does on Stage in the editor,
   because this is the one window where the same eight hundred tags get typed over
@@ -87,11 +95,14 @@ from shared.records import (
 from shared.segments import probe_duration
 from shared.session import shell
 from shared.tag_form import (
+    LOCK_BUTTONS,
     SUGGESTED_TAG_FIELDS,
     TAG_FIELDS,
     TagForm,
     field_change_signal,
+    field_text,
 )
+from shared.tag_locks import TagLocks, resolve_tag_sources
 from shared.ui_loader import UiLoader, adopt_title
 from shared.values import TITLE_TAG, ValueSession
 from shared.vocabulary import get_vocabulary, record_use, vocabulary_path
@@ -246,6 +257,13 @@ class QueueWindow(QMainWindow):
         self.unprobeable: list[tuple[str, str]] = []
         #: Distinct tag values in the records, for the report's offer to review them.
         self._pending_values = 0
+        #: The pinned tag values, carried from one clip to the next. A lock is a
+        #: value the user confirmed once and does not want to retype for every
+        #: clip in the folder.
+        self.tag_locks = TagLocks()
+        #: What the app last wrote into the form, so a value the *user* typed
+        #: can be told apart from one the app filled in.
+        self._applied: dict[str, str] = {}
 
         self._thread: QThread | None = None
         self._worker: ProbeWorker | None = None
@@ -255,7 +273,6 @@ class QueueWindow(QMainWindow):
         #: the user's rather than a readout. See `_on_scrub_began`.
         self._scrubbing = False
 
-        self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
         self.ui.buttonNext.clicked.connect(self.on_next)
         self.ui.buttonSkipDelete.clicked.connect(self.on_skip_delete)
@@ -265,6 +282,13 @@ class QueueWindow(QMainWindow):
         self.ui.buttonValues.clicked.connect(self.on_review_values)
         self.ui.buttonImport.clicked.connect(self.on_import_now)
         self.ui.buttonMenu.clicked.connect(self.on_back_to_menu)
+        # A lock carries a value forward to the next clip, so the queue shows
+        # the same toggles the editor does. The rule is the editor's — a pin is
+        # a value, and it is engaged only while the field holds it — and it
+        # lives in `shared/tag_locks.py` so the two windows cannot drift.
+        for namespace in LOCK_BUTTONS:
+            self.ui.tagForm.lock_button(namespace).toggled.connect(
+                lambda checked, k=namespace: self.on_toggle_lock(k, checked))
         # `cursorPositionChanged` rather than a "selection changed" signal,
         # because QPlainTextEdit has none: a selection is a cursor range, and
         # moving either end moves the position. Together with `textChanged` it
@@ -323,9 +347,16 @@ class QueueWindow(QMainWindow):
         `keep_entered` is for the re-resolve that follows the rules dialog. A rule
         taught there has to reach the clip in front of the user, but a value
         *they* put in is not an answer a rule may replace — so the fresh
-        resolution is written first and only the fields still empty take from it.
-        Everywhere else the form is written whole, because advancing a clip must
-        not carry the last clip's typing into the next one.
+        resolution is written and the values the user typed are written over it.
+        "Typed" means what differs from what the app last applied; see
+        `_entered_values`. Everywhere else the form is written whole, because
+        advancing a clip must not carry the last clip's typing into the next one.
+
+        The order the sources are consulted in is
+        `shared/tag_locks.py:resolve_tag_sources`: **entered > record >
+        autofill > locked > empty**. The autofill is the folder structure's
+        answer and outranks a lock, because a lock is a value carried from a
+        *neighbouring* clip while the folder's is about this one.
         """
         if self.position >= len(self.clips):
             self._show_report()
@@ -333,9 +364,7 @@ class QueueWindow(QMainWindow):
 
         entered = {}
         if keep_entered:
-            entered = {key: value
-                       for key, value in self.ui.tagForm.read_tags().items()
-                       if value.strip()}
+            entered = self._entered_values()
 
         clip = self.clips[self.position]
         self._stop_probe()
@@ -362,11 +391,18 @@ class QueueWindow(QMainWindow):
         # settled at all.
         settled = clip.existing_tags()
         resolved = self.session.tags_for_clip(clip.relative_path)
-        # Entered values last, so they win over both. They are the only tags
-        # nothing but the user has an opinion about, and the rules were consulted
-        # to fill gaps rather than to settle arguments.
-        self.ui.tagForm.write_tags({**(settled or resolved.tags), **entered})
-        self._describe_conflicts(resolved)
+        values = resolve_tag_sources(
+            entered=entered,
+            record=settled,
+            autofill=resolved.tags,
+            contested=[c.namespace for c in resolved.conflicts],
+            locks=self.tag_locks,
+        )
+        self.ui.tagForm.write_tags(values)
+        # Remembered so the next re-resolve can tell a value the user typed
+        # from one the app filled in.
+        self._applied = values
+        self._describe_conflicts(resolved, settled)
         self._open_video(clip.path)
         self._refresh_add_title()
         self._refresh_tag_state()
@@ -375,17 +411,62 @@ class QueueWindow(QMainWindow):
         # constructor that raises leaves its window with nothing to close it.
         self._start_probe(clip)
 
-    def _describe_conflicts(self, resolved):
-        """Say which tag could not be filled, and why."""
-        if resolved.resolved:
-            self.ui.labelConflicts.setText("")
-            return
-        lines = ["These could not be filled in, because one folder claimed the "
-                 "same tag twice. Type them yourself:"]
-        lines.extend(f"  - {c.namespace}: '{c.existing_value}' or "
-                     f"'{c.incoming_value}' (from '{c.existing_name}' and "
-                     f"'{c.incoming_name}')" for c in resolved.conflicts)
+    def _entered_values(self) -> dict[str, str]:
+        """What the user typed for this clip, as opposed to what the app filled in.
+
+        The form holds both, and only one of them is the user's. The values the
+        app applied are remembered in `self._applied`, so anything that differs
+        from them was typed.
+
+        It matters because a re-resolve has to be able to *change* what the app
+        put there: a rule taught in the Manage Autofill Rules dialog must reach
+        a field the folder answers had already filled, and a lock must not beat
+        the autofill there. Treating an app-filled value as typed would preserve
+        both, which is how the old value used to survive the reload the dialog
+        exists to cause.
+        """
+        return {
+            key: value
+            for key, value in self.ui.tagForm.read_tags().items()
+            if value.strip() and value != self._applied.get(key, "")
+        }
+
+    def _describe_conflicts(self, resolved, settled):
+        """Say which tag could not be filled, why, and what a lock lost to."""
+        lines = []
+        if not resolved.resolved:
+            lines.append("These could not be filled in, because one folder claimed "
+                         "the same tag twice. Type them yourself:")
+            lines.extend(f"  - {c.namespace}: '{c.existing_value}' or "
+                         f"'{c.incoming_value}' (from '{c.existing_name}' and "
+                         f"'{c.incoming_name}')" for c in resolved.conflicts)
+        lines.extend(self._describe_overridden_locks(resolved, settled))
         self.ui.labelConflicts.setText("\n".join(lines))
+
+    def _describe_overridden_locks(self, resolved, settled) -> list[str]:
+        """The pins this clip's own folder answers beat.
+
+        The autofill wins over a lock, and that has to be *visible*: a pin that
+        quietly stops applying looks like a broken button. The place to change
+        it is the folder's tag, in the Untagged Library Mesh, so the note says
+        so rather than leaving the user to work out which of two things was
+        responsible.
+
+        A clip with a record has no autofill at all, so nothing overrides
+        anything there.
+        """
+        if settled:
+            return []
+        lines = []
+        for namespace, pinned in sorted(self.tag_locks.inherited().items()):
+            autofill = resolved.tags.get(namespace, "")
+            if autofill and autofill != pinned:
+                lines.append(
+                    f"Your locked {namespace} ('{pinned}') is not in effect here — "
+                    f"this clip's folder structure or autofill rules say "
+                    f"'{autofill}', and that wins. If the folder is wrong, change "
+                    f"the folder's tag in the Untagged Library Mesh.")
+        return lines
 
     # -- the video --------------------------------------------------------
 
@@ -544,8 +625,8 @@ class QueueWindow(QMainWindow):
         # The new rules apply from here on, so the clip in front of the user is
         # re-resolved -- a rule taught on clip 20 should visibly work here.
         # Closing the dialog without teaching anything still reloads, which is
-        # harmless because `keep_entered` means the only thing a reload can change
-        # is a field that was empty.
+        # harmless: the reload re-answers the fields the *app* filled and leaves
+        # the ones the user typed.
         if clip is not None:
             self._load_current(keep_entered=True)
 
@@ -567,9 +648,34 @@ class QueueWindow(QMainWindow):
         Recomputed on every keystroke, because an outline that outlives the
         value it complained about is a complaint about a state the user has
         already left.
+
+        The lock toggles are re-derived here too, for the editor's reason: a
+        lock is engaged only while the field holds the pinned value, so a field
+        that stops matching it has to switch its toggle off at once.
         """
         self.ui.tagForm.refresh_required_fields()
+        self.ui.tagForm.refresh_lock_buttons(self.tag_locks)
         self.ui.buttonNext.setEnabled(not self.ui.tagForm.missing_required_labels())
+
+    def on_toggle_lock(self, key, checked):
+        """Pin (or release) the field's value, so it carries to the next clip.
+
+        Checking a toggle pins whatever the field currently holds — including a
+        value the folder answers filled in, which is how "yes, that one, and
+        keep it" is said without retyping it. A toggle that reads disengaged
+        because the folder's answer won re-pins the field's current value when
+        it is clicked, so a click always means "carry this value forward" or
+        "stop carrying it".
+
+        The pin is a value, not a live mirror of the field: it is not updated
+        when the field is edited, so a field that stops matching it is a
+        deliberate deviation and the pin still holds for the clips that follow.
+        """
+        if checked:
+            self.tag_locks.pin(key, field_text(self.ui.tagForm.field(key)))
+        else:
+            self.tag_locks.release(key)
+        self._refresh_tag_state()
 
     def on_next(self):
         """Settle this clip: write its record, and move on."""

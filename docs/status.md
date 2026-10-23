@@ -149,7 +149,11 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   visited, because a title is a *region* of a file name rather than a whole
   token, and regions are the one thing that cannot be tokenised — which is also
   why the "auto import and fix up the rest" options are retired rather than
-  merely unused. Settling a clip does **not** touch `vocabulary.json`: those values
+  merely unused. A tag can be **locked**: a pinned value carried to the next clip,
+  so an untidy import is not the same tag retyped for every clip. The folder
+  structure outranks a lock, and where the two disagree the queue says so rather
+  than letting a pin quietly stop applying. Settling a clip does **not** touch
+  `vocabulary.json`: those values
   are somebody else's until they are read back out of `export/`. → [importing.md](importing.md#the-library-mesh-tag-editor)
 - **Tagged Library Mesh** (`shared/values.py`, `importer/values.py`): the other
   half of import. One question per distinct tag **value**, however many clips carry
@@ -196,6 +200,12 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   widget, promoted into both the editor and the queue, so there is one set of
   dropdown rules in the app rather than two that drift. →
   [tag-vocabulary.md](tag-vocabulary.md)
+- **The shared lock model** (`shared/tag_locks.py`): what a tag lock is — a
+  pinned value, engaged only while the field holds it, never a title — and the
+  order the tag sources are consulted in (entered, record, autofill, lock). The
+  editor carries a value to the next segment and the queue to the next clip, so
+  the rule is written once. →
+  [segment-model.md](segment-model.md#locks-tag-carry-over)
 - **Library Manager** (`library/manager.py`, `shared/retagging.py`): the
   main menu's **Library Manager** button. Every clip the catalog finds in
   `export/`, in a folder tree that mirrors the folder scheme, with the shared

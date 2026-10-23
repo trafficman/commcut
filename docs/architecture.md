@@ -71,6 +71,7 @@ commcut/
 │   ├── sources.py           # what may be opened (a source can be anywhere)
 │   ├── tag_form.py          # the ten tag fields, shared by the editor and the queue
 │   ├── tagform.ui           # their layout, promoted into both windows
+│   ├── tag_locks.py         # what a tag lock is, and the order tag sources answer in
 │   ├── ffmpeg.py            # clip_to_temp, export_named_model, execute_export_plan
 │   ├── scheme.py            # Shared tag aliases, AST, parser, strict parser, renderer
 │   ├── naming.py            # Filename scheme policy + render_filename()
@@ -726,6 +727,13 @@ The shared modules are:
    editor and the queue. Two forms would be two dropdown configurations, and each
    of those settings decides what a typed value becomes; see
    [tag-vocabulary.md](tag-vocabulary.md).
+ - `shared/tag_locks.py` — what a tag lock is, with no Qt: a pinned value, engaged
+   only while the field holds it, and never a title. The editor carries a value to
+   the next segment and the queue carries it to the next clip, so the rule is here
+   rather than written twice. It also holds the order the tag sources are consulted
+   in — entered, then record, then autofill, then a lock — which is what the queue
+   fills a form from. See [importing.md](importing.md) and
+   [segment-model.md](segment-model.md).
  - `shared/ui_loader.py` — `UiLoader(QUiLoader)` subclass that instantiates
    promoted custom widgets reliably; register a class with
    `register_widget` before `load()`.

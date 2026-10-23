@@ -23,8 +23,10 @@ So this module owns:
 - the required-field outline
 
 What it deliberately does **not** own: what a tag *means*. Nothing here decides a
-value. The editor's values come from its segments, the queue's from the Mesh
-Wizard's alias table, and both arrive already settled.
+value. The editor's values come from its segments, the queue's from the clip's
+record or the folder mesh's answers, and a lock can carry one forward — but every
+one of those arrives already settled, and the order they are consulted in belongs
+to `shared/tag_locks.py`.
 
 `Title` is absent from the suggested and lockable sets in both, and for one
 reason: it is unique per clip, so there is nothing to suggest from — a list of
@@ -45,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from shared.environment import resource_path
 from shared.exporting import missing_required_tags
+from shared.tag_locks import TagLocks
 from shared.ui_loader import UiLoader
 from shared.vocabulary import get_vocabulary, vocabulary_path
 
@@ -241,13 +244,34 @@ class TagForm(QWidget):
     def set_locks_visible(self, visible: bool) -> None:
         """Show or hide every lock toggle.
 
-        Hidden by the Library Mesh Tag Editor, which shows the same form for
-        independent clips: a lock means "carry this value forward to the next
-        segment", and a queue has no next segment to carry it to. The widgets
-        still exist so there is one definition of the form rather than two.
+        Hidden by the Library Manager, which shows the same form for one clip at
+        a time: a lock means "carry this value forward to the next clip", and
+        there is no next clip there. The widgets still exist so there is one
+        definition of the form rather than two.
         """
         for namespace in LOCK_BUTTONS:
             self.lock_button(namespace).setVisible(visible)
+
+    def refresh_lock_buttons(self, locks: TagLocks) -> None:
+        """Check each lock toggle whose field currently holds the pinned value.
+
+        The button state is derived, never imperative: a lock is engaged iff it
+        is pinned *and* the field holds the pinned value, so a toggle switches
+        off the moment the field stops matching it and back on as soon as it
+        matches again.
+
+        The rule is `shared/tag_locks.py:TagLocks.is_engaged`, so both windows
+        that show this form render it the same way — the editor and the Library
+        Mesh Tag Editor both carry a value forward, and two copies of the
+        derivation would be two answers to one question.
+        """
+        for namespace in LOCK_BUTTONS:
+            button = self.lock_button(namespace)
+            desired = locks.is_engaged(
+                namespace, field_text(self.field(namespace)))
+            button.blockSignals(True)
+            button.setChecked(desired)
+            button.blockSignals(False)
 
     # -- the vocabulary --------------------------------------------------
 

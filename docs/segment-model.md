@@ -5,7 +5,8 @@ state machine (including the boundary peek and tag locks), the End Seg outcome
 rules, and the required-record-field enforcement.
 
 Applies to: `shared/segments.py`, `editor/editor.py`, `editor/editorwindow.ui`,
-`shared/timeline.py`, `shared/exporting.py:missing_required_tags`.
+`shared/timeline.py`, `shared/exporting.py:missing_required_tags`,
+`shared/tag_locks.py`.
 
 Related: [scanner.md](scanner.md) (where the boundaries come from),
 [naming-and-organization.md](naming-and-organization.md) (where the tags go),
@@ -127,21 +128,29 @@ helper drives both from the single `self.dirty` flag.
 
 ### Locks (tag carry-over)
 
-Locks are session-level and **pinned**: `self.tag_locks[key] = value` is
+Locks are session-level and **pinned**: `self.tag_locks.pin(key, value)` is
 captured when the user checks a toggle, and is deliberately *not* updated by
 field edits. A lock is a value that propagates to later segments, so a field
 that stops matching its pin is a segment deliberately deviating from the
-lock — not a reason to repoint the lock. `_inherited_tags()` filters out
+lock — not a reason to repoint the lock. `TagLocks.inherited()` filters out
 empty pins, so an empty lock carries nothing and the export-time
 materialization in `shared/exporting.py` skips it the same way.
 
-Lock *button* state is derived, not imperative: `_refresh_lock_buttons()`
-checks a lock iff its key is in `tag_locks` **and** the field currently holds
-the pinned value. `on_tag_edited` re-derives it on every keystroke, so a
-toggle switches off the moment its field stops matching and back on as soon as
-it matches again. The derivation is deliberately independent of whether the
-segment has been edited — deriving it from `_is_segment_edited()` (which
-reads the model, and the model is written on every keystroke) used to force
+The model itself is `shared/tag_locks.py:TagLocks`, because the Library Mesh Tag
+Editor carries a value forward the same way — to the next clip instead of the
+next segment — and two copies of the rule would be two answers to one question
+(invariant 9). `shared/tag_locks.py` also holds the order the sources are
+consulted in when more than one of them has something to say about a tag
+(`resolve_tag_sources`); the editor does not need it, because a segment has one
+source of tags, but the queue does, and the rule is written once.
+
+Lock *button* state is derived, not imperative:
+`shared/tag_form.py:TagForm.refresh_lock_buttons` checks a lock iff it is pinned
+**and** the field currently holds the pinned value. The editor re-derives it on
+every keystroke, so a toggle switches off the moment its field stops matching and
+back on as soon as it matches again. The derivation is deliberately independent of
+whether the segment has been edited — deriving it from `_is_segment_edited()`
+(which reads the model, and the model is written on every keystroke) used to force
 all nine buttons unchecked as soon as you typed a tag, and made every
 previously staged segment read as unlocked. A staged segment whose tag still
 matches a pin shows as locked; one whose value deviates shows as unlocked

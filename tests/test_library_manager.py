@@ -568,6 +568,27 @@ def test_selecting_a_clip_loads_the_form_and_the_preview(harness):
         window.deleteLater()
 
 
+def test_the_lock_toggles_are_hidden(harness):
+    """The manager shows one clip at a time, and a lock carries a value to the
+    *next* clip.
+
+    The Library Mesh Tag Editor shows the same toggles, because a queue does
+    have a next clip; here there is nothing to carry a value to, so the
+    toggles are hidden rather than left to do nothing.
+    """
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+
+        assert window.ui.tagForm.lock_button("network").isHidden()
+        assert window.ui.tagForm.lock_button("filler_type").isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_the_destination_label_renders_live(harness):
     """The label re-renders on every field change: in place while
     the tags are unchanged, the new destination once they are not,

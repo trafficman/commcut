@@ -2,8 +2,9 @@
 
 Applies to: `shared/importing.py`, `shared/exporting.py`, `shared/catalog.py`,
 `shared/records.py`, `shared/sources.py`, `shared/paths.py`, `shared/mesh.py`,
-`shared/values.py`, `importer/mesh.py`, `importer/meshwindow.ui`,
-`importer/queue.py`, `importer/values.py`, `importer/importrun.py`.
+`shared/tag_locks.py`, `shared/values.py`, `importer/mesh.py`,
+`importer/meshwindow.ui`, `importer/queue.py`, `importer/values.py`,
+`importer/importrun.py`.
 
 ## The shape of it
 
@@ -597,8 +598,18 @@ front of you, and it writes the whole form — so the reload passes
 answers rather than under them. Otherwise opening the modal to look at it and
 closing it again silently discarded the title they had just typed, which is the
 one tag no rule can ever fill in and therefore the one with nowhere else to come
-from. Only fields still empty take an answer, since filling a gap is what a rule
-is for. Every other caller of `_load_current` — advancing a clip, skipping one,
+from.
+
+**What "typed" means is narrower than it looks.** The form holds what the app
+filled in as well as what the user typed, and only one of them is the user's — so
+`QueueWindow._entered_values` compares the form against the values the app last
+applied (`self._applied`) and calls a field entered only when it differs. Without
+that, a value the *app* put there would outrank the fresh answers: a rule taught in
+the dialog could not reach a field the folder answers had already filled, and a
+carried value would beat the rule that had just been taught. Both are the same bug
+seen from two sides — the reload has to be able to change what the app answered.
+
+Every other caller of `_load_current` — advancing a clip, skipping one,
 reopening the run — writes the form whole, because carrying the last clip's
 typing into the next one would be worse than losing it.
 
@@ -649,6 +660,60 @@ a live `MeshSession`. The residue pass was undoing the pass that preceded it. A 
 tags live in its record (invariant 12); the folder answers have something to add only
 on a clip that has never been settled at all.
 
+A **lock** is the one thing that may still fill a record's gap, and it is the
+difference between the two. The folder answers are a standing instruction from an
+earlier session, and a standing instruction is what resurrected the removed tag; a
+lock is a value the user confirmed on a clip in this session, a few minutes ago. So
+the record still wins for every tag it holds, the folder answers still never reach a
+clip that has a record, and a lock answers what is left.
+
+### A value can be locked, and it carries to the next clip
+
+A queue *does* have a next clip, so the editor's lock is offered here too: a pinned
+value, carried forward to the clips that follow, so an untidy import is not the same
+tag retyped for every clip. The rule lives in `shared/tag_locks.py` and both windows
+obey it — the Editing Wizard carries a value to the next segment, the Library Mesh
+Tag Editor to the next clip, and two copies of the derivation would be two answers to
+one question (invariant 9).
+
+The order the sources are consulted in is **`shared/tag_locks.py:resolve_tag_sources`**,
+per tag:
+
+**Entered > Record > Autofill > Locked > Empty**
+
+- **Entered** is what the user typed for this clip during this visit. It wins
+  outright: it is the only opinion nobody else has.
+- **Record** is the clip's own `.cnfo`, authoritative once it exists.
+- **Autofill** is what the folder mesh and the learned rules make of this clip's path
+  and file name. It is evidence *about this clip*.
+- **Locked** is a value carried forward from an earlier clip. It is evidence about a
+  *neighbour*, so it answers only what nothing else did.
+
+**The autofill outranks the lock**, and that is the point rather than an accident: a
+lock is a value the user pinned once, while the folder's answer is about the clip in
+front of them. Where the two disagree, the folder wins — and the queue says so, in
+the label that already reports a contested tag, because a pin that quietly stops
+applying looks like a broken button. The note names the place to change it: the
+folder's tag, in the Untagged Library Mesh. Clicking the disengaged toggle re-pins
+the field's current value, which is how "yes, that one, and keep it" is said without
+retyping it.
+
+**A contested tag is never filled by a lock.** Two folder names claiming one
+namespace is the mesh's deliberate refusal to pick, and the field is left for the
+person. A carried value would close that question without the user deciding it.
+
+**A lock cannot carry a title.** A title is unique per clip, so there is nothing to
+carry — the same reason a rule may not target one, and the reason the shared form has
+no title lock button. `shared/tag_locks.py` refuses the pin itself rather than
+relying on the UI to never offer it.
+
+**The carry-over lasts the whole run.** The pins live on the window, so they cross
+folder boundaries: the queue's clips are visited in `relative_path.casefold()` order,
+so a folder's clips are one contiguous run, and a pin made on the first of them
+applies to the rest. That is the price of a session-wide lock — a pin that stops
+being true keeps applying until it is released — and the release is one click on the
+same toggle.
+
 ### The residue is the queue again
 
 After the Tagged Library Mesh writes its records, the clips it left unfinished — one
@@ -664,8 +729,8 @@ folder is what the hand-off carries.
 host that widget. Two tag forms would be two dropdown configurations,
 and `docs/tag-vocabulary.md` records why each setting there is load-bearing: the
 insert policy, the completer's case sensitivity, its filter mode, its completion
-mode. The queue hides the lock buttons rather than omitting them — a lock carries
-a value to the next segment, and a queue has no next segment.
+mode. The Library Manager hides the lock buttons rather than omitting them — a lock
+carries a value to the next clip, and the manager shows one clip at a time.
 
 ## The Tagged Library Mesh
 

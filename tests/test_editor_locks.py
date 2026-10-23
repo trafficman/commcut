@@ -48,7 +48,7 @@ def test_lock_stays_engaged_while_typing(qapp):
     editor.click_lock("time_period")
 
     assert editor.checked_locks() == ["filler_type", "network", "time_period"]
-    assert editor.tag_locks == {
+    assert editor.tag_locks.as_dict() == {
         "network": "Cartoon Network",
         "filler_type": "Promo",
         "time_period": "Morning",
@@ -66,7 +66,7 @@ def test_unlocking_one_lock_leaves_the_others_engaged(editor):
     editor.click_lock("filler_type")  # unlock just this one
 
     assert editor.checked_locks() == ["network", "time_period"]
-    assert editor.tag_locks == {
+    assert editor.tag_locks.as_dict() == {
         "network": "Cartoon Network",
         "time_period": "Morning",
     }
@@ -119,7 +119,7 @@ def test_divergent_typing_leaves_the_pinned_value_intact(qapp):
 
     editor.set_tag("network", "Nickelodeon")
 
-    assert editor.tag_locks == {"network": "Cartoon Network"}
+    assert editor.tag_locks.as_dict() == {"network": "Cartoon Network"}
 
 
 def test_deviating_segment_does_not_poison_the_next_segment(qapp):
@@ -144,7 +144,7 @@ def test_clicking_a_disengaged_toggle_pins_the_new_value(qapp):
     editor.set_tag("network", "Nickelodeon")
     editor.click_lock("network")  # re-pin to the deviation
 
-    assert editor.tag_locks == {"network": "Nickelodeon"}
+    assert editor.tag_locks.as_dict() == {"network": "Nickelodeon"}
     assert editor.checked_locks() == ["network"]
 
 
@@ -156,7 +156,7 @@ def test_locking_an_empty_field_disengages_once_typed_into(qapp):
 
     editor.set_tag("network", "Cartoon Network")
 
-    assert editor.tag_locks == {"network": ""}
+    assert editor.tag_locks.as_dict() == {"network": ""}
     assert editor.checked_locks() == []
     assert editor._inherited_tags() == {}
 
@@ -196,7 +196,7 @@ def test_staged_segment_shows_unlocked_when_tag_differs(qapp):
 
     # The lock is still held for future segments, but this segment's stored
     # value deviates from it, so the button reads as unlocked here.
-    assert editor.tag_locks == {"network": "Cartoon Network"}
+    assert editor.tag_locks.as_dict() == {"network": "Cartoon Network"}
     assert editor.get_tag("network") == "Nickelodeon"
     assert editor.checked_locks() == []
 

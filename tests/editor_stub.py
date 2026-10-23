@@ -35,6 +35,7 @@ from shared.tag_form import (
     set_field_text,
 )
 from shared.timeline import TimelineWidget
+from shared.tag_locks import TagLocks
 
 
 def ensure_qapp():
@@ -377,7 +378,7 @@ class EditorStub:
 
         self.segment_model = SegmentModel("test.mp4", duration, segments)
         self.current_index = 0
-        self.tag_locks = {}
+        self.tag_locks = TagLocks()
         self.dirty = False
         self.media_path = media_path or "test.mp4"
         self.player = type("Player", (), {"time_pos": 10.0})()
