@@ -142,6 +142,17 @@ class QueueClip:
     def name(self) -> str:
         return self.filename
 
+    @property
+    def stem(self) -> str:
+        """The file name without its extension — what the title box shows.
+
+        The extension carries no information the title needs, and leaving it in
+        the box invites dragging across `.mkv` and making it the title. The
+        record's `<source>` still gets the full name with extension; only the
+        display loses it.
+        """
+        return os.path.splitext(self.filename)[0]
+
     def is_already_done(self) -> bool:
         """True when a record beside this video already holds every required tag.
 
@@ -368,12 +379,12 @@ class QueueWindow(QMainWindow):
 
         clip = self.clips[self.position]
         self._stop_probe()
-        self.ui.textFileName.setPlainText(clip.filename)
+        self.ui.textFileName.setPlainText(clip.stem)
         # Deliberately *not* select-all. A fresh clip with the whole name already
-        # selected invites a reflexive click on Add Title, which would take
-        # "Toonami - 30 Sec - Cartoon.mkv" as the title -- almost never right, and
-        # written to a record as though it were deliberate. The user selects the
-        # part that is the title, which is the whole point of the control.
+        # selected invites a reflexive click on Add Title, which would take the
+        # name as the title -- almost never right, and written to a record as
+        # though it were deliberate. The user selects the part that is the title,
+        # which is the whole point of the control.
         cursor = self.ui.textFileName.textCursor()
         cursor.clearSelection()
         self.ui.textFileName.setTextCursor(cursor)
