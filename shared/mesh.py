@@ -419,11 +419,15 @@ class MeshSession:
         #: Every video's folder chain, deduplicated. Storing chains rather than
         #: videos is what lets a path be chosen for its *un-meshed* count.
         self._chains: dict[tuple[str, ...], int] = {}
+        #: Videos sitting at the top of the folder, with no folder name to mesh.
+        #: No tag can be inferred from them; they are tagged fully by hand.
+        self._root_level = 0
 
         for video in videos:
             chain = folder_chain(video.relative_path)
             if not chain:
                 # A video at the top of the folder has no folder name to mesh.
+                self._root_level += 1
                 continue
             self._chains[chain] = self._chains.get(chain, 0) + 1
             for name in chain:
@@ -500,6 +504,15 @@ class MeshSession:
     def is_complete(self) -> bool:
         """True when every folder name has been meshed or rejected."""
         return not self.pending()
+
+    @property
+    def root_level(self) -> int:
+        """Videos at the top of the folder with no folder name to mesh.
+
+        These need no folder-name answer — there are no folders — and are tagged
+        fully by hand in the tag editor instead.
+        """
+        return self._root_level
 
     def counts(self) -> tuple[int, int, int]:
         """(meshed, rejected, unmeshed). One tuple rather than three properties so

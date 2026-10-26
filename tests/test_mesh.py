@@ -105,6 +105,26 @@ def test_a_video_at_the_top_of_the_folder_contributes_no_name():
     assert loose.pending() == ("CN",)
 
 
+def test_root_level_videos_have_no_folder_name_to_mesh():
+    loose = session(["A Clip.mp4", "B Clip.mp4", "CN/C Clip.mp4"])
+
+    assert loose.root_level == 2
+    assert loose.pending() == ("CN",)
+    assert len(loose.entries()) == 1
+
+
+def test_a_session_of_only_root_level_videos_is_complete_without_a_decision():
+    """Bare videos at the root have no folder names, so there is nothing to mesh
+    and the session is complete: they go to the tag editor fully by hand."""
+    loose = session(["A Clip.mp4", "B Clip.mp4"])
+
+    assert loose.root_level == 2
+    assert loose.entries() == ()
+    assert loose.pending() == ()
+    assert loose.is_complete() is True
+    assert loose.next_prompt() is None
+
+
 def test_the_entry_count_is_the_path_count_of_each_name():
     loose = session(["CN/A.mp4", "CN/B.mp4", "CN/2000s/C.mp4"])
 

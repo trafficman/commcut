@@ -200,6 +200,30 @@ def test_an_empty_folder_says_so_and_offers_only_close(wizard):
         "an empty folder has nothing to review either")
 
 
+def test_bare_root_videos_route_to_the_tag_editor(wizard, monkeypatch):
+    """No subfolders means no folder names to mesh, so bare videos at the root go
+    straight to the tag editor for full manual tagging instead of reporting an
+    empty folder."""
+    opened = []
+    original = mesh_module.shell
+    mesh_module.shell = lambda: type("Shell", (), {
+        "open_safely": lambda _self, name, **kwargs:
+            opened.append((name, kwargs))})()
+    try:
+        videos_in(wizard.import_root, "A.mp4", "B.mp4")
+        window = mesh_module.MeshWindow(wizard.import_root)
+        assert len(opened) == 1, "the window must hand off to the queue"
+        assert opened[0][0] == "queue"
+        assert opened[0][1]["root"] == wizard.import_root
+        assert window.session.root_level == 2
+        assert len(window.session.entries()) == 0, "no folder names to decide"
+        assert "No videos were found" not in window.ui.labelQuestion.text()
+    finally:
+        mesh_module.shell = original
+        window.close()
+        window.deleteLater()
+
+
 def test_a_folder_where_every_clip_is_tagged_is_offered_the_value_mesh(wizard):
     """The front door for a library exported from another commcut.
 

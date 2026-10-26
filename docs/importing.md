@@ -57,8 +57,9 @@ flowchart TD
     Menu["main menu: Import"] --> Untagged["Untagged Library Mesh<br/>(importer/mesh.py)"]
 
     Untagged -->|"worker partitions find_videos() by has_record"| Scan{"any clip<br/>without a .cnfo?"}
-    Scan -->|yes| Names["ask once per folder name<br/>(shared/mesh.py)"]
+    Scan -->|"yes — folder names to decide"| Names["ask once per folder name<br/>(shared/mesh.py)"]
     Names --> Queue["Library Mesh Tag Editor<br/>(importer/queue.py)"]
+    Scan -->|"yes — bare root videos, no folders"| Queue
     Queue -->|"writes a .cnfo per clip"| Fork
 
     Scan -->|"no — every clip is tagged"| Values["Tagged Library Mesh<br/>(importer/values.py)"]
@@ -326,6 +327,11 @@ flowchart TD
     Assign -->|"none left"| Report["report()"]
     Part -->|"all tagged"| Values["offer the Tagged Library Mesh"]
 ```
+
+A folder holding only bare videos at its root — no subfolders, so no folder names
+to mesh — skips the folder-name questions entirely and goes straight to the
+Library Mesh Tag Editor, where each clip is tagged fully by hand (a title plus
+any required tags). A genuinely empty folder still reports nothing to import.
 
 `find_videos` reports `has_record` per clip, and this worker is where that gets used.
 

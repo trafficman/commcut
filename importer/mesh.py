@@ -180,6 +180,10 @@ class MeshWindow(QMainWindow):
         self._intro = ""
         #: Clips in the folder that already had a record when it was scanned.
         self._tagged = 0
+        #: Bare root videos route to the tag editor once the loading thread has
+        #: stopped -- `close()` refuses while it is still running, and `_on_ready`
+        #: can fire before `_on_stopped` has cleared `self._thread`.
+        self._open_queue_when_stopped = False
 
         self.ui.comboNamespace.addItems(namespace_choices())
         self.ui.comboNamespace.currentTextChanged.connect(
@@ -226,6 +230,13 @@ class MeshWindow(QMainWindow):
         self._tagged = tagged
         self._intro = "\n\n".join(part for part in (summary, problems) if part)
         if not len(session.entries()):
+            # A folder with no folder names to mesh. Two real situations land
+            # here: a genuinely empty folder, and a folder holding only bare
+            # videos at its root — no subfolders, nothing to infer from — which
+            # go straight to the tag editor for full manual tagging.
+            if session.root_level:
+                self._open_queue_when_stopped = True
+                return
             self._show_empty()
             return
         self._set_question_enabled(True)
@@ -247,6 +258,12 @@ class MeshWindow(QMainWindow):
         worker, self._worker = self._worker, None
         if worker is not None:
             worker.deleteLater()
+        # The thread has really stopped, so `close()` will now succeed. If the
+        # folder held bare root videos, hand them to the tag editor now rather
+        # than refusing because the window was still busy when `_on_ready` ran.
+        if self._open_queue_when_stopped:
+            self._open_queue_when_stopped = False
+            self.on_queue()
 
     def _set_question_enabled(self, enabled: bool) -> None:
         self.ui.comboNamespace.setEnabled(enabled)
