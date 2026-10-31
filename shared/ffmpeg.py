@@ -6,6 +6,7 @@ where core.py's ffmpeg helpers migrate to as core.py is retired.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -69,6 +70,65 @@ class ExportExecutionResult:
     @property
     def failed(self) -> int:
         return len(self.failures)
+
+
+def probe_video_info(path):
+    """Basic facts about the first video stream: width, height, codec, bitrate.
+
+    Returns a dict with possibly-None values. Never raises: an ffprobe that
+    can't answer yields None for that field, so the caller can still show a
+    dialog with "unknown" rather than refusing to open.
+    """
+    info = {"width": None, "height": None, "codec_name": None, "bit_rate": None}
+
+    try:
+        result = subprocess.run(
+            [
+                get_binary_path("ffprobe"), "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,codec_name",
+                "-of", "json",
+                path,
+            ],
+            capture_output=True, text=True, **no_console_kwargs(),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            payload = json.loads(result.stdout)
+            streams = payload.get("streams") or []
+            if streams:
+                stream = streams[0]
+                width = stream.get("width")
+                height = stream.get("height")
+                codec = stream.get("codec_name")
+                if width:
+                    info["width"] = int(width)
+                if height:
+                    info["height"] = int(height)
+                if codec:
+                    info["codec_name"] = str(codec)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    try:
+        result = subprocess.run(
+            [
+                get_binary_path("ffprobe"), "-v", "error",
+                "-show_entries", "format=bit_rate",
+                "-of", "json",
+                path,
+            ],
+            capture_output=True, text=True, **no_console_kwargs(),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            payload = json.loads(result.stdout)
+            formats = payload.get("format") or {}
+            bit_rate = formats.get("bit_rate")
+            if bit_rate:
+                info["bit_rate"] = int(bit_rate)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    return info
 
 
 def _copy_committing(temporary_path: str, destination: str) -> None:

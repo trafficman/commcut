@@ -32,6 +32,7 @@ from editor.editor import (
 )
 from editor_stub import (
     EditorStub,
+    FakeExportOptionsDialog,
     FakeExportWorker,
     FakeLoadingDialog,
     FakeSummaryDialog,
@@ -103,6 +104,12 @@ def no_modal_dialogs(monkeypatch):
     # substituted as a class: _ask_export_summary still runs as shipped, which
     # is what keeps the release-before-close ordering under test.
     monkeypatch.setattr(editor_module, "ExportSummaryDialog", FakeSummaryDialog)
+    # The options screen is a modal exec() too, so it is substituted as a
+    # class: _ask_export_options still runs as shipped.
+    monkeypatch.setattr(editor_module, "ExportOptionsDialog", FakeExportOptionsDialog)
+    FakeExportOptionsDialog.accept = True
+    FakeExportOptionsDialog.crf = 18
+    FakeExportOptionsDialog.exec_calls = 0
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +370,68 @@ def test_the_batch_receives_a_snapshot_not_the_live_model(export_editor, monkeyp
     # The sidecar is written before the worker starts, so a crash mid-batch
     # cannot lose the record the filenames were built from.
     assert os.path.exists(sidecar_path(editor.media_path))
+
+
+# ---------------------------------------------------------------------------
+# Export options modal
+# ---------------------------------------------------------------------------
+
+def test_the_options_dialog_is_shown_before_export_starts(export_editor,
+                                                          monkeypatch):
+    """The options modal must appear before the editor is frozen and the
+    worker thread is created, so a cancellation costs nothing."""
+    editor, threads = export_editor
+    install_batch(monkeypatch)
+    FakeExportOptionsDialog.accept = True
+
+    editor.on_export()
+
+    assert FakeExportOptionsDialog.exec_calls == 1
+    # After accepting the modal, the export proceeds: a thread was created
+    # and the editor is frozen for the run.
+    assert editor._export_thread is not None
+    assert len(threads) == 1
+    assert editor.editor_enabled is False
+
+
+def test_cancelling_the_options_dialog_starts_nothing(export_editor,
+                                                     monkeypatch):
+    """Rejecting the options dialog leaves the editor untouched: no freeze,
+    no thread, no plan, no transcode."""
+    editor, threads = export_editor
+    seen = install_batch(monkeypatch)
+    FakeExportOptionsDialog.accept = False
+
+    editor.on_export()
+
+    assert FakeExportOptionsDialog.exec_calls == 1
+    assert editor.editor_enabled is True
+    assert editor._export_thread is None
+    assert threads == []
+    assert seen["plans"] == []
+
+
+def test_the_chosen_crf_reaches_the_executor(export_editor, monkeypatch):
+    """The CRF the user picks in the modal is what ffmpeg encodes with."""
+    editor, threads = export_editor
+    FakeExportOptionsDialog.crf = 23
+
+    crf_seen = {}
+
+    def capturing_execute(source_path, plan_, crf=18, ffmpeg_path=None,
+                          on_progress=None, should_cancel=None):
+        crf_seen["crf"] = crf
+        return make_result(written=("Network/Clip 1.mp4",))
+
+    monkeypatch.setattr(editor_module, "plan_export",
+                        lambda *a, **k: make_plan(1))
+    monkeypatch.setattr(editor_module, "execute_export_plan",
+                        capturing_execute)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert crf_seen["crf"] == 23
 
 
 # ---------------------------------------------------------------------------

@@ -127,12 +127,13 @@ class FakeExportWorker:
     """
 
     def __init__(self, source_path, model, schemes, out_dir,
-                 skip_destinations=(), cancel_event=None):
+                 skip_destinations=(), cancel_event=None, crf=18):
         self.planned = FakeSignal()
         self.advanced = FakeSignal()
         self.finished = FakeSignal()
         self.thread = None
         self.deleted = False
+        self.crf = crf
         self._real = ExportWorker(
             source_path,
             model,
@@ -140,6 +141,7 @@ class FakeExportWorker:
             out_dir,
             skip_destinations=skip_destinations,
             cancel_event=cancel_event,
+            crf=crf,
         )
 
     def moveToThread(self, thread):
@@ -281,6 +283,36 @@ class FakeSummaryDialog:
         self.on_open_folder(self.summary.out_dir)
 
 
+class FakeExportOptionsDialog:
+    """Stands in for ExportOptionsDialog, whose exec() would block the run.
+
+    Substituted as a class so `_ask_export_options` still runs. Tests control
+    every instance the shipped code creates through class attributes:
+    `accept` (whether exec() accepts) and `crf` (the value chosen_crf()
+    returns).
+    """
+
+    accept = True
+    crf = 18
+    exec_calls = 0
+
+    def __init__(self, video_info, crf=18, parent=None):
+        self.video_info = video_info
+        self.crf = self.__class__.crf
+        self.parent = parent
+        self.deleted = False
+
+    def exec(self):
+        self.__class__.exec_calls += 1
+        return 1 if self.__class__.accept else 0
+
+    def chosen_crf(self):
+        return self.crf
+
+    def deleteLater(self):
+        self.deleted = True
+
+
 class EditorStub:
     """Minimal MediaPlayer surface covering the tag and segment code paths."""
 
@@ -328,6 +360,7 @@ class EditorStub:
     _report_export_outcome = MediaPlayer._report_export_outcome
     _show_export_cancelled = MediaPlayer._show_export_cancelled
     _ask_export_summary = MediaPlayer._ask_export_summary
+    _ask_export_options = MediaPlayer._ask_export_options
     closeEvent = MediaPlayer.closeEvent
 
     def __init__(self, segments, duration=120.0, media_path=None):
@@ -394,6 +427,7 @@ class EditorStub:
         self._resume_skips = frozenset()
         self._close_after_export = False
         self._last_export_outcome = None
+        self._export_crf = 18
         # What the summary screen was shown, what it answered, and the dialogs
         # themselves so a test can assert on their lifecycle. The dialog is the
         # one substituted widget, for the same reason LoadingDialog is:

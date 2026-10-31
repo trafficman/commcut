@@ -34,12 +34,13 @@ from shared.ffmpeg import (
     ExportClipFailure,
     ExportExecutionResult,
     plan_export,
+    probe_video_info,
 )
 
 # Qt libs
 from PySide6.QtWidgets import (
-    QMainWindow, QDialog, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QPushButton, QStyle,
+    QMainWindow, QDialog, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
+    QPlainTextEdit, QPushButton, QSlider, QStyle,
     QVBoxLayout, QComboBox, QCompleter,
 )
 from shared.loading import LoadingSplash, LoadingDialog
@@ -269,6 +270,88 @@ class ExportSummaryDialog(QDialog):
         return self._action or ACTION_KEEP_EDITING
 
 
+class ExportOptionsDialog(QDialog):
+    """Modal export-options screen shown before a batch begins.
+
+    Shows basic source-video info and lets the user pick a CRF quality value.
+    Accepting returns the chosen CRF; rejecting returns None and the export
+    never starts. Built in code rather than loaded from a `.ui` file, for the
+    same reason as `ExportSummaryDialog`: it is a transient modal with no
+    layout worth designing, and nothing to add to the packaged payload.
+    """
+
+    def __init__(self, video_info, crf=18, parent=None):
+        super().__init__(parent, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.setWindowTitle("Export options")
+        self.setModal(True)
+        self.setFixedWidth(440)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # --- source video information ---
+        info_group = QGroupBox("Source video")
+        info_layout = QVBoxLayout(info_group)
+        resolution = (
+            f"{video_info['width']} x {video_info['height']}"
+            if video_info.get("width") and video_info.get("height")
+            else "unknown"
+        )
+        codec = video_info.get("codec_name") or "unknown"
+        bitrate = video_info.get("bit_rate")
+        bitrate_text = f"{bitrate // 1000} kbps" if bitrate else "unknown"
+        info_layout.addWidget(QLabel(f"Resolution: {resolution}"))
+        info_layout.addWidget(QLabel(f"Video codec: {codec}"))
+        info_layout.addWidget(QLabel(f"Bitrate: {bitrate_text}"))
+        layout.addWidget(info_group)
+
+        # --- quality slider ---
+        quality_group = QGroupBox("Quality")
+        quality_layout = QVBoxLayout(quality_group)
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Lower quality"))
+        self.crf_slider = QSlider(Qt.Horizontal)
+        self.crf_slider.setRange(0, 51)
+        self.crf_slider.setValue(crf)
+        slider_row.addWidget(self.crf_slider)
+        slider_row.addWidget(QLabel("Higher quality"))
+        quality_layout.addLayout(slider_row)
+        self.crf_value = QLabel(f"CRF: {crf}")
+        self.crf_slider.valueChanged.connect(self._on_crf_changed)
+        quality_layout.addWidget(self.crf_value)
+        layout.addWidget(quality_group)
+
+        helper = QLabel(
+            "Lower = higher quality, larger file. 18 is near-lossless.")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+
+        layout.addStretch(1)
+
+        # --- buttons ---
+        button_row = QHBoxLayout()
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_row.addWidget(cancel_button)
+        button_row.addStretch(1)
+        export_button = QPushButton("Export")
+        export_button.setDefault(True)
+        export_button.clicked.connect(self.accept)
+        button_row.addWidget(export_button)
+        layout.addLayout(button_row)
+
+        self._crf = crf
+
+    def _on_crf_changed(self, value):
+        self._crf = value
+        self.crf_value.setText(f"CRF: {value}")
+
+    def chosen_crf(self):
+        """The CRF the user chose, or None if the dialog was cancelled."""
+        return self._crf if self.result() == QDialog.Accepted else None
+
+
 class ExportWorker(QObject):
     """Runs one named export off the GUI thread.
 
@@ -289,7 +372,7 @@ class ExportWorker(QObject):
     finished = Signal(object)
 
     def __init__(self, source_path, model, schemes, out_dir,
-                 skip_destinations=(), cancel_event=None):
+                 skip_destinations=(), cancel_event=None, crf=18):
         super().__init__()
         self.source_path = source_path
         self.model = model
@@ -297,6 +380,7 @@ class ExportWorker(QObject):
         self.out_dir = out_dir
         self.skip_destinations = tuple(skip_destinations)
         self.cancel_event = cancel_event or threading.Event()
+        self.crf = crf
 
     @Slot()
     def run(self):
@@ -320,6 +404,7 @@ class ExportWorker(QObject):
             result = execute_export_plan(
                 self.source_path,
                 plan,
+                crf=self.crf,
                 on_progress=self.advanced.emit,
                 should_cancel=self.cancel_event.is_set,
             )
@@ -438,6 +523,7 @@ class MediaPlayer(QMainWindow):
         self._resume_skips = frozenset()
         self._close_after_export = False
         self._last_export_outcome = None
+        self._export_crf = 18
 
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
@@ -873,6 +959,18 @@ class MediaPlayer(QMainWindow):
         """
         self._begin_export()
 
+    def _ask_export_options(self):
+        """Show the export-options modal and return the chosen CRF, or None.
+
+        Runs before the editor is frozen and any worker thread exists, so a
+        cancellation costs nothing: no freeze, no thread, no work begins.
+        """
+        info = probe_video_info(self.media_path)
+        dialog = ExportOptionsDialog(info, crf=self._export_crf, parent=self)
+        if not dialog.exec():
+            return None
+        return dialog.chosen_crf()
+
     def _begin_export(self, skip_destinations=None):
         """Prepare a batch and start it, asking about a resume only if asked to.
 
@@ -892,11 +990,19 @@ class MediaPlayer(QMainWindow):
             return
         model, schemes, out_dir = prepared
 
+        # Gate the export behind the options modal before anything is frozen
+        # or any worker thread is created. A cancellation here leaves the
+        # editor fully enabled and starts nothing.
+        crf = self._ask_export_options()
+        if crf is None:
+            return
+        self._export_crf = crf
+
         if skip_destinations is None:
             skip_destinations = self._choose_resume_skips()
             if skip_destinations is None:
                 return
-        self._start_export(model, schemes, out_dir, skip_destinations)
+        self._start_export(model, schemes, out_dir, skip_destinations, crf=crf)
 
     def _prepare_export(self):
         """Check the form, persist the sidecar, and snapshot the batch.
@@ -959,7 +1065,7 @@ class MediaPlayer(QMainWindow):
         self._resume_skips = frozenset()
         return ()
 
-    def _start_export(self, model, schemes, out_dir, skip_destinations):
+    def _start_export(self, model, schemes, out_dir, skip_destinations, crf=18):
         """Freeze the editor and hand the batch to a worker thread."""
         # mpv's renderer would otherwise decode against libx264 for the length
         # of the batch. pauseChanged re-syncs the Play button from this.
@@ -973,6 +1079,7 @@ class MediaPlayer(QMainWindow):
             out_dir,
             skip_destinations=skip_destinations,
             cancel_event=self._export_cancel,
+            crf=crf,
         )
         self._export_thread = QThread(self)
         self._export_worker.moveToThread(self._export_thread)
