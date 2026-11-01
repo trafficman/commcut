@@ -40,7 +40,7 @@ from shared.ffmpeg import (
 # Qt libs
 from PySide6.QtWidgets import (
     QMainWindow, QDialog, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QPushButton, QSlider, QStyle,
+    QPlainTextEdit, QPushButton, QCheckBox, QSlider, QStyle,
     QVBoxLayout, QComboBox, QCompleter,
 )
 from shared.loading import LoadingSplash, LoadingDialog
@@ -280,7 +280,7 @@ class ExportOptionsDialog(QDialog):
     layout worth designing, and nothing to add to the packaged payload.
     """
 
-    def __init__(self, video_info, crf=18, parent=None):
+    def __init__(self, video_info, crf=18, mono=False, parent=None):
         super().__init__(parent, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.setWindowTitle("Export options")
         self.setModal(True)
@@ -320,12 +320,19 @@ class ExportOptionsDialog(QDialog):
         self.crf_value = QLabel(f"CRF: {crf}")
         self.crf_slider.valueChanged.connect(self._on_crf_changed)
         quality_layout.addWidget(self.crf_value)
-        layout.addWidget(quality_group)
-
         helper = QLabel(
             "Lower = higher quality, larger file. 18 is near-lossless.")
         helper.setWordWrap(True)
-        layout.addWidget(helper)
+        quality_layout.addWidget(helper)
+        layout.addWidget(quality_group)
+
+        # --- modifications ---
+        mods_group = QGroupBox("Modifications")
+        mods_layout = QVBoxLayout(mods_group)
+        self.mono_checkbox = QCheckBox("Force mono audio")
+        self.mono_checkbox.setChecked(mono)
+        mods_layout.addWidget(self.mono_checkbox)
+        layout.addWidget(mods_group)
 
         layout.addStretch(1)
 
@@ -342,6 +349,7 @@ class ExportOptionsDialog(QDialog):
         layout.addLayout(button_row)
 
         self._crf = crf
+        self._mono = mono
 
     def _on_crf_changed(self, value):
         self._crf = value
@@ -350,6 +358,10 @@ class ExportOptionsDialog(QDialog):
     def chosen_crf(self):
         """The CRF the user chose, or None if the dialog was cancelled."""
         return self._crf if self.result() == QDialog.Accepted else None
+
+    def chosen_mono(self):
+        """Whether the user chose to force mono audio."""
+        return self.mono_checkbox.isChecked() if self.result() == QDialog.Accepted else False
 
 
 class ExportWorker(QObject):
@@ -372,7 +384,8 @@ class ExportWorker(QObject):
     finished = Signal(object)
 
     def __init__(self, source_path, model, schemes, out_dir,
-                 skip_destinations=(), cancel_event=None, crf=18):
+                 skip_destinations=(), cancel_event=None, crf=18,
+                 mono=False):
         super().__init__()
         self.source_path = source_path
         self.model = model
@@ -381,6 +394,7 @@ class ExportWorker(QObject):
         self.skip_destinations = tuple(skip_destinations)
         self.cancel_event = cancel_event or threading.Event()
         self.crf = crf
+        self.mono = mono
 
     @Slot()
     def run(self):
@@ -405,6 +419,7 @@ class ExportWorker(QObject):
                 self.source_path,
                 plan,
                 crf=self.crf,
+                mono=self.mono,
                 on_progress=self.advanced.emit,
                 should_cancel=self.cancel_event.is_set,
             )
@@ -524,6 +539,7 @@ class MediaPlayer(QMainWindow):
         self._close_after_export = False
         self._last_export_outcome = None
         self._export_crf = 18
+        self._export_mono = False
 
         self.ui.clipEnd.clicked.connect(self.on_end_segment)
         self.ui.stageButton.clicked.connect(self.on_stage)
@@ -966,9 +982,11 @@ class MediaPlayer(QMainWindow):
         cancellation costs nothing: no freeze, no thread, no work begins.
         """
         info = probe_video_info(self.media_path)
-        dialog = ExportOptionsDialog(info, crf=self._export_crf, parent=self)
+        dialog = ExportOptionsDialog(
+            info, crf=self._export_crf, mono=self._export_mono, parent=self)
         if not dialog.exec():
             return None
+        self._export_mono = dialog.chosen_mono()
         return dialog.chosen_crf()
 
     def _begin_export(self, skip_destinations=None):
@@ -1002,7 +1020,10 @@ class MediaPlayer(QMainWindow):
             skip_destinations = self._choose_resume_skips()
             if skip_destinations is None:
                 return
-        self._start_export(model, schemes, out_dir, skip_destinations, crf=crf)
+        self._start_export(
+            model, schemes, out_dir, skip_destinations,
+            crf=crf, mono=self._export_mono,
+        )
 
     def _prepare_export(self):
         """Check the form, persist the sidecar, and snapshot the batch.
@@ -1065,7 +1086,8 @@ class MediaPlayer(QMainWindow):
         self._resume_skips = frozenset()
         return ()
 
-    def _start_export(self, model, schemes, out_dir, skip_destinations, crf=18):
+    def _start_export(self, model, schemes, out_dir, skip_destinations,
+                      crf=18, mono=False):
         """Freeze the editor and hand the batch to a worker thread."""
         # mpv's renderer would otherwise decode against libx264 for the length
         # of the batch. pauseChanged re-syncs the Play button from this.
@@ -1080,6 +1102,7 @@ class MediaPlayer(QMainWindow):
             skip_destinations=skip_destinations,
             cancel_event=self._export_cancel,
             crf=crf,
+            mono=mono,
         )
         self._export_thread = QThread(self)
         self._export_worker.moveToThread(self._export_thread)

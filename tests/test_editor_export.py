@@ -109,6 +109,7 @@ def no_modal_dialogs(monkeypatch):
     monkeypatch.setattr(editor_module, "ExportOptionsDialog", FakeExportOptionsDialog)
     FakeExportOptionsDialog.accept = True
     FakeExportOptionsDialog.crf = 18
+    FakeExportOptionsDialog.mono = False
     FakeExportOptionsDialog.exec_calls = 0
 
 
@@ -180,8 +181,8 @@ def install_batch(monkeypatch, plan=None, result=None):
         seen["plans"].append((model, schemes, out_dir, tuple(skip_destinations)))
         return plan if plan is not None else make_plan(1)
 
-    def fake_execute(source_path, plan_, crf=18, ffmpeg_path=None,
-                     on_progress=None, should_cancel=None):
+    def fake_execute(source_path, plan_, crf=18, mono=False,
+                     ffmpeg_path=None, on_progress=None, should_cancel=None):
         seen["calls"].append((plan_, on_progress, should_cancel))
         if result is not None:
             return result
@@ -418,8 +419,9 @@ def test_the_chosen_crf_reaches_the_executor(export_editor, monkeypatch):
 
     crf_seen = {}
 
-    def capturing_execute(source_path, plan_, crf=18, ffmpeg_path=None,
-                          on_progress=None, should_cancel=None):
+    def capturing_execute(source_path, plan_, crf=18, mono=False,
+                          ffmpeg_path=None, on_progress=None,
+                          should_cancel=None):
         crf_seen["crf"] = crf
         return make_result(written=("Network/Clip 1.mp4",))
 
@@ -432,6 +434,55 @@ def test_the_chosen_crf_reaches_the_executor(export_editor, monkeypatch):
     run_batch(threads)
 
     assert crf_seen["crf"] == 23
+
+
+def test_the_chosen_mono_reaches_the_executor(export_editor, monkeypatch):
+    """The mono toggle the user picks in the modal is what ffmpeg encodes
+    with."""
+    editor, threads = export_editor
+    FakeExportOptionsDialog.mono = True
+
+    mono_seen = {}
+
+    def capturing_execute(source_path, plan_, crf=18, mono=False,
+                          ffmpeg_path=None, on_progress=None,
+                          should_cancel=None):
+        mono_seen["mono"] = mono
+        return make_result(written=("Network/Clip 1.mp4",))
+
+    monkeypatch.setattr(editor_module, "plan_export",
+                        lambda *a, **k: make_plan(1))
+    monkeypatch.setattr(editor_module, "execute_export_plan",
+                        capturing_execute)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert mono_seen["mono"] is True
+
+
+def test_mono_defaults_to_false(export_editor, monkeypatch):
+    """With nothing chosen in the modal, mono is not forced."""
+    editor, threads = export_editor
+    FakeExportOptionsDialog.mono = False
+
+    mono_seen = {}
+
+    def capturing_execute(source_path, plan_, crf=18, mono=False,
+                          ffmpeg_path=None, on_progress=None,
+                          should_cancel=None):
+        mono_seen["mono"] = mono
+        return make_result(written=("Network/Clip 1.mp4",))
+
+    monkeypatch.setattr(editor_module, "plan_export",
+                        lambda *a, **k: make_plan(1))
+    monkeypatch.setattr(editor_module, "execute_export_plan",
+                        capturing_execute)
+
+    editor.on_export()
+    run_batch(threads)
+
+    assert mono_seen["mono"] is False
 
 
 # ---------------------------------------------------------------------------

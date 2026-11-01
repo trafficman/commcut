@@ -260,6 +260,7 @@ def _run_planned_clip(
     export_root: str,
     relative_parent: tuple[str, ...],
     crf: int,
+    mono: bool = False,
     should_cancel=None,
     before_commit=None,
 ) -> str:
@@ -295,10 +296,11 @@ def _run_planned_clip(
             "-i", source_path,
             "-t", str(clip.duration),
             "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            temporary_path,
         ]
+        if mono:
+            command.extend(["-ac", "1"])
+        command.extend(["-c:a", "aac", "-b:a", "128k",
+                        "-movflags", "+faststart", temporary_path])
         current_stat = os.stat(temporary_path, follow_symlinks=False)
         if (
             not stat.S_ISREG(current_stat.st_mode)
@@ -387,6 +389,7 @@ def execute_export_plan(
     source_path: str,
     plan: ExportPlan,
     crf: int = 18,
+    mono: bool = False,
     ffmpeg_path: str | None = None,
     on_progress=None,
     should_cancel=None,
@@ -501,6 +504,7 @@ def execute_export_plan(
                     plan.export_root,
                     clip.relative_components[:-1],
                     crf,
+                    mono=mono,
                     should_cancel=should_cancel,
                     before_commit=lambda: write_record_document(
                         record_path, record_document

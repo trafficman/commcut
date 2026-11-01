@@ -127,13 +127,15 @@ class FakeExportWorker:
     """
 
     def __init__(self, source_path, model, schemes, out_dir,
-                 skip_destinations=(), cancel_event=None, crf=18):
+                 skip_destinations=(), cancel_event=None, crf=18,
+                 mono=False):
         self.planned = FakeSignal()
         self.advanced = FakeSignal()
         self.finished = FakeSignal()
         self.thread = None
         self.deleted = False
         self.crf = crf
+        self.mono = mono
         self._real = ExportWorker(
             source_path,
             model,
@@ -142,6 +144,7 @@ class FakeExportWorker:
             skip_destinations=skip_destinations,
             cancel_event=cancel_event,
             crf=crf,
+            mono=mono,
         )
 
     def moveToThread(self, thread):
@@ -294,11 +297,13 @@ class FakeExportOptionsDialog:
 
     accept = True
     crf = 18
+    mono = False
     exec_calls = 0
 
-    def __init__(self, video_info, crf=18, parent=None):
+    def __init__(self, video_info, crf=18, mono=False, parent=None):
         self.video_info = video_info
         self.crf = self.__class__.crf
+        self.mono = self.__class__.mono
         self.parent = parent
         self.deleted = False
 
@@ -308,6 +313,9 @@ class FakeExportOptionsDialog:
 
     def chosen_crf(self):
         return self.crf
+
+    def chosen_mono(self):
+        return self.mono
 
     def deleteLater(self):
         self.deleted = True
@@ -428,6 +436,7 @@ class EditorStub:
         self._close_after_export = False
         self._last_export_outcome = None
         self._export_crf = 18
+        self._export_mono = False
         # What the summary screen was shown, what it answered, and the dialogs
         # themselves so a test can assert on their lifecycle. The dialog is the
         # one substituted widget, for the same reason LoadingDialog is:
