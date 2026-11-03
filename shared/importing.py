@@ -58,7 +58,7 @@ import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from shared.catalog import Catalog
+from shared.catalog import Catalog, CatalogClip
 from shared.exporting import (
     DestinationIndex,
     ExportPlanError,
@@ -129,6 +129,10 @@ class ImportCandidate:
     #: field, two honest values -- nothing in the app reads it for logic.
     provenance: str
     duration: float
+    #: The clip's identity from its source `.cnfo`, if any. A v1 record or a clip
+    #: settled without an ID carries an empty string and is never treated as a
+    #: duplicate on this basis alone.
+    clip_id: str = ""
 
 
 def candidates_from_catalog(catalog: Catalog) -> tuple[ImportCandidate, ...]:
@@ -143,6 +147,7 @@ def candidates_from_catalog(catalog: Catalog) -> tuple[ImportCandidate, ...]:
             tags=clip.tags,
             provenance=clip.record.source,
             duration=clip.record.duration,
+            clip_id=clip.record.clip_id,
         )
         for clip in catalog.clips
     )
@@ -313,6 +318,22 @@ def _library_tags(existing: Catalog | None) -> dict[tuple[str, ...], dict[str, s
     }
 
 
+def _library_clip_ids(existing: Catalog | None) -> dict[str, CatalogClip]:
+    """The clip IDs the destination library already holds, keyed by clip ID.
+
+    Records with no clip ID (v1 records) are excluded: an empty ID is not a
+    real identity, and including it would make every v1 clip look like a
+    duplicate of every other v1 clip.
+    """
+    if existing is None:
+        return {}
+    return {
+        clip.record.clip_id: clip
+        for clip in existing.clips
+        if clip.record.clip_id
+    }
+
+
 def _duration_skip(candidate: ImportCandidate, label: str) -> ImportSkip | None:
     """A clip with no usable duration, or None.
 
@@ -384,6 +405,7 @@ def plan_import(
     folder_scheme = compile_folder_scheme(schemes.folder_scheme)
     index = DestinationIndex()
     library = _library_tags(existing)
+    clip_ids = _library_clip_ids(existing)
 
     clips: list[PlannedImportClip] = []
     skipped: list[ImportSkip] = []
@@ -428,6 +450,21 @@ def plan_import(
             continue
 
         relative_path = destination.relative_path
+        if candidate.clip_id:
+            held = clip_ids.get(candidate.clip_id)
+            if held is not None:
+                skipped.append(ImportSkip(
+                    source_path=candidate.source_path,
+                    relative_path=relative_path,
+                    reason=REASON_ALREADY_PRESENT,
+                    reason_text=(
+                        f"{label} is already in the library as "
+                        f"{os.path.basename(held.path)}, so there was "
+                        f"nothing to import"
+                    ),
+                ))
+                continue
+
         claim = index.claim(destination.relative_components,
                             owner=candidate.source_path)
         if not claim.ok:

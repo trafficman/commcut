@@ -459,6 +459,46 @@ def test_an_existing_clip_carrying_an_extra_tag_is_a_conflict_not_a_match(
     assert "block" in plan.skipped[0].reason_text
 
 
+def test_a_candidate_sharing_a_library_clip_id_is_skipped_as_already_present(
+    schemes, tmp_path,
+):
+    """The clip ID is identity: an incoming clip whose clip ID already lives in
+    the library is skipped as already present, even though its tags (and so its
+    destination) differ."""
+    library = tmp_path / "library"
+    clip_in(library, "Worlds Finest")  # the planted record carries clip_id=TEST_CLIP_ID
+    existing = build_catalog(str(library))
+    incoming = clip_in(tmp_path / "incoming", "Worlds Finest")
+
+    plan = plan_import([candidate(
+        incoming, tags={**REQUIRED, "title": "Other Title"}, clip_id=TEST_CLIP_ID)],
+        schemes, str(library), existing=existing)
+
+    assert plan.clips == ()
+    assert plan.already_present
+    assert plan.refusals == ()
+
+
+def test_a_candidate_with_no_clip_id_is_not_skipped_as_a_duplicate(
+    schemes, tmp_path,
+):
+    """A v1 record, or a clip settled without an ID, carries an empty clip ID and
+    is never treated as a duplicate on that basis alone."""
+    library = tmp_path / "library"
+    clip_in(library, "Worlds Finest")  # the planted record carries clip_id=TEST_CLIP_ID
+    existing = build_catalog(str(library))
+    incoming = clip_in(tmp_path / "incoming", "Worlds Finest")
+
+    plan = plan_import([candidate(
+        incoming, tags={**REQUIRED, "title": "Other Title"}, clip_id="")],
+        schemes, str(library), existing=existing)
+
+    # Empty clip ID never matches; a different title means a different
+    # destination, so the clip is planned rather than skipped.
+    assert len(plan.clips) == 1
+    assert plan.already_present == ()
+
+
 def test_a_re_import_reports_everything_and_writes_nothing(schemes, tmp_path):
     library, existing = occupied_library(schemes, tmp_path)
     incoming = clip_in(tmp_path / "incoming", "Worlds Finest")

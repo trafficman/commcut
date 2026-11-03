@@ -80,7 +80,7 @@ def library(tmp_path):
         source="Mine.mp4", segment_index=0, start=0.0, duration=30.0,
         tags=(("title", "Mine"), ("network", "Cartoon Network"),
               ("filler_type", "Promo"), ("time_period", "2000s")),
-        clip_id=TEST_CLIP_ID,
+        clip_id="11111111-1111-1111-1111-111111111111",
     ))
     return root
 
