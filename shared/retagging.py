@@ -431,3 +431,83 @@ def align_misaligned_clips(
         errors=tuple(errors),
         cancelled=should_cancel(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Library maintenance: scan for duplicate clip IDs
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DuplicateClipGroup:
+    """A set of clips that all carry the same clip ID.
+
+    `clip_id` is the shared identity; `clips` are the clips that carry it,
+    each with its own path and tags.
+    """
+
+    clip_id: str
+    clips: tuple[CatalogClip, ...]
+
+
+@dataclass(frozen=True)
+class DuplicateScanResult:
+    """What a duplicate clip ID scan found.
+
+    `groups` are clip ID values shared by more than one clip, each with the
+    clips that carry it. A library with no duplicated IDs returns empty groups.
+    """
+
+    groups: tuple[DuplicateClipGroup, ...] = ()
+    clips_found: int = 0
+    cancelled: bool = False
+
+
+def find_duplicate_clip_ids(
+    catalog: Catalog,
+    on_progress: Callable[[int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> DuplicateScanResult:
+    """Find clips that share the same clip ID.
+
+    Groups every clip's non-empty ``clip_id`` together, and reports any ID
+    carried by more than one clip. Empty clip IDs (v1 records) are excluded:
+    an empty ID is not a real identity, and including it would make every
+    v1 clip look like a duplicate of every other v1 clip.
+
+    The catalog is consumed read-only. Nothing here writes to disk.
+    """
+    if on_progress is None:
+        on_progress = _ignore_progress
+    if should_cancel is None:
+        should_cancel = _never_cancel
+
+    if catalog.cancelled:
+        return DuplicateScanResult(
+            clips_found=len(catalog.clips),
+            cancelled=True,
+        )
+
+    clips = catalog.clips
+    cancelled = False
+
+    by_id: dict[str, list[CatalogClip]] = {}
+    for index, clip in enumerate(clips):
+        if should_cancel():
+            cancelled = True
+            break
+        on_progress(index + 1, clip.relative_path)
+        clip_id = clip.record.clip_id
+        if clip_id:
+            by_id.setdefault(clip_id, []).append(clip)
+
+    groups = tuple(
+        DuplicateClipGroup(clip_id=clip_id, clips=tuple(group_clips))
+        for clip_id, group_clips in sorted(by_id.items())
+        if len(group_clips) > 1
+    )
+
+    return DuplicateScanResult(
+        groups=groups,
+        clips_found=len(clips),
+        cancelled=cancelled,
+    )

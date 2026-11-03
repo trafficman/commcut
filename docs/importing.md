@@ -129,6 +129,11 @@ So `plan_import` takes the destination library and decides per clip:
   already present. `ImportPlan.already_present`.
 - taken, anything else → **refused by name**, naming the tags that differ.
   `ImportPlan.refusals`.
+- the record already there carries **the same clip ID** (the clip's identity
+  from its `.cnfo`, per invariant 12) → **skipped** as already present, naming
+  the existing clip, even if the tags differ. `ImportPlan.already_present`.
+- a candidate whose clip ID is already claimed by an earlier candidate in the
+  same batch → skipped as already present.
 
 Two details that are easy to get wrong:
 
@@ -140,6 +145,8 @@ Two details that are easy to get wrong:
   `Cartoon Network/A Clip.mp4` are one file, and string comparison would let the
   incoming clip overwrite the existing one — the single outcome worse than a
   refusal.
+- A clip ID that is empty (a v1 record, written before clip IDs existed) is never
+  treated as a duplicate: every empty ID would otherwise match every other empty ID.
 
 Worth knowing: with the **shipped** schemes a same-destination conflict is nearly
 unreachable, because all ten tags appear in the filename and differing in any of

@@ -236,6 +236,17 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   (invariant 14), and `closeEvent` refuses/defers close while a scan or align
   thread runs, exactly as the walk does.
 
+**Duplicate clip IDs.** The Maintenance tab also offers **Scan for Duplicate
+Clip IDs**, which runs `shared/retagging.py:find_duplicate_clip_ids` off the
+GUI thread behind a cancellable dialog. Every clip's non-empty clip ID from its
+`.cnfo` record is grouped, and any ID carried by more than one clip is reported
+as a group with the paths of the clips that carry it. The scan is flag-only:
+it reports what it finds and offers no automatic fix, because two clips that
+share an ID need a person to decide which one to keep or re-identify. Empty
+clip IDs (v1 records) are excluded. `MaintenanceDuplicateScanWorker` follows the
+same `worker.finished → thread.quit` teardown, and `closeEvent` refuses or
+defers close while the thread runs.
+
 - **Library Sharing** (`sharing/sharing.py`, `shared/sharing.py`): the
   main menu's **Library Sharing** button. The export library, or a
   tag-filtered part of it, as a zip a recipient drops into their

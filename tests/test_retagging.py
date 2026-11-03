@@ -24,7 +24,11 @@ from shared.records import (
     write_record,
 )
 from shared.retagging import (
+    DuplicateScanResult,
+    DuplicateClipGroup,
     execute_retag,
+    find_duplicate_clip_ids,
+    find_misaligned_clips,
     plan_retag,
     retag_is_in_place,
 )
@@ -285,3 +289,44 @@ def test_a_case_only_change_is_a_move(library):
     record = load_record(
         os.path.join(root, "cn", "Promo", "2000s", "Alpha.cnfo"))
     assert record.tag_dict == tags
+
+
+def test_find_duplicate_clip_ids_finds_groups(library):
+    root, catalog, clips = library
+    # Add a third clip that shares Alpha's clip ID.
+    write_clip(root, "CN/Promo/2000s/Gamma.mp4",
+               tags_for("Gamma"),
+               clip_id="11111111-1111-1111-1111-111111111111")
+    catalog = build_catalog(root)
+
+    result = find_duplicate_clip_ids(catalog)
+
+    assert not result.cancelled
+    assert result.clips_found == 3
+    assert len(result.groups) == 1
+    group = result.groups[0]
+    assert group.clip_id == "11111111-1111-1111-1111-111111111111"
+    assert len(group.clips) == 2
+
+
+def test_find_duplicate_clip_ids_excludes_empty_ids(library):
+    root, catalog, clips = library
+    # v1 records with empty clip IDs should not form a duplicate group.
+    write_v1_clip(root, "Old/Promo/2000s/No ID.mp4", tags_for("No ID"))
+    write_v1_clip(root, "Old/Promo/2000s/No ID Two.mp4",
+                  tags_for("No ID Two"))
+
+    result = find_duplicate_clip_ids(build_catalog(root))
+
+    assert not result.cancelled
+    assert len(result.groups) == 0
+
+
+def test_find_duplicate_clip_ids_returns_none_for_clean_library(library):
+    root, catalog, clips = library
+
+    result = find_duplicate_clip_ids(catalog)
+
+    assert not result.cancelled
+    assert result.clips_found == 2
+    assert len(result.groups) == 0

@@ -245,29 +245,39 @@
           </layout>
          </widget>
         </widget>
-       </item>
-      </layout>
-     </widget>
-     <widget class="QWidget" name="maintenanceTab">
-      <property name="title" stdset="0">
-       <string>Maintenance</string>
-      </property>
-      <attribute name="title">
-       <string/>
-      </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout">
-       <item>
-        <widget class="QPushButton" name="buttonScanLibrary">
-         <property name="toolTip">
-          <string>Scan the library for clips whose filename or location do not match their tags, then align them.</string>
-         </property>
-         <property name="text">
-          <string>Scan Library for Misaligned Clips</string>
-         </property>
-        </widget>
-       </item>
-      </layout>
-     </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="maintenanceTab">
+       <property name="title" stdset="0">
+        <string>Maintenance</string>
+       </property>
+       <attribute name="title">
+        <string/>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout">
+        <item>
+         <widget class="QPushButton" name="buttonScanLibrary">
+          <property name="toolTip">
+           <string>Scan the library for clips whose filename or location do not match their tags, then align them.</string>
+          </property>
+          <property name="text">
+           <string>Scan Library for Misaligned Clips</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonScanDuplicateIds">
+          <property name="toolTip">
+           <string>Scan the library for clips that share the same clip ID in their .cnfo record, and report them.</string>
+          </property>
+          <property name="text">
+           <string>Scan for Duplicate Clip IDs</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
     </widget>
    </item>
   </layout>

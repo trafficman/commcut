@@ -191,6 +191,14 @@ class StubMaintenanceAlignWorker(manager_module.MaintenanceAlignWorker):
         pass
 
 
+class StubMaintenanceDuplicateScanWorker(
+        manager_module.MaintenanceDuplicateScanWorker):
+    """Like `StubCatalogWorker`, for the duplicate ID scan worker."""
+
+    def moveToThread(self, thread):
+        pass
+
+
 class FakeLoadingDialog(QObject):
     """A `LoadingDialog` whose `exec()` returns at once.
 
@@ -344,6 +352,8 @@ def harness(qapp, monkeypatch, tmp_path):
                         StubMaintenanceScanWorker)
     monkeypatch.setattr(manager_module, "MaintenanceAlignWorker",
                         StubMaintenanceAlignWorker)
+    monkeypatch.setattr(manager_module, "MaintenanceDuplicateScanWorker",
+                        StubMaintenanceDuplicateScanWorker)
     monkeypatch.setattr(manager_module, "create_mpv_player",
                         lambda _container: FakePlayer())
     monkeypatch.setattr(manager_module, "MpvBridge",
@@ -1104,6 +1114,66 @@ def test_closing_during_a_scan_closes_when_it_stops(harness):
             assert not window.isVisible()
         finally:
             FakeThread.auto_run = True
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_duplicate_scan_reports_none_for_a_clean_library(harness):
+    """A library where every clip has its own clip ID reports no duplicates."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        window.on_scan_duplicate_ids()
+
+        assert Recorder.seen[-1][0] == "Duplicate Clip ID Scan Complete"
+        assert "No duplicate clip IDs found" in Recorder.seen[-1][1]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_duplicate_scan_reports_shared_clip_ids(harness):
+    """Two clips planted with the same clip ID are reported as a group."""
+    open_library, root = harness
+    # Plant two clips with the same clip ID.
+    plant_clip(root, tags_for("Alpha"),
+               clip_id="11111111-1111-1111-1111-111111111111")
+    plant_clip(root, tags_for("Beta"),
+               clip_id="11111111-1111-1111-1111-111111111111")
+    plant_clip(root, tags_for("Gamma"))  # its own ID
+    window = open_library()
+
+    try:
+        window.on_scan_duplicate_ids()
+
+        assert Recorder.seen[-1][0] == "Duplicate Clip ID Scan Complete"
+        message = Recorder.seen[-1][1]
+        assert "1 clip ID(s) are shared by 2 clip(s)" in message
+        assert "11111111-1111-1111-1111-111111111111" in message
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_closeevent_refuses_over_a_duplicate_scan_thread(harness):
+    """Closing while a duplicate ID scan runs is deferred, the same as a walk."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"))
+
+    try:
+        window._dup_scan_thread = FakeThread()
+        window._dup_scan_cancel = threading.Event()
+        event = QCloseEvent()
+        window.closeEvent(event)
+        assert not event.isAccepted()
+        assert window._dup_scan_cancel.is_set()
+        assert window._close_after_dup_scan
+
+        window._dup_scan_thread = None
+        assert window.close()
+        assert not window.isVisible()
     finally:
         window.close()
         window.deleteLater()

@@ -73,8 +73,10 @@ from shared.mpv import MpvBridge, create_mpv_player
 from shared.naming import compile_filename_scheme
 from shared.paths import compile_folder_scheme
 from shared.retagging import (
+    DuplicateScanResult,
     align_misaligned_clips,
     execute_retag,
+    find_duplicate_clip_ids,
     find_misaligned_clips,
     plan_retag,
     retag_is_in_place,
@@ -172,6 +174,45 @@ class MaintenanceScanWorker(QObject):
         self.progressed.emit(clips_found, relative_path)
 
 
+class MaintenanceDuplicateScanWorker(QObject):
+    """Scans the library for clips that share the same clip ID.
+
+    `find_duplicate_clip_ids` groups clips by their record's clip ID and
+    reports any ID carried by more than one clip. It is read-only and
+    reports progress per clip checked. The outcome is emitted once —
+    `done` with a `DuplicateScanResult`, or `failed` with a reason — and
+    `finished` always follows, which is the signal the thread's teardown
+    hangs off.
+    """
+
+    done = Signal(object)
+    failed = Signal(str)
+    progressed = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, catalog, cancel_event=None):
+        super().__init__()
+        self.catalog = catalog
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = find_duplicate_clip_ids(
+                self.catalog,
+                on_progress=self._progress,
+                should_cancel=self.cancel_event.is_set,
+            )
+            self.done.emit(result)
+        except Exception as error:
+            log_exception("scanning for duplicate clip IDs failed", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        self.finished.emit()
+
+    def _progress(self, clips_checked, relative_path):
+        self.progressed.emit(clips_checked, relative_path)
+
+
 class MaintenanceAlignWorker(QObject):
     """Moves misaligned clips to where their tags put them.
 
@@ -258,6 +299,13 @@ class LibraryManagerWindow(QMainWindow):
         self._align_result = None
         self._align_error = None
         self._close_after_align = False
+        self._dup_scan_thread = None
+        self._dup_scan_worker = None
+        self._dup_scan_dialog = None
+        self._dup_scan_cancel = None
+        self._dup_scan_result = None
+        self._dup_scan_error = None
+        self._close_after_dup_scan = False
 
         self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
@@ -283,6 +331,8 @@ class LibraryManagerWindow(QMainWindow):
                     self._on_tag_edited)
 
         self.ui.buttonScanLibrary.clicked.connect(self.on_scan_library)
+        self.ui.buttonScanDuplicateIds.clicked.connect(
+            self.on_scan_duplicate_ids)
 
         self._begin_walk()
 
@@ -638,6 +688,14 @@ class LibraryManagerWindow(QMainWindow):
             return
         self._begin_scan()
 
+    def on_scan_duplicate_ids(self):
+        """Scan the library for clips that share the same clip ID."""
+        if self._thread is not None:
+            return
+        if self._dup_scan_thread is not None:
+            return
+        self._begin_duplicate_scan()
+
     def _begin_scan(self):
         """Scan the library on a worker thread, behind a dialog.
 
@@ -670,6 +728,41 @@ class LibraryManagerWindow(QMainWindow):
         dialog.canceled.connect(self._on_scan_cancel_requested)
         dialog.show()
         self._scan_dialog = dialog
+
+        thread.start()
+
+    def _begin_duplicate_scan(self):
+        """Scan the library for duplicate clip IDs on a worker thread, behind a
+        dialog.
+
+        The window is frozen for the scan's duration, and the dialog
+        is deliberately parentless, because `setEnabled(False)` cascades
+        to child widgets and would disable the dialog's Cancel. The
+        thread's teardown hangs off `QThread.finished` (invariant 14).
+        """
+        self._dup_scan_cancel = threading.Event()
+        total = len(self._catalog.clips)
+        worker = MaintenanceDuplicateScanWorker(
+            self._catalog, cancel_event=self._dup_scan_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_duplicate_scan_done)
+        worker.failed.connect(self._on_duplicate_scan_failed)
+        worker.progressed.connect(self._on_duplicate_scan_progressed)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_duplicate_scan_stopped)
+        self._dup_scan_worker = worker
+        self._dup_scan_thread = thread
+
+        self.setEnabled(False)
+        dialog = LoadingDialog(
+            "Scanning for duplicate clip IDs…", cancellable=True, modal=False,
+            title="Library Manager")
+        dialog.set_range(0, total)
+        dialog.canceled.connect(self._on_duplicate_scan_cancel_requested)
+        dialog.show()
+        self._dup_scan_dialog = dialog
 
         thread.start()
 
@@ -763,6 +856,87 @@ class LibraryManagerWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer == QMessageBox.Yes:
             self._begin_align(misaligned)
+
+    def _on_duplicate_scan_cancel_requested(self):
+        """The user gave up on the duplicate ID scan: stop it."""
+        if self._dup_scan_cancel is not None:
+            self._dup_scan_cancel.set()
+
+    def _on_duplicate_scan_progressed(self, clips_checked, relative_path):
+        """Update the duplicate ID scan dialog's progress and message."""
+        dialog = self._dup_scan_dialog
+        if dialog is not None:
+            dialog.set_message(f"Scanned {clips_checked} clip(s)")
+            dialog.set_value(clips_checked)
+
+    def _on_duplicate_scan_done(self, result):
+        """The duplicate ID scan finished: close the dialog and store the result."""
+        self._dup_scan_result = result
+        self._dup_scan_error = None
+        dialog, self._dup_scan_dialog = self._dup_scan_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_duplicate_scan_failed(self, message):
+        """The duplicate ID scan could not run. The window stays up with the reason."""
+        self._dup_scan_error = message
+        self._dup_scan_result = None
+        dialog, self._dup_scan_dialog = self._dup_scan_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_duplicate_scan_stopped(self):
+        """The duplicate ID scan thread has stopped; clean up and report results."""
+        thread, self._dup_scan_thread = self._dup_scan_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._dup_scan_worker = self._dup_scan_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        dialog, self._dup_scan_dialog = self._dup_scan_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self.setEnabled(True)
+
+        if self._close_after_dup_scan:
+            self._close_after_dup_scan = False
+            self._close_video()
+            self.close()
+            return
+
+        if self._dup_scan_error is not None:
+            error, self._dup_scan_error = self._dup_scan_error, None
+            QMessageBox.warning(self, "Scan failed", error)
+            return
+
+        result = self._dup_scan_result
+        self._dup_scan_result = None
+        if result is None or result.cancelled:
+            return
+
+        self._show_duplicate_scan_results(result)
+
+    def _show_duplicate_scan_results(self, result):
+        """Report what the duplicate ID scan found. Flag only — no fix action."""
+        groups = result.groups
+        clips_found = result.clips_found
+
+        parts = []
+        if groups:
+            total_dup_clips = sum(len(group.clips) for group in groups)
+            parts.append(
+                f"{len(groups)} clip ID(s) are shared by "
+                f"{total_dup_clips} clip(s):")
+            for group in groups:
+                parts.append(f"  ID {group.clip_id}:")
+                for clip in group.clips:
+                    parts.append(f"    - {clip.relative_path}")
+        if not groups:
+            parts.append(
+                f"No duplicate clip IDs found across {clips_found} clip(s).")
+
+        QMessageBox.warning(self, "Duplicate Clip ID Scan Complete",
+                            "\n".join(parts))
 
     def _begin_align(self, misaligned):
         """Align the misaligned clips on a worker thread, behind a dialog."""
@@ -970,6 +1144,15 @@ class LibraryManagerWindow(QMainWindow):
             if self._align_cancel is not None:
                 self._align_cancel.set()
             self._close_after_align = True
+            event.ignore()
+            return
+        if self._dup_scan_thread is not None:
+            # The duplicate ID scan is still running. Ask it to stop and
+            # defer the close to `_on_duplicate_scan_stopped`, which runs
+            # once the thread has really stopped.
+            if self._dup_scan_cancel is not None:
+                self._dup_scan_cancel.set()
+            self._close_after_dup_scan = True
             event.ignore()
             return
         self._close_video()
