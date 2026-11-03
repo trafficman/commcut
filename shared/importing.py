@@ -191,8 +191,11 @@ class ImportSkip:
     reason_text: str
 
     def __str__(self) -> str:
-        target = f" -> {self.relative_path}" if self.relative_path else ""
-        return f"{self.source_path}{target}: {self.reason_text}"
+        lines = [self.source_path]
+        if self.relative_path:
+            lines.append(f"    -> {self.relative_path}")
+        lines.append(f"    {self.reason_text}")
+        return "\n".join(lines)
 
 
 def _reason_for_plan_error(error: Exception) -> str:
@@ -458,9 +461,9 @@ def plan_import(
                     relative_path=relative_path,
                     reason=REASON_ALREADY_PRESENT,
                     reason_text=(
-                        f"{label} is already in the library as "
-                        f"{os.path.basename(held.path)}, so there was "
-                        f"nothing to import"
+                        f"{label} has the same clip ID as "
+                        f"{os.path.basename(held.path)} already in "
+                        f"your library, so it was not imported"
                     ),
                 ))
                 continue

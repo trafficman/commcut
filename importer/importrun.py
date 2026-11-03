@@ -220,8 +220,8 @@ def _summary_body(result: ImportResult, plan, library_root: str) -> list[str]:
     body = [f"Imported {len(result.written)} clip(s) into {library_root}."]
     body.append(_source_fate(plan))
     if result.already_present:
-        body.append(f"{len(result.already_present)} were already there with these "
-                    f"tags, so there was nothing to do.")
+        body.append(f"{len(result.already_present)} were already in your library, "
+                    f"so there was nothing to do.")
     if refusals:
         body.append(f"{len(refusals)} were left alone:")
         body.extend(f"  - {skip}" for skip in refusals)
