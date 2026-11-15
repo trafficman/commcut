@@ -1324,6 +1324,42 @@ def test_unchecking_the_last_clip_returns_to_singular_mode(harness):
         window.deleteLater()
 
 
+def test_exiting_bulk_mode_has_no_stale_selection(harness):
+    """After unchecking the last clip, there must be no phantom current
+    clip: nothing on the left should read as selected, and picking
+    another clip must not prompt about unsaved edits that do not
+    exist."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4")
+        assert window._mode == "bulk"
+
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+
+        tree = window.ui.treeLibrary
+        assert window._mode == "singular"
+        assert tree.selectedItems() == []
+        assert window._clip is None
+        assert window._current_leaf is None
+        assert window.ui.labelClipName.text() == ""
+        assert window.ui.tagForm.read_tags()["title"] == ""
+
+        Recorder.seen.clear()
+        select(window, "CN/Promo/2000s/Beta.mp4")
+
+        assert window.ui.labelClipName.text() == \
+            "CN/Promo/2000s/Beta.mp4"
+        assert not any(
+            title == "Unsaved changes" for title, _ in Recorder.seen)
+        assert field(window, "title") == "Beta"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_clip_row_click_toggles_the_check_in_bulk_mode(harness):
     open_library, root = harness
     window = open_library(

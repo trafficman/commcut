@@ -805,6 +805,8 @@ class LibraryManagerWindow(QMainWindow):
         goes away — it is unique per clip and can never be common."""
         self._mode = "bulk"
         self._close_video()
+        self._clip = None
+        self._current_leaf = None
         for widget in (self.ui.videoContainer, self.ui.buttonPlay,
                        self.ui.sliderPosition, self.ui.labelPosition,
                        self.ui.labelDestination):
@@ -824,10 +826,13 @@ class LibraryManagerWindow(QMainWindow):
         self._bulk_uniform = {}
         self._clear_blend_artifacts()
         self.ui.treeLibrary.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.ui.treeLibrary.clearSelection()
         for widget in (self.ui.videoContainer, self.ui.buttonPlay,
                        self.ui.sliderPosition, self.ui.labelPosition,
                        self.ui.labelDestination):
             widget.show()
+        self._clip = None
+        self._current_leaf = None
         self.ui.tagForm.field("title").setEnabled(True)
         self.ui.tagForm.write_tags({})
         self.ui.labelClipName.setText("")
