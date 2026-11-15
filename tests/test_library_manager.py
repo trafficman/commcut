@@ -1260,7 +1260,7 @@ def test_the_pane_starts_in_singular_mode(harness):
     try:
         assert window._mode == "singular"
         assert window.ui.buttonSave.text() == "Save"
-        assert window.ui.tagForm.field("title").isEnabled()
+        assert not window.ui.tagForm.field("title").isReadOnly()
         assert not window.ui.videoContainer.isHidden()
     finally:
         window.close()
@@ -1273,19 +1273,29 @@ def test_checking_one_clip_switches_the_pane_to_bulk_mode(harness):
 
     try:
         assert window._mode == "singular"
+        # The user loads a clip singular first: the title carries over
+        # into the blended form this opens.
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+        assert field(window, "title") == "Alpha"
 
         check_leaf(window, "CN/Promo/2000s/Alpha.mp4")
 
         assert window._mode == "bulk"
+        assert field(window, "title") == ""
         assert window.ui.labelClipName.text() == "1 clip selected"
         assert window.ui.buttonSave.text() == "Apply to 1 clip"
-        assert not window.ui.tagForm.field("title").isEnabled()
+        assert window.ui.tagForm.field("title").isReadOnly()
+        title = window.ui.tagForm.field("title")
+        assert title.cursor().shape() == Qt.ForbiddenCursor
+        assert "unique" in title.toolTip()
         assert window.ui.videoContainer.isHidden()
         assert window.ui.buttonPlay.isHidden()
         assert window.ui.sliderPosition.isHidden()
         assert window.ui.labelDestination.isHidden()
-        # The player was never constructed for a hidden pane.
-        assert RecordingBridge.instances == []
+        # The singular player that was playing Alpha was shut down on
+        # the way into bulk mode.
+        assert len(RecordingBridge.instances) == 1
+        assert RecordingBridge.instances[-1].shutdowns == 1
 
         check_leaf(window, "CN/Promo/2000s/Beta.mp4")
 
@@ -1314,11 +1324,14 @@ def test_unchecking_the_last_clip_returns_to_singular_mode(harness):
         assert window._mode == "singular"
         assert window.ui.buttonSave.text() == "Save"
         assert not window.ui.buttonSave.isEnabled()
-        assert window.ui.tagForm.field("title").isEnabled()
+        assert not window.ui.tagForm.field("title").isReadOnly()
         assert not window.ui.videoContainer.isHidden()
         # Nothing is loaded in singular mode again.
         assert window.ui.labelClipName.text() == ""
         assert len(RecordingBridge.instances) == 0
+        title = window.ui.tagForm.field("title")
+        assert title.cursor().shape() == Qt.IBeamCursor
+        assert title.toolTip() == ""
     finally:
         window.close()
         window.deleteLater()

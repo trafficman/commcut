@@ -812,7 +812,16 @@ class LibraryManagerWindow(QMainWindow):
                        self.ui.labelDestination):
             widget.hide()
         self.ui.treeLibrary.setSelectionMode(QAbstractItemView.NoSelection)
-        self.ui.tagForm.field("title").setEnabled(False)
+        title = self.ui.tagForm.field("title")
+        title.setReadOnly(True)
+        title.setCursor(Qt.ForbiddenCursor)
+        title.setToolTip(
+            "Titles are unique per clip and cannot be edited in bulk "
+            "mode. Uncheck every clip to edit one clip's title.")
+        title.setStyleSheet("QLineEdit { color: palette(mid); }")
+        title.blockSignals(True)
+        set_field_text(title, "")
+        title.blockSignals(False)
         self.ui.tagForm.refresh_required_fields(exempt=True)
         self._blended_feed(initial=True)
 
@@ -833,7 +842,6 @@ class LibraryManagerWindow(QMainWindow):
             widget.show()
         self._clip = None
         self._current_leaf = None
-        self.ui.tagForm.field("title").setEnabled(True)
         self.ui.tagForm.write_tags({})
         self.ui.labelClipName.setText("")
         self.ui.labelStatus.setText("")
@@ -844,12 +852,18 @@ class LibraryManagerWindow(QMainWindow):
 
     def _clear_blend_artifacts(self):
         """Unwind mixed-state placeholders and tooltips on the nine
-        suggestable fields. Title exposes none of these."""
+        suggestable fields, and the title field's bulk-mode
+        forbidden cursor and tooltip."""
         for key in SUGGESTED_TAG_FIELDS:
             field = self.ui.tagForm.field(key)
             line = field.lineEdit()
             line.setPlaceholderText("")
             field.setToolTip("")
+        title = self.ui.tagForm.field("title")
+        title.setReadOnly(False)
+        title.setCursor(Qt.IBeamCursor)
+        title.setToolTip("")
+        title.setStyleSheet("")
 
     def _blended_feed(self, initial=False):
         """Blend the checked clips into the form.
