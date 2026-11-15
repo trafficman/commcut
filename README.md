@@ -20,7 +20,7 @@ and make it all the way to
 
 I have spent countless hours figuring out an editing workflow and an organizational structure to make that dream a reality, and that was *before* I had even considered designing my own filler editor/library manager. Now, for the first time, *you* too can benefit from my struggles, for the low low price of downloading my junk and reading my ramblings!
 
-So, **what is CommCut**? In short, it is **a suite of tools to manage, rename, organize, and edit filler for the purposes of linear television emulation.** I'm a highly ~~lazy~~ efficient person, so every single workflow in this program tries to automate as much as possible, and that which cannot be fully automated is offered for user review and/or accomplished in the smallest amount of clicks and typing possible.
+So, **what is CommCut**? In short, it is **a suite of tools to manage, rename, organize, and edit filler for the purposes of linear television emulation.** I'm a highly ~~lazy~~ efficient person, so every single workflow in this program tries to automate as much as possible, and anything that can't be fully automated is offered for user review and/or accomplished in the least amount of clicks and typing as possible.
 
 **AI Disclaimer**: An LLM wrote 95% of this code, some of it more thoroughly reviewed by me (an admittedly amateur coder) than others. I designed and tested every module (which is preserved in the [closed Issues](https://github.com/trafficman/commcut/issues?q=is%3Aissue+state%3Aclosed)), made most of the UI myself, drew everything in mspaint (poorly), and wrote all of the public facing text aside from the install instructions and the engineering documentation.
 
@@ -34,9 +34,10 @@ So, **what is CommCut**? In short, it is **a suite of tools to manage, rename, o
 ## Features
 
 - **Video Editor**: Scan a compilation video for commercial boundaries, then verify and/or confirm those boundaries one at a time, from left to right.
-- **Tagging**: Apply tags to each clip in your library, this allows them to be named and organized to your liking (the schemes are user customizable!), plus trivializes sharing!
+- **Tagging**: Apply tags to each clip in your library, this allows them to be named and organized to your liking (the schemes are user customizable), plus trivializes sharing!
 - **Importing**: Whether it's an existing, untagged library, or a library which has already been processed by CommCut, there's an easy to use wizard that walks you through the process of meshing that library into yours.
-- **File/Folder Schemes**: Name and organize your filler library *your* way, with tag based naming and organization schemes that are customizable in the settings, try to match your existing structure or use the provided defaults!
+- **File/Folder Schemes**: Name and organize your filler library *your* way, with tag based schemes that are customizable in the settings, try to match your existing structure or use the provided defaults!
+- **Sharing**: Easily create a zip file containing all or part of your library, send it to a friend, and they can drag and drop it into the main menu to import it into their own.
 
 # Install
 
@@ -116,6 +117,8 @@ use the **Watch** dropdown → **Custom** → **Releases**.
 
 ## Editor
 
+**Cut compilations of commercials into individual clips, tag them, export them, properly named and organized, to your library**
+
 Video tutorial (**unmute**):
 
 
@@ -123,6 +126,21 @@ https://github.com/user-attachments/assets/a6e2e82e-040b-456e-8159-c6f3e7087310
 
 
 (Real video tutorials coming soon)
+
+**In Short**:
+
+1. Calibrate the Segment Scanner by running test scans on a 2 minute preview of your source video first
+2. Define the endpoint of the current clip with the "End Seg" button
+3. Fill out tags as you see fit (mouse over their titles for a brief tooltip)
+4. Once satisified with the current clip, press "Stage"
+5. Repeat this process until you've processed every clip
+6. Export your clips, conveniently named and organized according to their tags, by pressing "Finished - Export" at the bottom
+
+**Extensive instructions also available**:
+
+<details>
+
+<summary>Expand for in depth Video Editor instructions</summary>
 
 ### Main Menu
 
@@ -196,14 +214,52 @@ When you've staged the last segment, click "Finished - Export" at the bottom, an
 
 **Example**: `Cartoon Network/Blocks/Toonami/Promo/Cartoon Network - Promo - 2000 - Toonami Worlds Finest (30 Sec Remastered).mp4`
 
-## Library Importer
+</details>
 
-Included in the current release, usage instructions coming soon.
+## Library Manager
+
+**Manage your filler clips, (soon) deal with duplicate clips, and perform library maintenance**
+
+## Library Import
+
+**Import both tagged and untagged libraries into your own**
+
+Drop an existing untagged filler library folder, or a library which has already been tagged by CommCut, into `/import/`, and click the button on the main menu. Also supports Library Shares produced by CommCut itself, simply drag and drop the share `.zip` file onto the main menu.
+
+### Untagged Libraries
+
+Any clips in the `/import` folder which do not have an associated `.cnfo` files with tags will first pass through the Untagged Library Mesh, where you will apply tags either semi-automatically (via folder names) or manually. It may prove easier to do some amount of initial organization at a file level first, before importing, as folder names are a quick and easy way to automatically apply tags across large swathes of clips.
+
+**NOTE**: The `/import/` folder is potentially destructive: Through use, CommCut will rename, reorganize, move, and delete files in this folder. If you wish to preserve the original state of your library, make sure you're working on a copy of it, and have the library source stored safely somewhere else.
+
+1. Assuming the existing untagged library has some sort of organization scheme, the Untagged Library Mesh will show you each folder name, and ask you what namespace and tag should be applied to every clip contained within it (recursively, so it applies to clips in all subfolders as well). Each instance of that folder name will have the tag applied to it, so any duplicates will receive it as well. Folders that do not need a tag (e.g. technically namespace folders like "Blocks") can be skipped.
+2. Once you've assigned a tag to every folder name, you will advance to the individual clip Tag Editor, where you will assign a title to each clip, and make any needed tag edits.
+3. Title must be manuall set for each clip, if the file names contain the title, this can be sped up: click and drag your cursor over the file name at the top in order to highlight it, then click the button to add the highlighted text as the title.
+4. Apply any other required/desired tags as needed on a clip by clip basis.
+5. Derive tags based on text contained in the file name by clicking "Manage Autofill Rules", it comes with year parsing as a default rule, but this can be temporarily removed if desired. Add new rules as you discover them in the library (e.g. if a filename has "30 Sec" in it, apply the tag `length:30 Sec`) and your tagging will get faster as you progress. Autofill Rules are per session, they reset to only the year one on every new import.
+6. You may stop at any time, your progress through the clips is saved (you are actually writing `.cnfo` files to each clip, slowly turning it into a Tagged Library) and will resume where you left off the next time you open the importer. Once you have completed all of them, you will be given the opportunity to review the tags in the Tagged Library Mesh (next section). If you are confident you got all of them right and didn't make any mistakes, you can click "Import Now" to skip this process and go straight to moving/copying the imported library straight to your export directory.
+
+### Tagged Libraries
+
+If all of the clips in the `/import/` folder already have associated `.cnfo` files (either because you are importing an already tagged library, or you just tagged an untagged library yourself), you will be taken to the Tagged Library Mesh. Contrasting with the Untagged Library Mesh, which lets you apply new tags to clips, the purpose of the Tagged Library Mesh to match up the tags someone else uses in their library to the tags you use in your own. If the creator of the library uses `network:CN` or `network:Nick` while you use `network:Cartoon Network` or `network:Nickelodeon`, you will have the opportunity to translate, in bulk, from one to the other.
+
+1. The Tagged Library Mesh will show you one tag at a time from the imported library, and ask what you want to change it to, if anything.
+2. Type in a new value if desired and press "Use This Value", if the tag already matches your library press "Keep As It Is", and if you want to entirely remove the tag in question press "Remove This Tag".
+3. Repeat until all tags have been addressed, then review the results, if everything looks correct, press "Import Now".
+4. Choose your transfer method, whether you want to copy, move, or link the files from your import folder to your export (library) folder.
+5. The newly imported clips will appear in your library, tagged, named, and organized to your liking according to your file and folder schemes.
+
+## Library Sharing
+
+**Share all or part of your filler library with others**
 
 # Roadmap
 
-- Complete roadmap
-- 
+- ~~v0.1 Video Editor~~
+- ~~v0.2 Library Importer~~
+- ~~v0.3 Library Manager~~
+- ~~v0.4 Library Sharing~~
+- v0.5 Duplicate Scanner
 
 # Documentation
 
