@@ -22,7 +22,7 @@ import threading
 import uuid
 
 import pytest
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal, QPoint
 from PySide6.QtGui import QCloseEvent
 
 import library.manager as manager_module
@@ -162,6 +162,13 @@ class FakeThread(QThread):
         self.deleted = True
 
 
+class StubBulkRetagWorker(manager_module.BulkRetagWorker):
+    """Like `StubMaintenanceAlignWorker`, for the bulk re-tag worker."""
+
+    def moveToThread(self, thread):
+        pass
+
+
 class StubCatalogWorker(manager_module.CatalogWorker):
     """The real worker, with the one thing a fake thread cannot
     give it.
@@ -249,11 +256,22 @@ class Recorder:
     Yes = 4
     No = 8
     Ok = 16
+    Apply = 32
     answer = Cancel
     seen = []
 
     @staticmethod
     def warning(_parent, title, message, *_buttons, default=0):
+        Recorder.seen.append((title, message))
+        return Recorder.answer
+
+    @staticmethod
+    def question(_parent, title, message, *_buttons, default=0):
+        Recorder.seen.append((title, message))
+        return Recorder.answer
+
+    @staticmethod
+    def information(_parent, title, message, *_buttons, default=0):
         Recorder.seen.append((title, message))
         return Recorder.answer
 
@@ -354,6 +372,8 @@ def harness(qapp, monkeypatch, tmp_path):
                         StubMaintenanceAlignWorker)
     monkeypatch.setattr(manager_module, "MaintenanceDuplicateScanWorker",
                         StubMaintenanceDuplicateScanWorker)
+    monkeypatch.setattr(manager_module, "BulkRetagWorker",
+                        StubBulkRetagWorker)
     monkeypatch.setattr(manager_module, "create_mpv_player",
                         lambda _container: FakePlayer())
     monkeypatch.setattr(manager_module, "MpvBridge",
@@ -446,6 +466,45 @@ def video_path(root, relative_path):
 
 def record_path(root, relative_path):
     return os.path.splitext(video_path(root, relative_path))[0] + ".cnfo"
+
+
+def folder_for(window, text):
+    """The folder row displaying `text`, at any depth."""
+    tree = window.ui.treeLibrary
+
+    def walk(item):
+        if (item.text(0) == text
+                and not bool(item.flags() & Qt.ItemIsSelectable)):
+            return item
+        for index in range(item.childCount()):
+            child = item.child(index)
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+
+    for index in range(tree.topLevelItemCount()):
+        found = walk(tree.topLevelItem(index))
+        if found is not None:
+            return found
+    raise AssertionError(f"no folder row for {text!r}")
+
+
+def check_leaf(window, relative_path, checked=True):
+    """Toggle a leaf's check, as a click on its indicator would."""
+    leaf = leaf_for(window, relative_path)
+    leaf.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+    return leaf
+
+
+def checked_relatives(window):
+    return {leaf.data(0, Qt.UserRole + 1) for leaf in clip_leaves(window)
+            if leaf.checkState(0) == Qt.Checked}
+
+
+def field(window, name):
+    from shared.tag_form import field_text
+    return field_text(window.ui.tagForm.field(name))
 
 
 # ---------------------------------------------------------------------------
@@ -1177,3 +1236,530 @@ def test_closeevent_refuses_over_a_duplicate_scan_thread(harness):
     finally:
         window.close()
         window.deleteLater()
+
+
+
+# ---------------------------------------------------------------------------
+# Bulk editing
+# ---------------------------------------------------------------------------
+
+def _enter_bulk(window):
+    check_leaf(window, "CN/Promo/2000s/Alpha.mp4")
+    check_leaf(window, "CN/Promo/2000s/Beta.mp4")
+
+
+def _set_field(window, name, value):
+    from shared.tag_form import set_field_text
+    set_field_text(window.ui.tagForm.field(name), value)
+
+
+def test_the_pane_starts_in_singular_mode(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        assert window._mode == "singular"
+        assert window.ui.buttonSave.text() == "Save"
+        assert window.ui.tagForm.field("title").isEnabled()
+        assert not window.ui.videoContainer.isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_checking_one_clip_switches_the_pane_to_bulk_mode(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        assert window._mode == "singular"
+
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4")
+
+        assert window._mode == "bulk"
+        assert window.ui.labelClipName.text() == "1 clip selected"
+        assert window.ui.buttonSave.text() == "Apply to 1 clip"
+        assert not window.ui.tagForm.field("title").isEnabled()
+        assert window.ui.videoContainer.isHidden()
+        assert window.ui.buttonPlay.isHidden()
+        assert window.ui.sliderPosition.isHidden()
+        assert window.ui.labelDestination.isHidden()
+        # The player was never constructed for a hidden pane.
+        assert RecordingBridge.instances == []
+
+        check_leaf(window, "CN/Promo/2000s/Beta.mp4")
+
+        assert window._mode == "bulk"
+        assert window.ui.labelClipName.text() == "2 clips selected"
+        assert window.ui.buttonSave.text() == "Apply to 2 clips"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_unchecking_the_last_clip_returns_to_singular_mode(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+
+        check_leaf(window, "CN/Promo/2000s/Beta.mp4", checked=False)
+
+        assert window._mode == "bulk"
+        assert window.ui.labelClipName.text() == "1 clip selected"
+
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+
+        assert window._mode == "singular"
+        assert window.ui.buttonSave.text() == "Save"
+        assert not window.ui.buttonSave.isEnabled()
+        assert window.ui.tagForm.field("title").isEnabled()
+        assert not window.ui.videoContainer.isHidden()
+        # Nothing is loaded in singular mode again.
+        assert window.ui.labelClipName.text() == ""
+        assert len(RecordingBridge.instances) == 0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_clip_row_click_toggles_the_check_in_bulk_mode(harness):
+    open_library, root = harness
+    window = open_library(
+        tags_for("Alpha"), tags_for("Beta"), tags_for("Gamma"))
+
+    try:
+        _enter_bulk(window)
+        leaf = leaf_for(window, "CN/Promo/2000s/Gamma.mp4")
+
+        window._on_item_clicked(leaf, 0)
+        assert checked_relatives(window) == {
+            "CN/Promo/2000s/Alpha.mp4",
+            "CN/Promo/2000s/Beta.mp4",
+            "CN/Promo/2000s/Gamma.mp4",
+        }
+
+        window._on_item_clicked(leaf, 0)
+        assert checked_relatives(window) == {
+            "CN/Promo/2000s/Alpha.mp4",
+            "CN/Promo/2000s/Beta.mp4",
+        }
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_folder_row_click_expands_and_indicator_click_does_not(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        folder = folder_for(window, "CN")
+        leaf = leaf_for(window, "CN/Promo/2000s/Alpha.mp4")
+
+        # A click inside the indicator region toggles the check, not
+        # the expansion.
+        window._on_item_clicked(folder, 0, pos=QPoint(12, 0))
+        assert not folder.isExpanded()
+
+        # A click outside the indicator region expands.
+        indent = window.ui.treeLibrary.indentation()
+        window._on_item_clicked(folder, 0, pos=QPoint(10 * indent, 5))
+        assert folder.isExpanded()
+
+        # Indicators of nested folders also discriminate.
+        nested = folder_for(window, "2000s")
+        window._on_item_clicked(nested, 0, pos=QPoint(32, 0))
+        assert not nested.isExpanded()
+        window._on_item_clicked(nested, 0, pos=QPoint(60, 0))
+        assert nested.isExpanded()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_folder_check_cascades_to_descendants(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        folder = folder_for(window, "CN")
+        folder.setCheckState(0, Qt.Checked)
+
+        assert checked_relatives(window) == {
+            "CN/Promo/2000s/Alpha.mp4",
+            "CN/Promo/2000s/Beta.mp4",
+        }
+        assert folder.checkState(0) == Qt.Checked
+        # Videos checked: the pane entered bulk mode.
+        assert window._mode == "bulk"
+
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+
+        assert checked_relatives(window) == {"CN/Promo/2000s/Beta.mp4"}
+        assert folder.checkState(0) == Qt.PartiallyChecked
+        assert window._mode == "bulk"
+
+        check_leaf(window, "CN/Promo/2000s/Beta.mp4", checked=False)
+
+        assert checked_relatives(window) == set()
+        assert folder.checkState(0) == Qt.Unchecked
+        # Unchecking the last clip leaves bulk mode.
+        assert window._mode == "singular"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_blended_form_renders_uniform_and_mixed_fields(harness):
+    open_library, root = harness
+    window = open_library(
+        tags_for("Alpha", network="CN"),
+        {**tags_for("Beta", network="CN"), "special": "Bump"})
+
+    try:
+        _enter_bulk(window)
+
+        # Network is uniform: an ordinary field with the common value.
+        assert field(window, "network") == "CN"
+        special = window.ui.tagForm.field("special")
+        assert field(window, "special") == ""
+        assert special.lineEdit().placeholderText() == "(multiple values)"
+        assert "Bump" in special.toolTip()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_an_untouched_mixed_field_keeps_each_clips_values(harness):
+    open_library, root = harness
+    window = open_library(
+        tags_for("Alpha", network="CN"),
+        {**tags_for("Beta", network="CN"), "special": "Bump"})
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "network", "Old")
+        Recorder.answer = Recorder.Apply
+
+        assert window.on_save()
+
+        records = {}
+        for title in ("Alpha", "Beta"):
+            with open(os.path.join(
+                    root, "Old", "Promo", "2000s",
+                    f"{title}.cnfo"),
+                    encoding="utf-8") as handle:
+                records[title] = handle.read()
+        assert '<tag key="special">Bump</tag>' in records["Beta"]
+        assert "special" not in records["Alpha"]
+        assert '<tag key="network">Old</tag>' in records["Alpha"]
+        assert '<tag key="network">Old</tag>' in records["Beta"]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_a_mixed_field_cleared_by_the_user_removes_the_tag_everywhere(harness):
+    open_library, root = harness
+    window = open_library(
+        {**tags_for("Alpha", network="CN"), "special": "Bump"},
+        {**tags_for("Beta", network="CN"), "special": "Promo"})
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "special", "x")
+        _set_field(window, "special", "")
+        Recorder.answer = Recorder.Apply
+
+        assert window.on_save()
+
+        for title in ("Alpha", "Beta"):
+            with open(os.path.join(
+                    root, "CN", "Promo", "2000s", f"{title}.cnfo"),
+                    encoding="utf-8") as handle:
+                assert "special" not in handle.read()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_preflight_cancel_leaves_every_file_alone(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "network", "Old")
+        Recorder.answer = Recorder.Cancel
+
+        assert window.on_save() is False
+
+        assert os.path.isfile(
+            video_path(root, "CN/Promo/2000s/Alpha.mp4"))
+        assert '<tag key="network">CN</tag>' in open(
+            record_path(root, "CN/Promo/2000s/Alpha.mp4"),
+            encoding="utf-8").read()
+        # Still in bulk mode with the edit pending.
+        assert window._mode == "bulk"
+        assert checked_relatives(window) == {
+            "CN/Promo/2000s/Alpha.mp4",
+            "CN/Promo/2000s/Beta.mp4",
+        }
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_preflight_lists_counts_and_intended_tags(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "network", "Old")
+        Recorder.answer = Recorder.Cancel
+
+        window.on_save()
+
+        assert Recorder.seen[-1][1].count("Network → Old") == 1
+        assert "2 clips will be re-tagged" in Recorder.seen[-1][1]
+        assert "2 moves" in Recorder.seen[-1][1]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_an_off_catalog_file_at_a_destination_is_refused_not_clobbered(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        destination = os.path.join(root, "Old", "Promo", "2000s")
+        os.makedirs(destination, exist_ok=True)
+        stray = os.path.join(destination, "Alpha.mp4")
+        with open(stray, "wb") as handle:
+            handle.write(b"stray bytes")
+
+        _enter_bulk(window)
+        _set_field(window, "network", "Old")
+        Recorder.answer = Recorder.Apply
+
+        assert window.on_save()
+
+        with open(stray, "rb") as handle:
+            assert handle.read() == b"stray bytes"
+        # The after-action summary names the refused clip.
+        summary = Recorder.seen[-1]
+        assert summary[0] == "Bulk re-tag complete"
+        assert "Alpha" in summary[1]
+        # Beta moved.
+        assert os.path.isfile(os.path.join(destination, "Beta.mp4"))
+        # The selection is dumped after a save.
+        assert checked_relatives(window) == set()
+        assert window._mode == "singular"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_batch_is_refused_whole_when_a_vital_tag_is_cleared(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "network", "")
+        Recorder.answer = Recorder.Apply
+
+        assert window.on_save() is False
+
+        assert Recorder.seen[-1][0] == "The batch cannot be saved"
+        with open(record_path(root, "CN/Promo/2000s/Alpha.mp4"),
+                  encoding="utf-8") as handle:
+            assert '<tag key="network">CN</tag>' in handle.read()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_entering_bulk_mode_with_a_dirty_form_can_be_cancelled(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        select(window, "CN/Promo/2000s/Alpha.mp4")
+        _set_field(window, "special", "Bump")
+        Recorder.answer = Recorder.Cancel
+
+        # The very first check enters bulk mode, and asks about
+        # the pending edit before going there.
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4")
+
+        assert checked_relatives(window) == set()
+        assert window._mode == "singular"
+        assert window.ui.labelClipName.text() == \
+            "CN/Promo/2000s/Alpha.mp4"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_leaving_bulk_with_edits_can_be_discarded(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "special", "Bump")
+        Recorder.answer = Recorder.Discard
+
+        check_leaf(window, "CN/Promo/2000s/Beta.mp4", checked=False)
+
+        assert window._mode == "bulk"
+        assert checked_relatives(window) == {"CN/Promo/2000s/Alpha.mp4"}
+
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+
+        assert window._mode == "singular"
+        assert window.ui.labelClipName.text() == ""
+        assert field(window, "special") == ""
+        assert not window.ui.buttonSave.isEnabled()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_leaving_bulk_with_edits_can_stay_put(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "special", "Bump")
+        Recorder.answer = Recorder.Cancel
+
+        check_leaf(window, "CN/Promo/2000s/Beta.mp4", checked=False)
+
+        # Unchecking to one video is still bulk mode.
+        assert window._mode == "bulk"
+        assert checked_relatives(window) == {"CN/Promo/2000s/Alpha.mp4"}
+
+        # The last uncheck prompts; Cancel restores it.
+        check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+
+        assert window._mode == "bulk"
+        assert checked_relatives(window) == {"CN/Promo/2000s/Alpha.mp4"}
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_leaving_bulk_with_edits_can_save_first(harness):
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    try:
+        _enter_bulk(window)
+        _set_field(window, "network", "Old")
+
+        # The leaving prompt answers Save; the pre-flight answers Apply;
+        # the after-action summary's warning is answered silently.
+        def warning(*_args, **_kwargs):
+            return Recorder.Save
+
+        def question(*_args, **_kwargs):
+            return Recorder.Apply
+
+        original_question = Recorder.question
+        original_warning = Recorder.warning
+        Recorder.warning = warning
+        Recorder.question = question
+        try:
+            # Unchecking one clip leaves bulk mode alone; the last
+            # uncheck prompts, and Save applies the edits to what
+            # was still checked — Beta was explicitly unselected.
+            check_leaf(window, "CN/Promo/2000s/Beta.mp4", checked=False)
+            assert window._mode == "bulk"
+            check_leaf(window, "CN/Promo/2000s/Alpha.mp4", checked=False)
+        finally:
+            Recorder.warning = original_warning
+            Recorder.question = original_question
+
+        # The save ran on the remaining checked clip; the selection
+        # was dumped afterwards.
+        assert checked_relatives(window) == set()
+        assert window._mode == "singular"
+        with open(record_path(root, "Old/Promo/2000s/Alpha.mp4"),
+                  encoding="utf-8") as handle:
+            assert '<tag key="network">Old</tag>' in handle.read()
+        with open(record_path(root, "CN/Promo/2000s/Beta.mp4"),
+                  encoding="utf-8") as handle:
+            assert '<tag key="network">CN</tag>' in handle.read()
+    finally:
+        window.close()
+        window.deleteLater()
+
+from PySide6.QtTest import QTest
+
+
+def _indicator_pos(tree, leaf):
+    parent = leaf.parent()
+    depth = 0
+    node = parent
+    while node is not None:
+        depth += 1
+        node = node.parent()
+    index = tree.indexFromItem(leaf)
+    rect = tree.visualRect(index)
+    indent = tree.indentation()
+    return QPoint(indent * (depth + 1) + 6, rect.center().y())
+
+
+def _body_pos(tree, leaf):
+    index = tree.indexFromItem(leaf)
+    rect = tree.visualRect(index)
+    return QPoint(rect.right() - 4, rect.center().y())
+
+
+def _click(tree, pos):
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, pos)
+
+
+def test_real_clicks_on_indicators_toggle_exactly_once(harness):
+    """A click on a leaf's checkbox fires Qt's native toggle and the
+    row-click handler once each; the handler must not also fire, or
+    the leaf flips back off behind the user's back."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+    window.show()
+    tree = window.ui.treeLibrary
+    tree.expandAll()
+    a = leaf_for(window, "CN/Promo/2000s/Alpha.mp4")
+    b = leaf_for(window, "CN/Promo/2000s/Beta.mp4")
+
+    select(window, "CN/Promo/2000s/Alpha.mp4")
+    assert window._mode == "singular"
+
+    _click(tree, _indicator_pos(tree, a))
+    assert a.checkState(0) == Qt.Checked
+    assert window._mode == "bulk"
+    assert window.ui.labelClipName.text() == "1 clip selected"
+
+    _click(tree, _indicator_pos(tree, b))
+    assert b.checkState(0) == Qt.Checked
+    assert window._mode == "bulk"
+    assert window.ui.labelClipName.text() == "2 clips selected"
+
+    # A row-body click toggles in bulk mode without touching the
+    # current-item machinery.
+    _click(tree, _body_pos(tree, b))
+    assert b.checkState(0) == Qt.Unchecked
+    assert window._mode == "bulk"
+
+    _click(tree, _body_pos(tree, a))
+    assert a.checkState(0) == Qt.Unchecked
+    assert window._mode == "singular"
+    assert not window.ui.videoContainer.isHidden()

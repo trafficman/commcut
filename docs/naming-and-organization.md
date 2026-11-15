@@ -365,6 +365,18 @@ The rule that makes the ordering safe is: **a catalog entry is a record with a
 sibling video**. So `video present ⟹ record present`, and the only recoverable
 state is a record with no video, which a scan ignores and the next run replaces.
 
+**The library side is no-clobber for the files it inherits.** A re-tag
+(`shared/retagging.py:execute_retag`) can overwrite a record on purpose, but
+it may never overwrite a *video* or a *record* that is not the clip's own:
+before the record is published it refuses a destination occupied by another
+file, so a re-tag never clobbers something invisible to the catalog — a
+stray video dropped into the target folder, or an orphaned record at the
+destination where the re-tagged pair wants to land. The catalog's
+`DestinationIndex` is the plan-time oracle; this guard is the execution-time
+backstop under it. A file that is one and the same (a case-only change is
+a rename on every volume, and the record has one path at a time) is not an
+occupant, only a different one is.
+
 **Replacement, not no-clobber.** The preflight has already refused any
 destination whose *video* exists, so the video slot is free and overwriting the
 record for it cannot destroy anything of the user's. The no-clobber rule would

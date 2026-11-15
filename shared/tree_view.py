@@ -38,6 +38,39 @@ def leaf_display(components):
     return stem + extension
 
 
+def set_subtree_checks(item, checked):
+    """Check or uncheck every row of `item`'s subtree, inclusive.
+
+    Used for folder rows set to checked/unchecked: the cascade is the
+    folder's whole content. Folder parents recompute their own state
+    from their descendants; this function never reads it back.
+    """
+    state = Qt.Checked if checked else Qt.Unchecked
+    item.setCheckState(0, state)
+    for index in range(item.childCount()):
+        set_subtree_checks(item.child(index), checked)
+
+
+def clip_items(tree):
+    """Every clip leaf in `tree`, regardless of order or nesting."""
+    found = []
+
+    def walk(item):
+        if _is_clip(item):
+            found.append(item)
+            return
+        for index in range(item.childCount()):
+            walk(item.child(index))
+
+    for index in range(tree.topLevelItemCount()):
+        walk(tree.topLevelItem(index))
+    return found
+
+
+def _is_clip(item):
+    return bool(item.flags() & Qt.ItemIsSelectable) and item.childCount() == 0
+
+
 def _sort_key(item):
     """Folders (not selectable) before clips (selectable), then name."""
     return (
@@ -80,12 +113,17 @@ def sort_subtree(item):
         sort_subtree(child)
 
 
-def build_tree(tree, clips, clips_by_path, clip_items):
+def build_tree(tree, clips, clips_by_path, clip_items, *, checkboxes=False):
     """Rebuild the sidebar tree from `clips`, folders first.
 
     `tree` is the `QTreeWidget` to fill. `clips_by_path` and
     `clip_items` are populated with the clip keyed by its relative
     path and by its clip ID respectively.
+
+    `checkboxes=True` makes every row checkable and folders tri-state —
+    a folder set to checked toggles its whole subtree, and a tri-state
+    partial state reflects mixed descendants. Used by the Library
+    Manager's bulk edit; Library Sharing's tree stays checkless.
     """
     tree.clear()
     clips_by_path.clear()
@@ -102,6 +140,11 @@ def build_tree(tree, clips, clips_by_path, clip_items):
                 if parent is None:
                     tree.addTopLevelItem(node)
                 node.setFlags(node.flags() & ~Qt.ItemIsSelectable)
+                if checkboxes:
+                    node.setFlags(
+                        node.flags() | Qt.ItemIsUserCheckable
+                        | Qt.ItemIsAutoTristate)
+                    node.setCheckState(0, Qt.Unchecked)
                 folders[key] = node
             parent = node
         leaf = QTreeWidgetItem(parent, [leaf_display(components)])
@@ -109,6 +152,9 @@ def build_tree(tree, clips, clips_by_path, clip_items):
             tree.addTopLevelItem(leaf)
         leaf.setData(0, Qt.UserRole, clip.record.clip_id)
         leaf.setData(0, Qt.UserRole + 1, clip.relative_path)
+        if checkboxes:
+            leaf.setFlags(leaf.flags() | Qt.ItemIsUserCheckable)
+            leaf.setCheckState(0, Qt.Unchecked)
         clips_by_path[clip.relative_path] = clip
         if clip.record.clip_id:
             clip_items[clip.record.clip_id] = leaf

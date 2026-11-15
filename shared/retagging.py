@@ -35,6 +35,20 @@ skipped entirely when the old and new record are one file, which is
 what a case-only change is on a case-insensitive volume.
 
 No ffmpeg runs: a re-tag never touches a clip's content.
+
+Both transactions refuse to write over a file the plan did not account
+for. The plan's `DestinationIndex` is the oracle a *catalog-aware* plan
+has, but it is blind to files the catalog ignores — a stray video or an
+orphaned record sitting where a re-tagged clip wants to land — so
+`execute_retag` checks the destination on disk, before the record is
+published, and refuses rather than overwrite.
+
+`plan_bulk_retag` / `execute_bulk_retag` apply the bulk edit: a delta of
+edited fields (non-empty string sets the tag everywhere, `None` removes
+it everywhere) across a caller-chosen selection of clips, refusing the
+whole batch when the merged record would lose a required tag (Title is
+never in a delta), skipping no-op clips, and refusing — never clobbering —
+a destination another clip holds or that appeared to open since the walk.
 """
 
 from __future__ import annotations
@@ -48,6 +62,7 @@ from shared.exporting import (
     ClipDestination,
     DestinationIndex,
     ExportPlanError,
+    missing_required_tags,
     plan_clip_destination,
 )
 from shared.paths import absolute_path_error, describe_path_error
@@ -178,6 +193,16 @@ def execute_retag(clip: CatalogClip, destination,
     record_destination = os.path.join(
         root, *destination.record_relative_components)
 
+    label = os.path.basename(clip.path) or clip.path
+    video_problem = _occupied_destination(
+        video_destination, clip.path, what="clip")
+    if video_problem is not None:
+        raise ExportPlanError(f"{label}: {video_problem}")
+    record_problem = _occupied_destination(
+        record_destination, clip.record_path, what="record")
+    if record_problem is not None:
+        raise ExportPlanError(f"{label}: {record_problem}")
+
     os.makedirs(os.path.dirname(video_destination), exist_ok=True)
 
     record = ClipRecord(
@@ -220,6 +245,28 @@ def _same_file(left: str, right: str) -> bool:
         return os.path.samefile(left, right)
     except OSError:
         return False
+
+
+def _occupied_destination(destination: str, source: str, *,
+                          what: str) -> str | None:
+    """Why `destination` cannot be written over, or None when it can be.
+
+    `source` is the file `destination` would replace -- normally the clip's
+    own video or record. A destination that already holds a file that is
+    not `source` refuses the save rather than overwrite it: the catalog is
+    the only collision oracle, so files invisible to it (or put there
+    since the walk) must not be clobbered here. `os.path.samefile` is what
+    lets a case-only rename through on a case-insensitive volume, the case
+    `retag_is_in_place` deliberately treats as needing a move.
+    """
+    if not os.path.exists(destination):
+        return None
+    try:
+        if os.path.samefile(destination, source):
+            return None
+    except OSError:
+        pass
+    return f"the {what} destination already holds a different file: {destination}"
 
 
 def _remove_quietly(path: str) -> None:
@@ -509,5 +556,227 @@ def find_duplicate_clip_ids(
     return DuplicateScanResult(
         groups=groups,
         clips_found=len(clips),
+        cancelled=cancelled,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bulk re-tagging: one edited field across many clips
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BulkPlanItem:
+    """One clip the batch will rewrite, and the tags it becomes."""
+
+    clip: CatalogClip
+    #: The merged tag set the record is rendered from — the clip's own tags
+    #: with the delta applied. Untouched fields carry the clip's values.
+    tags: dict[str, str]
+    destination: ClipDestination
+
+
+@dataclass(frozen=True)
+class BulkPlan:
+    """What a bulk re-tag run will do, resolved before anything is written.
+
+    `items` is what will be executed, in execution order. `skipped` counts
+    the clips whose merged tags equal their current ones — their records are
+    untouched, and their current paths stay claimed so no other batch member
+    can land on them. `refused` pairs a clip label with the reason it cannot
+    run — render errors, path-limit violations, and intra-batch destination
+    collisions — none of them fatal to the batch.
+    """
+
+    items: tuple[BulkPlanItem, ...] = ()
+    skipped: int = 0
+    refused: tuple[tuple[str, str], ...] = ()
+    moves: int = 0
+    in_place: int = 0
+
+
+def _is_batch_clip(clip: CatalogClip, batch) -> bool:
+    """Whether `clip` is one of the clips the batch was checked into."""
+    if any(other is clip for other in batch):
+        return True
+    if clip.record.clip_id:
+        return any(other.record.clip_id == clip.record.clip_id
+                   for other in batch)
+    return any(other.relative_path == clip.relative_path for other in batch)
+
+
+def plan_bulk_retag(*, delta: Mapping[str, str | None],
+                    clips: Sequence[CatalogClip],
+                    folder_scheme, filename_scheme,
+                    catalog: Catalog) -> BulkPlan:
+    """Resolve a bulk delta to per-clip destinations, or refuse the batch.
+
+    `delta` carries only the fields the user edited: a non-empty string sets
+    the tag everywhere, and `None` removes it everywhere. A field absent from
+    `delta` keeps every clip's own value, which is why the mixed-value display
+    can never delete a tag by accident. A merged record that is missing a
+    required tag (Title excepted — it is carried, never set, here) refuses
+    the *whole batch*: the edit removed a vital tag uniformly, so there is no
+    meaningful per-clip subset to write.
+
+    Every clip not in the batch claims where it lives, and every clip in the
+    batch claims its current path too — so no destination either group
+    holds can be planned onto. A clip's own destination is claimed as
+    the plan proceeds, which is the backstop for two selected clips
+    racing one destination; the filename scheme's unconditional {title}
+    makes a shared destination between two clips unrepresentable today.
+    Crossed destinations (each member targeting the other's current path)
+    are likewise both refused rather than swapped — there is no swap
+    machinery, by decision; the after-action report names both.
+
+    Returns the plan. No clip is read or written beyond the catalog walk.
+    """
+    clips = list(clips)
+    batch = tuple(clips)
+
+    # Merge first, so the fatal required-tag check sees the real records.
+    merged_tags: list[tuple[CatalogClip, dict[str, str]]] = []
+    missing_all: set[str] = set()
+    for clip in clips:
+        merged = clip.tag_dict()
+        for key, value in delta.items():
+            if value is not None and value.strip():
+                merged[key] = value.strip()
+            else:
+                merged.pop(key, None)
+        missing = missing_required_tags(merged)
+        if missing:
+            missing_all.update(missing)
+        merged_tags.append((clip, merged))
+    if missing_all:
+        raise ExportPlanError(
+            "The batch cannot be saved: every selected clip would be "
+            "missing the required tag(s): " + ", ".join(sorted(missing_all))
+        )
+
+    index = DestinationIndex()
+    for other in catalog.clips:
+        if _is_batch_clip(other, batch):
+            continue
+        index.claim(other.relative_path.split("/"), owner=other)
+    for clip in batch:
+        index.claim(clip.relative_path.split("/"), owner=clip)
+
+    items: list[BulkPlanItem] = []
+    refused: list[tuple[str, str]] = []
+    skipped = 0
+    moves = 0
+    in_place = 0
+
+    for clip, merged in merged_tags:
+        label = os.path.basename(clip.path) or clip.path
+        if merged == clip.tag_dict():
+            skipped += 1
+            continue
+        try:
+            destination = plan_clip_destination(
+                tags=merged, folder_scheme=folder_scheme,
+                filename_scheme=filename_scheme, label=label,
+            )
+        except ExportPlanError as error:
+            refused.append((label, str(error)))
+            continue
+        length_error = absolute_path_error(
+            _export_root(clip),
+            destination.relative_components,
+            destination.record_relative_components,
+            label,
+        )
+        if length_error is not None:
+            refused.append((label, length_error))
+            continue
+        if retag_is_in_place(clip, destination):
+            in_place += 1
+            items.append(BulkPlanItem(
+                clip=clip, tags=merged, destination=destination))
+            continue
+        claim = index.claim(destination.relative_components, owner=clip)
+        if not claim.ok:
+            conflict = claim.conflict_with
+            refused.append((label, (
+                f"resolves to the same destination as "
+                f"{os.path.basename(conflict.path)} "
+                f"({conflict.relative_path})")))
+            continue
+        moves += 1
+        items.append(BulkPlanItem(
+            clip=clip, tags=merged, destination=destination))
+
+    return BulkPlan(
+        items=tuple(items),
+        skipped=skipped,
+        refused=tuple(refused),
+        moves=moves,
+        in_place=in_place,
+    )
+
+
+@dataclass(frozen=True)
+class BulkRetagResult:
+    """What a bulk re-tag run actually did.
+
+    Non-empty `refused` here are *execution-time* refusals — destinations
+    found occupied on disk after the plan was made — every one a clip that
+    is named, untouched, with its old pair intact. `cancelled` means the run
+    stopped at a boundary; everything committed stays committed.
+    """
+
+    written: tuple[str, ...] = ()
+    moved: int = 0
+    in_place: int = 0
+    refused: tuple[tuple[str, str], ...] = ()
+    cancelled: bool = False
+
+
+def execute_bulk_retag(plan: BulkPlan,
+                       on_progress: Callable[[int, str], None] | None = None,
+                       should_cancel: Callable[[], bool] | None = None,
+                       ) -> BulkRetagResult:
+    """Execute the items of a bulk plan, one clip at a time.
+
+    Reuses `execute_retag` unchanged — the same record-before-video
+    transaction, the same destination-occupied guard that runs before the
+    record is published. A clip's refusal never stops the run; each is
+    reported and skipped. A cancelled run keeps everything it committed.
+    """
+    if on_progress is None:
+        on_progress = _ignore_progress
+    if should_cancel is None:
+        should_cancel = _never_cancel
+
+    written: list[str] = []
+    moved = 0
+    in_place = 0
+    refused: list[tuple[str, str]] = []
+    cancelled = False
+
+    for position, item in enumerate(plan.items):
+        if should_cancel():
+            cancelled = True
+            break
+        clip = item.clip
+        label = os.path.basename(clip.path) or clip.path
+        on_progress(position + 1, clip.relative_path)
+        try:
+            execute_retag(clip, item.destination, item.tags)
+        except (OSError, ValueError) as error:
+            refused.append((label, describe_path_error(error)
+                            if isinstance(error, OSError) else str(error)))
+            continue
+        written.append(item.destination.relative_path)
+        if retag_is_in_place(clip, item.destination):
+            in_place += 1
+        else:
+            moved += 1
+
+    return BulkRetagResult(
+        written=tuple(written),
+        moved=moved,
+        in_place=in_place,
+        refused=tuple(refused),
         cancelled=cancelled,
     )

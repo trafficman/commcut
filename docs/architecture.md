@@ -384,9 +384,43 @@ unsaved edits asks about them first, and a cancelled switch puts the
 selection back. The confirmed tags are recorded in the vocabulary — the
 same commit points an export is.
 
+Bulk editing is a mode of this same window, not a separate one. Every
+row of the library tree is checkable — clip leaves individually, folders
+tri-state, with a folder's check cascading to all descendants — and the
+pane switches to bulk when any video is toggled on, and back when the last one is toggled off. The shared
+`TagForm` stays one widget; in bulk mode it is *fed* blended values
+rather than one clip's: a tag whose checked clips all agree shows its
+common value, a tag they disagree about renders empty with a placeholder
+(`(multiple values)`, with the distinct values capped in a tooltip), and
+the Title field is disabled — a title is unique per clip and is never
+bulk edited. Only the fields the user edited are read back, each as set
+(a common or typed value) or remove (the field cleared), so a mixed field
+the user never touched can never delete a tag by accident; both mode
+transitions are gated on the editor's unsaved-changes prompt. The
+destination label is meaningless for N clips, so it is hidden, and the
+Save button becomes "Apply to N Clips".
+
+Saving in bulk is `shared/retagging.py:plan_bulk_retag` +
+`execute_bulk_retag`. The plan is made for the whole selection up front:
+a no-op clip (its tags unchanged) is skipped and holds its current path
+claimed; a merged record that would lose a required tag refuses the
+*whole batch* before anything is offered; a destination the
+`DestinationIndex` or the platform cannot have refuses just that clip, by
+name; and the execution-time guard in `execute_retag` — a destination
+found occupied on disk — refuses that clip rather than overwrite it.
+A pre-flight dialog lists the intended tags, how many clips will move,
+and how many will be refused; on confirmation the run goes onto a
+cancellable worker (the same `worker.finished → thread.quit` teardown),
+and an after-action summary modal names every clip that was refused. The
+clip-ID re-selection rule does not apply to a bulk save — the walk
+after the run rebuilds the tree with the checks dumped and the mode back
+to singular, because clips that just moved are rarely the cohort the
+user wants to hit with the next edit either.
+
 `closeEvent` shuts the preview's player down while its video frame still
-has its native handle, and refuses to close while the walk's thread is
-still running — the same two rules as the scanner and the editor. The
+has its native handle, and refuses to close while the walk's thread,
+the scan's, the alignment's, the duplicate-ID's, or the bulk re-tag's
+thread is still running — the same two rules as the scanner and the editor. The
 walk is
 [naming-and-organization.md](naming-and-organization.md#reading-the-library-back-the-catalog)'s;
 the form is [tag-vocabulary.md](tag-vocabulary.md)'s.

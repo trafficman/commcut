@@ -80,7 +80,8 @@ number the two build scripts check a tag against), `diagnostics`
 videos may be opened), `ffmpeg` (preview clip + named
 export), `scheme`/`naming`/`paths` (the two schemes), `exporting` (the export
 planner and `export_folder()`), `catalog` (reading the library back), `records`
-(the `.cnfo`), `retagging` (the re-tag plan and transaction), `sharing`
+(the `.cnfo`), `retagging` (the re-tag plan and transaction, and the bulk
+re-tag), `sharing`
 (the share filter, plan, naming and zip write), `vocabulary`,
 `mesh`, `values`, `tag_form`, `tag_locks`, `splash`, `icons`,
 `ui_loader`. `environment` also owns `settings_path()` and the fixed

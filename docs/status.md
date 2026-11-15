@@ -216,7 +216,19 @@ Detail in [naming-and-organization.md](naming-and-organization.md).
   export and import planners use, so a destination another clip holds is
   refused naming that clip, the record published before the video moves, and
   the clip re-selected by its clip ID. The destination label renders live on
-  every keystroke. →
+  every keystroke. The same window also carries **bulk editing**: every tree
+  row is checkable (folders tri-state, their check cascading to descendants),
+  toggling on any single video switches the pane into a bulk mode whose
+  blended form shows only field states that are common (a common value) or
+  mixed (an empty, placeholder-marked field), enforced per field across the
+  checked clips on save. Only fields the user edited are written, Title is
+  never editable in bulk, a missing required tag in any merged record refuses
+  the whole batch, and a destination charged to another clip or found occupied
+  at execution time refuses just that clip and says so by name — the run
+  itself is cancellable and reports an after-action summary of what it
+  committed and refused, with the check selection dumped afterwards.
+  Saving is the bulk re-tag transaction — `plan_bulk_retag` /
+  `execute_bulk_retag` in `shared/retagging.py`. →
   [architecture.md](architecture.md#the-library-manager)
 
   **Library Maintenance** — the tab's **Scan Library** button runs

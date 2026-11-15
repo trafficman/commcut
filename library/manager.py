@@ -51,8 +51,19 @@ from shared.environment import (
 
 SCRIPT_DIR, PROJECT_ROOT = setup_environment(__file__)
 
-from PySide6.QtCore import QFile, QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QEvent,
+    QFile,
+    QObject,
+    QPoint,
+    QThread,
+    Qt,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QMainWindow,
     QMessageBox,
     QStyle,
@@ -75,9 +86,11 @@ from shared.paths import compile_folder_scheme
 from shared.retagging import (
     DuplicateScanResult,
     align_misaligned_clips,
+    execute_bulk_retag,
     execute_retag,
     find_duplicate_clip_ids,
     find_misaligned_clips,
+    plan_bulk_retag,
     plan_retag,
     retag_is_in_place,
 )
@@ -87,8 +100,14 @@ from shared.tag_form import (
     TAG_FIELDS,
     TagForm,
     field_change_signal,
+    field_text,
+    set_field_text,
 )
-from shared.tree_view import build_tree
+from shared.tree_view import (
+    build_tree,
+    clip_items,
+    set_subtree_checks,
+)
 from shared.ui_loader import UiLoader, adopt_title
 from shared.vocabulary import record_use, vocabulary_path
 
@@ -253,6 +272,60 @@ class MaintenanceAlignWorker(QObject):
         self.progressed.emit(clips_aligned, relative_path)
 
 
+#: The labels the pre-flight dialog shows for the nine suggestable tags,
+#: matching the form's own labels.
+_BULK_FIELD_LABELS = {
+    "network": "Network",
+    "filler_type": "Filler Type",
+    "time_period": "Time Period",
+    "show": "Show",
+    "block": "Block",
+    "year": "Year",
+    "special": "Special",
+    "length": "Length",
+    "information": "Information",
+}
+
+
+class BulkRetagWorker(QObject):
+    """Executes a bulk re-tag plan off the GUI thread.
+
+    `execute_bulk_retag` is a per-clip transaction — the same
+    record-published-before-video ordering the singular save uses — so it
+    is safe to cancel at a clip boundary; what it already committed stays
+    committed. The outcome is emitted once — `done` with the
+    `BulkRetagResult`, or `failed` with a reason — and `finished` always
+    follows, which is the signal the thread's teardown hangs off.
+    """
+
+    done = Signal(object)
+    failed = Signal(str)
+    progressed = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, plan, cancel_event=None):
+        super().__init__()
+        self.plan = plan
+        self.cancel_event = cancel_event or threading.Event()
+
+    @Slot()
+    def run(self):
+        try:
+            result = execute_bulk_retag(
+                self.plan,
+                on_progress=self._progress,
+                should_cancel=self.cancel_event.is_set,
+            )
+            self.done.emit(result)
+        except Exception as error:
+            log_exception("the bulk re-tag failed", error)
+            self.failed.emit(f"{type(error).__name__}: {error}")
+        self.finished.emit()
+
+    def _progress(self, clips_retagged, relative_path):
+        self.progressed.emit(clips_retagged, relative_path)
+
+
 class LibraryManagerWindow(QMainWindow):
     """Every clip in the export library, in one tree, with the
     tag form and a preview beside it."""
@@ -306,6 +379,22 @@ class LibraryManagerWindow(QMainWindow):
         self._dup_scan_result = None
         self._dup_scan_error = None
         self._close_after_dup_scan = False
+        self._bulk_thread = None
+        self._bulk_worker = None
+        self._bulk_dialog = None
+        self._bulk_cancel = None
+        self._bulk_result = None
+        self._bulk_error = None
+        self._bulk_plan = None
+        self._close_after_bulk = False
+        self._checked_ids = set()
+        self._mode = "singular"
+        self._bulk_touched = set()
+        self._bulk_uniform: dict[str, str | None] = {}
+        self._updating_checks = False
+        self._last_press_pos = None
+        self._clips_by_id: dict[str, object] = {}
+        self._bulk_delta_values: dict[str, str | None] | None = None
 
         self.ui.tagForm.set_locks_visible(False)
         self.ui.tagForm.init_vocabulary(vocabulary_path())
@@ -322,13 +411,20 @@ class LibraryManagerWindow(QMainWindow):
         self.ui.sliderPosition.sliderReleased.connect(
             self._on_scrub_ended)
         self.ui.sliderPosition.sliderReleased.connect(self._on_seek)
-        self.ui.treeLibrary.itemClicked.connect(self._on_item_clicked)
+        self.ui.treeLibrary.viewport().installEventFilter(self)
+        self.ui.treeLibrary.itemClicked.connect(
+            lambda item, column: self._on_item_clicked(
+                item, column, self._viewport_click_pos()))
         self.ui.treeLibrary.currentItemChanged.connect(
             self._on_current_item_changed)
         for namespace in TAG_FIELDS:
             field_change_signal(
                 self.ui.tagForm.field(namespace)).connect(
                     self._on_tag_edited)
+            field_change_signal(
+                self.ui.tagForm.field(namespace)).connect(
+                    lambda *_, key=namespace: self._on_bulk_field_touched(key))
+        self.ui.treeLibrary.itemChanged.connect(self._on_check_changed)
 
         self.ui.buttonScanLibrary.clicked.connect(self.on_scan_library)
         self.ui.buttonScanDuplicateIds.clicked.connect(
@@ -467,21 +563,355 @@ class LibraryManagerWindow(QMainWindow):
         would find. Only folders that contain clips exist -- the tree
         is clip-driven -- and every level shows folders first, then
         clips, each casefolded alphabetically.
-        """
-        build_tree(
-            self.ui.treeLibrary, catalog.clips,
-            self._clips_by_path, self._clip_items)
 
-    def _on_item_clicked(self, item, column):
-        """A folder row expands or collapses on click.
-
-        Qt toggles a click on the row's own expand/collapse indicator
-        itself and does not emit this signal for it, so the toggle
-        here is the one that fires, whichever part of the row was
-        clicked.
+        Every row is checkable (the bulk-edit selection); the walk
+        discards any checked selection, because the rebuilt tree is a
+        fresh set of rows.
         """
-        if item.data(0, Qt.UserRole) is None:
+        self._exit_bulk_mode()
+        self._checked_ids = set()
+        self._bulk_touched = set()
+        self._clips_by_id = {
+            clip.record.clip_id: clip
+            for clip in catalog.clips
+            if clip.record.clip_id
+        }
+        tree = self.ui.treeLibrary
+        tree.blockSignals(True)
+        try:
+            build_tree(
+                tree, catalog.clips,
+                self._clips_by_path, self._clip_items,
+                checkboxes=True)
+        finally:
+            tree.blockSignals(False)
+
+    def _is_folder_row(self, item):
+        """Whether `item` is a folder row (folders are never selectable)."""
+        return not bool(item.flags() & Qt.ItemIsSelectable)
+
+    def _viewport_click_pos(self):
+        if self._last_press_pos is not None:
+            return self._last_press_pos
+        tree = self.ui.treeLibrary
+        return tree.viewport().mapFromGlobal(QCursor.pos())
+
+    def eventFilter(self, obj, event):
+        """Remember where the last press landed, so the row click it
+        produces can tell the checkbox indicator from the row body."""
+        if (obj is self.ui.treeLibrary.viewport()
+                and event.type() == QEvent.Type.MouseButtonPress):
+            pos = event.position()
+            self._last_press_pos = QPoint(int(pos.x()), int(pos.y()))
+        return super().eventFilter(obj, event)
+
+    def _on_indicator(self, item, pos) -> bool:
+        """Whether a click at viewport `pos` landed on `item`'s checkbox.
+
+        The checkbox is the first thing in the row's content region,
+        one indent past the depth of its parent — expander at depth
+        insets, then the indicator.
+        """
+        tree = self.ui.treeLibrary
+        depth = 0
+        parent = item.parent()
+        while parent is not None:
+            depth += 1
+            parent = parent.parent()
+        indent = tree.indentation()
+        width = self.style().pixelMetric(
+            QStyle.PixelMetric.PM_IndicatorWidth, None, tree)
+        x0 = indent * (depth + 1)
+        return pos.x() >= x0 and pos.x() < x0 + width + 4
+
+    def _toggle_leaf(self, leaf):
+        """Flip a leaf's check — the whole of what a clip-row click
+        means in bulk mode."""
+        state = leaf.checkState(0)
+        leaf.setCheckState(
+            0, Qt.Unchecked if state == Qt.Checked else Qt.Checked)
+
+    def _on_item_clicked(self, item, column, pos=None):
+        """A click on a row.
+
+        The checkbox indicator toggles the check itself, and the row
+        does not toggle it — whether the row is a folder or a clip.
+        itemClicked carries no coordinates, so the position comes from
+        the cursor unless the caller passes one in. Folder rows expand
+        or collapse on any other click; a clip leaf in bulk mode toggles
+        its check on any other click. A singular click on a clip loads
+        nothing here, because the current-item machinery does it.
+        """
+        on_indicator = pos is not None and self._on_indicator(item, pos)
+        if self._is_folder_row(item):
+            if on_indicator:
+                return
             item.setExpanded(not item.isExpanded())
+            return
+        if self._mode == "bulk":
+            if on_indicator:
+                return
+            self._toggle_leaf(item)
+
+    def _update_all_folder_checks(self, item):
+        """Recompute every folder row's check from its descendants,
+        deepest folders first.
+
+        Folders whose state Qt or the application just set to partial
+        are not a command to touch their children; this function is the
+        only writer of parent state once the leaves are set.
+        """
+        for index in range(item.childCount()):
+            self._update_all_folder_checks(item.child(index))
+        if not self._is_folder_row(item) or item.childCount() == 0:
+            return
+        states = [
+            item.child(index).checkState(0)
+            for index in range(item.childCount())
+        ]
+        if all(state == Qt.Checked for state in states):
+            new = Qt.Checked
+        elif all(state == Qt.Unchecked for state in states):
+            new = Qt.Unchecked
+        else:
+            new = Qt.PartiallyChecked
+        if item.checkState(0) != new:
+            item.setCheckState(0, new)
+
+    def _refresh_all_folder_checks(self):
+        for index in range(self.ui.treeLibrary.topLevelItemCount()):
+            self._update_all_folder_checks(
+                self.ui.treeLibrary.topLevelItem(index))
+
+    def _on_check_changed(self, item, column):
+        """A check state changed: cascade and re-evaluate the mode.
+
+        Folder rows cycle to checked or unchecked and write their whole
+        subtree; a partial state is a report, not a command, and moves
+        nothing. Leaves carry their own state. After any change the
+        folder rows recompute theirs, the selection set is rebuilt from
+        the leaves, and the mode is re-evaluated — entering bulk at two
+        videos toggled on, leaving it below two.
+        """
+        if self._updating_checks:
+            return
+        before = self._checked_ids
+        self._updating_checks = True
+        try:
+            if self._is_folder_row(item):
+                state = item.checkState(0)
+                if state in (Qt.Checked, Qt.Unchecked):
+                    set_subtree_checks(item, state == Qt.Checked)
+            self._refresh_all_folder_checks()
+            self._rebuild_checked_ids()
+        finally:
+            self._updating_checks = False
+        self._sync_mode(before)
+
+    def _rebuild_checked_ids(self):
+        ids: set[str] = set()
+        for leaf in clip_items(self.ui.treeLibrary):
+            if leaf.checkState(0) == Qt.Checked:
+                ids.add(self._selection_key(leaf))
+        self._checked_ids = ids
+
+    def _selection_key(self, leaf) -> str:
+        clip_id = leaf.data(0, Qt.UserRole) or ""
+        if clip_id:
+            return clip_id
+        return "path:" + (leaf.data(0, Qt.UserRole + 1) or "")
+
+    def _apply_check_state(self, ids):
+        """Set every leaf's check from its key, folders recomputed.
+
+        The undo for a rejected mode transition: restore the selection
+        as it was, tri-state folders and all.
+        """
+        ids = set(ids)
+        self._updating_checks = True
+        try:
+            for leaf in clip_items(self.ui.treeLibrary):
+                leaf.setCheckState(
+                    0, Qt.Checked if self._selection_key(leaf) in ids
+                    else Qt.Unchecked)
+            self._refresh_all_folder_checks()
+        finally:
+            self._updating_checks = False
+        self._checked_ids = ids
+
+    def _checked_leaves(self):
+        return [
+            leaf for leaf in clip_items(self.ui.treeLibrary)
+            if leaf.checkState(0) == Qt.Checked
+        ]
+
+    def _checked_clip_objects(self):
+        clips = []
+        for leaf in self._checked_leaves():
+            relative = leaf.data(0, Qt.UserRole + 1) or ""
+            clip = self._clips_by_path.get(relative)
+            if clip is not None:
+                clips.append(clip)
+        return clips
+
+    # -- the bulk mode -----------------------------------------------
+
+    def _sync_mode(self, previous_ids):
+        """Enter or leave bulk mode at the one-video threshold.
+
+        Any clip toggled on is intent enough to enter bulk editing;
+        unchecking the last one leaves it. Both transitions are gated
+        on unsaved edits: entering gates on the singular form's pending
+        edits (Save handles them, Discard keeps them), leaving gates on
+        the bulk form's. A cancelled gate restores the checks as they
+        were.
+        """
+        bulk = len(self._checked_ids) >= 1
+        if self._mode == "bulk" and not bulk:
+            if self._bulk_touched:
+                answer = QMessageBox.warning(
+                    self, "Unsaved changes",
+                    "The selected clips have unsaved tag edits. "
+                    "Save them before switching?",
+                    QMessageBox.Save | QMessageBox.Discard
+                    | QMessageBox.Cancel,
+                    QMessageBox.Save)
+                if answer == QMessageBox.Cancel:
+                    self._apply_check_state(previous_ids)
+                    return
+                if answer == QMessageBox.Save:
+                    # Save the selection as it was before this toggle —
+                    # the toggle zeroed it, and a bulk save with no
+                    # targets is not what the user asked for.
+                    self._apply_check_state(previous_ids)
+                    self.on_save()
+                    return
+            self._exit_bulk_mode()
+            return
+        if self._mode != "bulk" and bulk:
+            if not self._prompt_unsaved():
+                self._apply_check_state(previous_ids)
+                return
+            if len(self._checked_ids) >= 1:
+                self._enter_bulk_mode()
+            return
+        if self._mode == "bulk":
+            self._blended_feed(initial=False)
+            self._update_bulk_header()
+
+    def _enter_bulk_mode(self):
+        """Switch the pane to bulk editing: the form blends the
+        checked clips, the preview shuts down, and the Title field
+        goes away — it is unique per clip and can never be common."""
+        self._mode = "bulk"
+        self._close_video()
+        for widget in (self.ui.videoContainer, self.ui.buttonPlay,
+                       self.ui.sliderPosition, self.ui.labelPosition,
+                       self.ui.labelDestination):
+            widget.hide()
+        self.ui.treeLibrary.setSelectionMode(QAbstractItemView.NoSelection)
+        self.ui.tagForm.field("title").setEnabled(False)
+        self.ui.tagForm.refresh_required_fields(exempt=True)
+        self._blended_feed(initial=True)
+
+    def _exit_bulk_mode(self):
+        """Leave bulk editing: restore the singular pane to its
+        idle, nothing-loaded state."""
+        if self._mode != "bulk":
+            return
+        self._mode = "singular"
+        self._bulk_touched.clear()
+        self._bulk_uniform = {}
+        self._clear_blend_artifacts()
+        self.ui.treeLibrary.setSelectionMode(QAbstractItemView.SingleSelection)
+        for widget in (self.ui.videoContainer, self.ui.buttonPlay,
+                       self.ui.sliderPosition, self.ui.labelPosition,
+                       self.ui.labelDestination):
+            widget.show()
+        self.ui.tagForm.field("title").setEnabled(True)
+        self.ui.tagForm.write_tags({})
+        self.ui.labelClipName.setText("")
+        self.ui.labelStatus.setText("")
+        self.ui.labelDestination.setText("")
+        self.ui.buttonSave.setText("Save")
+        self.ui.buttonSave.setEnabled(False)
+        self.ui.tagForm.refresh_required_fields(exempt=True)
+
+    def _clear_blend_artifacts(self):
+        """Unwind mixed-state placeholders and tooltips on the nine
+        suggestable fields. Title exposes none of these."""
+        for key in SUGGESTED_TAG_FIELDS:
+            field = self.ui.tagForm.field(key)
+            line = field.lineEdit()
+            line.setPlaceholderText("")
+            field.setToolTip("")
+
+    def _blended_feed(self, initial=False):
+        """Blend the checked clips into the form.
+
+        A field whose clips all agree shows its common value; a field
+        with ≥2 distinct values renders empty with a placeholder, and
+        only the fields the user edited are ever read back. Uniform
+        values that equal an already-typed edit leave the field alone,
+        so re-feeding after a selection change never overwrites one.
+        """
+        if self._mode != "bulk":
+            return
+        clips = self._checked_clip_objects()
+        self._bulk_uniform = {}
+        for key in SUGGESTED_TAG_FIELDS:
+            field = self.ui.tagForm.field(key)
+            line = field.lineEdit()
+            line.setPlaceholderText("")
+            field.setToolTip("")
+            values = {
+                clip.tag_dict().get(key, "").strip() for clip in clips}
+            uniform = values.pop() if len(values) == 1 else None
+            self._bulk_uniform[key] = uniform
+            if not initial and key in self._bulk_touched:
+                continue
+            field.blockSignals(True)
+            set_field_text(field, uniform if uniform is not None else "")
+            field.blockSignals(False)
+            if uniform is None:
+                line.setPlaceholderText("(multiple values)")
+                distinct = sorted(values, key=str.casefold)
+                tooltip = (f"{len(distinct)} different values: "
+                           + ", ".join(distinct[:8]))
+                if len(distinct) > 8:
+                    tooltip += f" … and {len(distinct) - 8} more"
+                field.setToolTip(tooltip)
+        self._update_bulk_header()
+
+    def _update_bulk_header(self):
+        count = len(self._checked_ids)
+        clips_word = "clip" if count == 1 else "clips"
+        self.ui.labelClipName.setText(f"{count} {clips_word} selected")
+        self.ui.buttonSave.setText(f"Apply to {count} {clips_word}")
+        self.ui.buttonSave.setEnabled(True)
+
+    def _on_bulk_field_touched(self, key):
+        """Track which fields the user actually edited in bulk mode —
+        a field reverted to its uniform value un-tracks itself."""
+        if self._mode != "bulk":
+            return
+        field = self.ui.tagForm.field(key)
+        text = field_text(field).strip()
+        uniform = self._bulk_uniform.get(key)
+        if uniform is not None and text == uniform:
+            self._bulk_touched.discard(key)
+            return
+        self._bulk_touched.add(key)
+
+    def _bulk_delta(self) -> dict[str, str | None]:
+        """The touched fields' outcomes: a value, or None for removed."""
+        delta: dict[str, str | None] = {}
+        for key in SUGGESTED_TAG_FIELDS:
+            if key not in self._bulk_touched:
+                continue
+            value = field_text(self.ui.tagForm.field(key)).strip()
+            delta[key] = value if value else None
+        return delta
 
     def _on_current_item_changed(self, current, previous):
         """Selecting a clip leaf loads it.
@@ -494,6 +924,10 @@ class LibraryManagerWindow(QMainWindow):
         if current is None or current.childCount() != 0:
             return
         if current is self._current_leaf:
+            return
+        if self._mode == "bulk":
+            # A click in bulk mode toggles the leaf's check; the
+            # singular load only happens once the mode leaves bulk.
             return
         relative = current.data(0, Qt.UserRole + 1) or ""
         clip = self._clips_by_path.get(relative)
@@ -532,6 +966,7 @@ class LibraryManagerWindow(QMainWindow):
     def _load_clip(self, clip):
         """Show one clip: its name, its tags, its preview, and
         where saving would put it."""
+        self._clear_blend_artifacts()
         self._clip = clip
         self.ui.labelClipName.setText(clip.relative_path)
         self.ui.tagForm.write_tags(clip.tag_dict())
@@ -609,6 +1044,9 @@ class LibraryManagerWindow(QMainWindow):
                 f"Saving moves this clip to: {destination.relative_path}")
 
     def _on_tag_edited(self):
+        if self._mode == "bulk":
+            # The form is the blended form; there is no single destination.
+            return
         self._refresh_destination()
 
     # -- saving ------------------------------------------------------
@@ -616,6 +1054,8 @@ class LibraryManagerWindow(QMainWindow):
     def on_save(self) -> bool:
         """Save the loaded clip's tags. Returns whether a save
         happened."""
+        if self._mode == "bulk":
+            return self._on_save_bulk()
         clip = self._current_clip()
         if clip is None:
             return False
@@ -668,6 +1108,189 @@ class LibraryManagerWindow(QMainWindow):
         reordered = self.ui.tagForm.note_recent_tags(suggested)
         if record_use(suggested, self.ui.tagForm.vocabulary_path) or reordered:
             self.ui.tagForm.refresh_combos()
+
+    # -- bulk saving -------------------------------------------------
+
+    def _on_save_bulk(self) -> bool:
+        """Plan, confirm and run a bulk re-tag of the checked clips."""
+        delta = self._bulk_delta()
+        if not delta:
+            self.ui.labelStatus.setText("No tags to apply.")
+            return True
+        clips = self._checked_clip_objects()
+        try:
+            plan = plan_bulk_retag(
+                delta=delta, clips=clips,
+                folder_scheme=self._folder_scheme,
+                filename_scheme=self._filename_scheme,
+                catalog=self._catalog,
+            )
+        except (ExportPlanError, ValueError) as error:
+            QMessageBox.warning(self, "The batch cannot be saved", str(error))
+            return False
+        if not plan.items:
+            QMessageBox.information(
+                self, "Nothing to change",
+                "Every selected clip already carries these tags; "
+                "no record needs to be rewritten.")
+            return True
+        if not self._confirm_bulk_save(plan, delta):
+            return False
+        self._begin_bulk_run(plan, delta)
+        return True
+
+    def _confirm_bulk_save(self, plan, delta) -> bool:
+        """The pre-flight: what will be written, how many will move,
+        and how many will be refused — before anything touches disk."""
+        lines = []
+        for key, value in delta.items():
+            label = _BULK_FIELD_LABELS.get(key, key)
+            lines.append(f"{label} → "
+                         + (value if value is not None else "(removed)"))
+        counts = (f"{len(plan.items)} clips will be re-tagged: "
+                  f"{plan.moves} moves, {plan.in_place} update in place")
+        if plan.skipped:
+            counts += (f", {plan.skipped} already carry these tags "
+                       "and will be skipped")
+        counts += "."
+        if plan.refused:
+            counts += (f"\n{len(plan.refused)} will be refused and "
+                       "left alone:")
+            counts += "\n" + "\n".join(
+                f"{label}: {reason}"
+                for label, reason in plan.refused[:10])
+            if len(plan.refused) > 10:
+                counts += f"\n… and {len(plan.refused) - 10} more."
+        answer = QMessageBox.question(
+            self, "Apply tags?",
+            "\n".join([*lines, "", counts]),
+            QMessageBox.Apply | QMessageBox.Cancel,
+            QMessageBox.Cancel)
+        return answer == QMessageBox.Apply
+
+    def _begin_bulk_run(self, plan, delta):
+        """Run the plan on a worker thread, behind a cancellable dialog."""
+        self._bulk_cancel = threading.Event()
+        self._bulk_delta_values = delta
+        worker = BulkRetagWorker(plan, cancel_event=self._bulk_cancel)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_bulk_done)
+        worker.failed.connect(self._on_bulk_failed)
+        worker.progressed.connect(self._on_bulk_progressed)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_bulk_stopped)
+        self._bulk_worker = worker
+        self._bulk_thread = thread
+
+        self.setEnabled(False)
+        dialog = LoadingDialog(
+            "Applying tags…", cancellable=True, modal=False,
+            title="Library Manager")
+        dialog.set_range(0, len(plan.items))
+        dialog.canceled.connect(self._on_bulk_cancel_requested)
+        dialog.show()
+        self._bulk_dialog = dialog
+        self._bulk_plan = plan
+
+        thread.start()
+
+    def _on_bulk_cancel_requested(self):
+        if self._bulk_cancel is not None:
+            self._bulk_cancel.set()
+
+    def _on_bulk_progressed(self, retagged, relative_path):
+        dialog = self._bulk_dialog
+        if dialog is not None:
+            dialog.set_message(
+                f"Applying tags ({retagged} — {relative_path})")
+            dialog.set_value(retagged)
+
+    def _on_bulk_done(self, result):
+        self._bulk_result = result
+        self._bulk_error = None
+        dialog, self._bulk_dialog = self._bulk_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_bulk_failed(self, message):
+        self._bulk_error = message
+        self._bulk_result = None
+        log(f"bulk re-tag failed: {message}")
+        dialog, self._bulk_dialog = self._bulk_dialog, None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_bulk_stopped(self):
+        """Tear the run down, report the outcome, then rebuild the
+        tree with the selection dumped (the bulk edit is
+        one-and-done)."""
+        thread, self._bulk_thread = self._bulk_thread, None
+        if thread is not None:
+            thread.deleteLater()
+        worker, self._bulk_worker = self._bulk_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        dialog, self._bulk_dialog = self._bulk_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self.setEnabled(True)
+        self._bulk_cancel = None
+        if self._close_after_bulk:
+            self._close_after_bulk = False
+            self._close_video()
+            self.close()
+            return
+
+        plan = self._bulk_plan
+        result = self._bulk_result
+        error = self._bulk_error
+        self._bulk_plan = None
+        self._bulk_result = None
+        self._bulk_error = None
+
+        set_values = {
+            key: value
+            for key, value in (self._bulk_delta_values or {}).items()
+            if value
+        }
+        if error is not None:
+            QMessageBox.warning(
+                self, "The bulk save could not finish", error)
+        elif result is not None and plan is not None:
+            self._show_bulk_summary(plan, result)
+            self._note_confirmed_tags(set_values)
+            saved_message = f"Saved tags on {len(result.written)} clips."
+
+        self._bulk_delta_values = None
+        self._exit_bulk_mode()
+        self._checked_ids = set()
+        if result is not None and plan is not None and error is None:
+            self.ui.labelStatus.setText(saved_message)
+        self._begin_walk(rebuild=True)
+
+    def _show_bulk_summary(self, plan, result):
+        """The after-action: what was re-tagged, and who was refused."""
+        total = len(result.written)
+        parts = [
+            f"Re-tagged {total} of {len(plan.items)} clips:",
+            f"  moved: {result.moved}",
+            f"  update in place: {result.in_place}",
+        ]
+        if result.cancelled:
+            parts.append(
+                f"  cancelled after {total} clips; "
+                "everything committed stays committed.")
+        if plan.skipped:
+            parts.append(
+                f"  {plan.skipped} clips already carried these tags "
+                "and were skipped.")
+        refused = [*plan.refused, *result.refused]
+        if refused:
+            parts.append(f"{len(refused)} refused:")
+            parts.extend(f"  {label}: {reason}" for label, reason in refused)
+        QMessageBox.warning(self, "Bulk re-tag complete", "\n".join(parts))
 
     def _report_move(self, clip, destination):
         """Say where the clip now lives, in the status label."""
@@ -1153,6 +1776,15 @@ class LibraryManagerWindow(QMainWindow):
             if self._dup_scan_cancel is not None:
                 self._dup_scan_cancel.set()
             self._close_after_dup_scan = True
+            event.ignore()
+            return
+        if self._bulk_thread is not None:
+            # The bulk re-tag is still running. Ask it to stop and
+            # defer the close to `_on_bulk_stopped`, which runs once
+            # the thread has really stopped.
+            if self._bulk_cancel is not None:
+                self._bulk_cancel.set()
+            self._close_after_bulk = True
             event.ignore()
             return
         self._close_video()

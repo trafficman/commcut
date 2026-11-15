@@ -26,9 +26,11 @@ from shared.records import (
 from shared.retagging import (
     DuplicateScanResult,
     DuplicateClipGroup,
+    execute_bulk_retag,
     execute_retag,
     find_duplicate_clip_ids,
     find_misaligned_clips,
+    plan_bulk_retag,
     plan_retag,
     retag_is_in_place,
 )
@@ -40,6 +42,11 @@ FILENAME_SCHEME = compile_filename_scheme("{title}")
 CANONICAL_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def record_path(root, relative):
+    path = os.path.join(root, *relative.split("/"))
+    return os.path.splitext(path)[0] + RECORD_EXTENSION
 
 
 def tags_for(title, network="CN"):
@@ -105,6 +112,15 @@ def library(tmp_path):
     catalog = build_catalog(root)
     clips = {clip.relative_path: clip for clip in catalog.clips}
     return root, catalog, clips
+
+
+def bulk_plan(library, delta, *relative_paths):
+    return plan_bulk_retag(
+        delta=delta,
+        clips=[library[2][path] for path in relative_paths],
+        folder_scheme=FOLDER_SCHEME,
+        filename_scheme=FILENAME_SCHEME,
+        catalog=library[1])
 
 
 def clip_of(library, relative):
@@ -330,3 +346,231 @@ def test_find_duplicate_clip_ids_returns_none_for_clean_library(library):
     assert not result.cancelled
     assert result.clips_found == 2
     assert len(result.groups) == 0
+
+
+# ---------------------------------------------------------------------------
+# Bulk re-tagging
+# ---------------------------------------------------------------------------
+
+ALPHA = "CN/Promo/2000s/Alpha.mp4"
+BETA = "CN/Promo/2000s/Beta.mp4"
+
+
+def test_plan_bulk_retag_applies_a_delta_to_every_selected_clip(library):
+    result = bulk_plan(library, {"network": "Old"}, ALPHA, BETA)
+
+    assert result.skipped == 0
+    assert result.moves == 2
+    assert result.in_place == 0
+    for item in result.items:
+        assert item.tags["network"] == "Old"
+        assert item.tags["title"] in {"Alpha", "Beta"}
+
+
+def test_plan_bulk_retag_skips_no_ops(library):
+    result = bulk_plan(library, {"network": "CN"}, ALPHA, BETA)
+
+    assert result.skipped == 2
+    assert result.items == ()
+
+
+def test_plan_bulk_retag_carries_untouched_fields_forward(library):
+    result = bulk_plan(library, {"special": "Bump"}, ALPHA)
+
+    item = result.items[0]
+    # Untouched network/type/period ride along from the clip's record.
+    assert item.tags["network"] == "CN"
+    assert item.tags["time_period"] == "2000s"
+    assert item.tags["special"] == "Bump"
+    # In place: special is not part of either scheme.
+    assert result.in_place == 1
+    assert result.moves == 0
+
+
+def test_plan_bulk_retag_none_removes_the_tag(library):
+    root, catalog, clips = library
+    write_clip(root, "CN/Promo/2000s/Special.mp4",
+               {**tags_for("Special"), "special": "Bump"},
+               clip_id="33333333-3333-3333-3333-333333333333")
+    catalog = build_catalog(root)
+    catalog_clips = {clip.relative_path: clip for clip in catalog.clips}
+    result = plan_bulk_retag(
+        delta={"special": None},
+        clips=[catalog_clips["CN/Promo/2000s/Special.mp4"]],
+        folder_scheme=FOLDER_SCHEME, filename_scheme=FILENAME_SCHEME,
+        catalog=catalog)
+
+    assert result.items[0].tags.get("special") is None
+
+
+def test_plan_bulk_retag_refuses_the_batch_on_a_missing_required_tag(library):
+    with pytest.raises(ExportPlanError, match="missing the required tag"):
+        bulk_plan(library, {"network": None}, ALPHA, BETA)
+
+
+def test_plan_bulk_retag_refuses_the_batch_on_a_blank_required_value(library):
+    with pytest.raises(ExportPlanError, match="missing the required tag"):
+        bulk_plan(library, {"time_period": "   "}, ALPHA)
+
+
+def test_plan_bulk_retag_refuses_the_whole_batch_before_writing(library, tmp_path):
+    """The fatal check happens against the merged records, before the
+    window even offers to run: a vital tag cleared in bulk must not be
+    writable to any clip, not just some of them."""
+    with pytest.raises(ExportPlanError):
+        bulk_plan(library, {"time_period": None}, ALPHA, BETA)
+    assert load_record(record_path(library[0], ALPHA)).tag_dict == tags_for("Alpha")
+
+
+def test_plan_bulk_retag_refuses_an_occupied_destination(library):
+    """The destination a clip the batch did not select already holds:
+    refused per clip, its pair left exactly where it was."""
+    result = bulk_plan(library, {"title": "Beta"}, ALPHA)
+
+    assert result.items == ()
+    assert result.refused
+    assert "Alpha" in result.refused[0][0]
+    assert "Beta" in result.refused[0][1]
+
+
+def test_execute_bulk_retag_moves_clips_and_preserves_their_ids(library):
+    root, catalog, clips = library
+    plan = bulk_plan(library, {"network": "Old"}, ALPHA, BETA)
+
+    result = execute_bulk_retag(plan)
+
+    assert len(result.written) == 2
+    assert result.moved == 2
+    assert result.in_place == 0
+    for title in ("Alpha", "Beta"):
+        path = os.path.join(root, "Old", "Promo", "2000s",
+                            f"{title}.mp4")
+        assert os.path.isfile(path)
+        record = load_record(os.path.splitext(path)[0] + RECORD_EXTENSION)
+        assert record.tag_dict["network"] == "Old"
+    # The old CN/… records are gone; the IDs travelled with the clips.
+    assert not os.path.exists(record_path(root, ALPHA))
+    assert not os.path.exists(record_path(root, BETA))
+
+
+def test_execute_bulk_retag_refuses_a_destination_that_appeared_since_the_plan(library, tmp_path):
+    """The catalog index only sees clips; a file that appeared at the
+    destination after the walk refuses the move rather than being
+    overwritten."""
+    root, catalog, clips = library
+    plan = bulk_plan(library, {"network": "Old"}, ALPHA, BETA)
+
+    destination = os.path.join(root, "Old", "Promo", "2000s")
+    os.makedirs(destination, exist_ok=True)
+    stray = os.path.join(destination, "Alpha.mp4")
+    with open(stray, "wb") as handle:
+        handle.write(b"stray bytes")
+
+    result = execute_bulk_retag(plan)
+
+    refused_labels = [label for label, _ in result.refused]
+    assert refused_labels and "Alpha" in refused_labels[0]
+    with open(stray, "rb") as handle:
+        assert handle.read() == b"stray bytes"
+    # Beta, whose destination was free, still moved.
+    assert os.path.isfile(os.path.join(destination, "Beta.mp4"))
+    assert result.written == ("Old/Promo/2000s/Beta.mp4",)
+
+
+def test_execute_bulk_retag_refuses_an_occupied_record_destination(library):
+    root, catalog, clips = library
+    plan = bulk_plan(library, {"network": "Old"}, ALPHA, BETA)
+
+    destination = os.path.join(root, "Old", "Promo", "2000s")
+    os.makedirs(destination, exist_ok=True)
+    stray = os.path.join(destination, "Alpha.cnfo")
+    with open(stray, "wb") as handle:
+        handle.write(b"stray record")
+
+    result = execute_bulk_retag(plan)
+
+    refused_labels = [label for label, _ in result.refused]
+    assert refused_labels and "Alpha" in refused_labels[0]
+    with open(stray, "rb") as handle:
+        assert handle.read() == b"stray record"
+    assert os.path.isfile(os.path.join(destination, "Beta.mp4"))
+
+
+def test_execute_bulk_retag_cancels_at_a_clip_boundary(tmp_path):
+    root = str(tmp_path / "export")
+    paths = [f"CN/Promo/2000s/Clip{i}.mp4" for i in range(5)]
+    for i, path in enumerate(paths):
+        write_clip(root, path, tags_for(f"Clip{i}"),
+                   clip_id=f"55555555-5555-5555-5555-{i:012d}")
+    catalog = build_catalog(root)
+    clips = [clip for clip in catalog.clips
+             if clip.relative_path in paths]
+    plan = plan_bulk_retag(
+        delta={"network": "Old"}, clips=clips,
+        folder_scheme=FOLDER_SCHEME, filename_scheme=FILENAME_SCHEME,
+        catalog=catalog)
+
+    calls = {"count": 0}
+
+    def cancel_after_first():
+        calls["count"] += 1
+        return calls["count"] > 1
+
+    result = execute_bulk_retag(plan, should_cancel=cancel_after_first)
+
+    assert result.cancelled
+    assert len(result.written) == 1
+    assert result.written[0].startswith("Old/Promo/2000s/")
+
+
+def test_execute_retag_refuses_to_overwrite_an_off_catalog_file(library):
+    root, catalog, clips = library
+    clip = clips[ALPHA]
+    tags = {**tags_for("Alpha"), "network": "Old"}
+    destination = plan_retag(
+        clip=clip, tags=tags, folder_scheme=FOLDER_SCHEME,
+        filename_scheme=FILENAME_SCHEME, catalog=catalog)
+
+    stray = os.path.join(root, "Old", "Promo", "2000s", "Alpha.mp4")
+    os.makedirs(os.path.dirname(stray), exist_ok=True)
+    with open(stray, "wb") as handle:
+        handle.write(b"stray bytes")
+
+    with pytest.raises(ExportPlanError, match="different file"):
+        execute_retag(clip, destination, tags)
+
+    with open(stray, "rb") as handle:
+        assert handle.read() == b"stray bytes"
+
+
+def test_execute_retag_case_only_rename_still_works_with_the_guard(library):
+    root, catalog, clips = library
+    clip = clips[ALPHA]
+    tags = {**tags_for("Alpha"), "network": "cn"}
+    destination = plan_retag(
+        clip=clip, tags=tags, folder_scheme=FOLDER_SCHEME,
+        filename_scheme=FILENAME_SCHEME, catalog=catalog)
+
+    execute_retag(clip, destination, tags)
+
+    assert os.path.isfile(
+        os.path.join(root, "cn", "Promo", "2000s", "Alpha.mp4"))
+
+
+@windows_path_length_only
+def test_plan_bulk_retag_reports_too_long_destinations_as_refusals(tmp_path):
+    root = str(tmp_path / "export")
+    write_clip(root, "CN/Promo/2000s/Long.mp4", tags_for("T" * 200),
+               clip_id="66666666-6666-6666-6666-666666666666")
+    catalog = build_catalog(root)
+    clip = next(iter(catalog.clips))
+    deep = compile_folder_scheme(
+        "{network}/{filler_type}/{time_period}/{title}/{title}/{title}")
+
+    result = plan_bulk_retag(
+        delta={"special": "Bump"}, clips=[clip],
+        folder_scheme=deep, filename_scheme=FILENAME_SCHEME,
+        catalog=catalog)
+
+    assert result.items == ()
+    assert result.refused
