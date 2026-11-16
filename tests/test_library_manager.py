@@ -493,7 +493,7 @@ def folder_for(window, text):
 def check_leaf(window, relative_path, checked=True):
     """Toggle a leaf's check, as a click on its indicator would."""
     leaf = leaf_for(window, relative_path)
-    leaf.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+    window._set_checked(leaf, checked)
     return leaf
 
 
@@ -1434,7 +1434,7 @@ def test_folder_check_cascades_to_descendants(harness):
 
     try:
         folder = folder_for(window, "CN")
-        folder.setCheckState(0, Qt.Checked)
+        window._set_checked(folder, True)
 
         assert checked_relatives(window) == {
             "CN/Promo/2000s/Alpha.mp4",
@@ -1812,3 +1812,40 @@ def test_real_clicks_on_indicators_toggle_exactly_once(harness):
     assert a.checkState(0) == Qt.Unchecked
     assert window._mode == "singular"
     assert not window.ui.videoContainer.isHidden()
+import time
+
+CLIP_COUNT = 600
+
+
+def _big_library(open_library, count=CLIP_COUNT):
+    return open_library(
+        *(tags_for(f"Clip{i}") for i in range(count)))
+
+
+import time
+
+CLIP_COUNT = 600
+
+
+def _big_library(open_library, count=CLIP_COUNT):
+    return open_library(
+        *(tags_for(f"Clip{i}") for i in range(count)))
+
+
+import time
+
+CLIP_COUNT = 600
+
+
+def _big_library(open_library, count=CLIP_COUNT):
+    return open_library(
+        *(tags_for(f"Clip{i}") for i in range(count)))
+
+
+CLIP_COUNT = 400
+
+
+def _big_library(open_library, count=CLIP_COUNT):
+    return open_library(
+        *(tags_for(f"Clip{i}") for i in range(count)))
+

@@ -37,6 +37,7 @@ the library is walked again, and the clip is re-selected by its
 clip ID — never by path, which is the one thing that just changed.
 """
 
+import heapq
 import os
 import sys
 import threading
@@ -391,7 +392,6 @@ class LibraryManagerWindow(QMainWindow):
         self._mode = "singular"
         self._bulk_touched = set()
         self._bulk_uniform: dict[str, str | None] = {}
-        self._updating_checks = False
         self._last_press_pos = None
         self._clips_by_id: dict[str, object] = {}
         self._bulk_delta_values: dict[str, str | None] | None = None
@@ -424,8 +424,6 @@ class LibraryManagerWindow(QMainWindow):
             field_change_signal(
                 self.ui.tagForm.field(namespace)).connect(
                     lambda *_, key=namespace: self._on_bulk_field_touched(key))
-        self.ui.treeLibrary.itemChanged.connect(self._on_check_changed)
-
         self.ui.buttonScanLibrary.clicked.connect(self.on_scan_library)
         self.ui.buttonScanDuplicateIds.clicked.connect(
             self.on_scan_duplicate_ids)
@@ -577,14 +575,14 @@ class LibraryManagerWindow(QMainWindow):
             if clip.record.clip_id
         }
         tree = self.ui.treeLibrary
-        tree.blockSignals(True)
+        tree.viewport().setUpdatesEnabled(False)
         try:
             build_tree(
                 tree, catalog.clips,
                 self._clips_by_path, self._clip_items,
                 checkboxes=True)
         finally:
-            tree.blockSignals(False)
+            tree.viewport().setUpdatesEnabled(True)
 
     def _is_folder_row(self, item):
         """Whether `item` is a folder row (folders are never selectable)."""
@@ -597,13 +595,50 @@ class LibraryManagerWindow(QMainWindow):
         return tree.viewport().mapFromGlobal(QCursor.pos())
 
     def eventFilter(self, obj, event):
-        """Remember where the last press landed, so the row click it
-        produces can tell the checkbox indicator from the row body."""
+        """Remember where the last press landed, and own the clicks
+        that land on a checkbox indicator.
+
+        The tree's own handling of checkable rows posts `itemChanged`
+        per row, and over a big tree Qt delivers those as hundreds of
+        separate event-loop dispatches rather than inline ones — each
+        one would run the full cascade, the mode sync and the blended
+        feed. So indicator clicks never reach the tree's default
+        handler; this filter decides the new state itself and hands
+        the checked set to the usual machinery synchronously.
+        """
         if (obj is self.ui.treeLibrary.viewport()
                 and event.type() == QEvent.Type.MouseButtonPress):
             pos = event.position()
-            self._last_press_pos = QPoint(int(pos.x()), int(pos.y()))
+            point = QPoint(int(pos.x()), int(pos.y()))
+            self._last_press_pos = point
+            tree = self.ui.treeLibrary
+            index = tree.indexAt(point)
+            if index.isValid():
+                item = tree.itemFromIndex(index)
+                if self._on_indicator(item, point):
+                    self._toggle_item_check(item)
+                    return True
         return super().eventFilter(obj, event)
+
+    def _toggle_item_check(self, item):
+        """Flip one row's check — the leaf itself, or a folder and
+        its whole subtree — and run the bookkeeping.
+
+        A folder whose leaves are all checked unchecks; any other state
+        (unchecked or partially checked) checks fully. This is the one
+        entry the user's clicks funnel through, so it is where the
+        selection set is rebuilt and the mode re-evaluated.
+        """
+        is_folder = self._is_folder_row(item)
+        if is_folder:
+            states = [
+                item.child(index).checkState(0)
+                for index in range(item.childCount())
+            ]
+            target = not all(state == Qt.Checked for state in states)
+        else:
+            target = item.checkState(0) != Qt.Checked
+        self._set_checked(item, target)
 
     def _on_indicator(self, item, pos) -> bool:
         """Whether a click at viewport `pos` landed on `item`'s checkbox.
@@ -627,9 +662,7 @@ class LibraryManagerWindow(QMainWindow):
     def _toggle_leaf(self, leaf):
         """Flip a leaf's check — the whole of what a clip-row click
         means in bulk mode."""
-        state = leaf.checkState(0)
-        leaf.setCheckState(
-            0, Qt.Unchecked if state == Qt.Checked else Qt.Checked)
+        self._toggle_item_check(leaf)
 
     def _on_item_clicked(self, item, column, pos=None):
         """A click on a row.
@@ -653,16 +686,8 @@ class LibraryManagerWindow(QMainWindow):
                 return
             self._toggle_leaf(item)
 
-    def _update_all_folder_checks(self, item):
-        """Recompute every folder row's check from its descendants,
-        deepest folders first.
-
-        Folders whose state Qt or the application just set to partial
-        are not a command to touch their children; this function is the
-        only writer of parent state once the leaves are set.
-        """
-        for index in range(item.childCount()):
-            self._update_all_folder_checks(item.child(index))
+    def _update_folder_state(self, item):
+        """Set one folder row's state from its children."""
         if not self._is_folder_row(item) or item.childCount() == 0:
             return
         states = [
@@ -678,34 +703,50 @@ class LibraryManagerWindow(QMainWindow):
         if item.checkState(0) != new:
             item.setCheckState(0, new)
 
+    def _update_folder_states_upward(self, item):
+        """Recompute every folder ancestor of `item` from its children,
+        walking up — the bounded refresh for one toggled row."""
+        node = item.parent()
+        while node is not None:
+            self._update_folder_state(node)
+            node = node.parent()
+
+    def _update_all_folder_checks(self, item):
+        """Recompute every folder row's check from its descendants,
+        deepest folders first. Rare restore path — one pass for the
+        whole tree."""
+        for index in range(item.childCount()):
+            self._update_all_folder_checks(item.child(index))
+        self._update_folder_state(item)
+
     def _refresh_all_folder_checks(self):
         for index in range(self.ui.treeLibrary.topLevelItemCount()):
             self._update_all_folder_checks(
                 self.ui.treeLibrary.topLevelItem(index))
 
-    def _on_check_changed(self, item, column):
-        """A check state changed: cascade and re-evaluate the mode.
+    def _set_checked(self, item, checked):
+        """Set one row's check and run the bookkeeping synchronously.
 
-        Folder rows cycle to checked or unchecked and write their whole
-        subtree; a partial state is a report, not a command, and moves
-        nothing. Leaves carry their own state. After any change the
-        folder rows recompute theirs, the selection set is rebuilt from
-        the leaves, and the mode is re-evaluated — entering bulk at two
-        videos toggled on, leaving it below two.
+        User clicks funnel through `_toggle_item_check` (via the
+        viewport event filter) and tests call this directly; both need
+        the same machinery — the cascade, the ancestor recompute, the
+        selection set rebuild and the mode re-evaluation — without any
+        Qt notification in between. Folder rows set their whole subtree.
         """
-        if self._updating_checks:
-            return
+        is_folder = self._is_folder_row(item)
         before = self._checked_ids
-        self._updating_checks = True
+        tree = self.ui.treeLibrary
+        tree.viewport().setUpdatesEnabled(False)
         try:
-            if self._is_folder_row(item):
-                state = item.checkState(0)
-                if state in (Qt.Checked, Qt.Unchecked):
-                    set_subtree_checks(item, state == Qt.Checked)
-            self._refresh_all_folder_checks()
+            if is_folder:
+                set_subtree_checks(item, checked)
+                self._refresh_all_folder_checks()
+            else:
+                item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+                self._update_folder_states_upward(item)
             self._rebuild_checked_ids()
         finally:
-            self._updating_checks = False
+            tree.viewport().setUpdatesEnabled(True)
         self._sync_mode(before)
 
     def _rebuild_checked_ids(self):
@@ -728,15 +769,16 @@ class LibraryManagerWindow(QMainWindow):
         as it was, tri-state folders and all.
         """
         ids = set(ids)
-        self._updating_checks = True
+        tree = self.ui.treeLibrary
+        tree.viewport().setUpdatesEnabled(False)
         try:
-            for leaf in clip_items(self.ui.treeLibrary):
+            for leaf in clip_items(tree):
                 leaf.setCheckState(
                     0, Qt.Checked if self._selection_key(leaf) in ids
                     else Qt.Unchecked)
             self._refresh_all_folder_checks()
         finally:
-            self._updating_checks = False
+            tree.viewport().setUpdatesEnabled(True)
         self._checked_ids = ids
 
     def _checked_leaves(self):
@@ -877,6 +919,7 @@ class LibraryManagerWindow(QMainWindow):
         if self._mode != "bulk":
             return
         clips = self._checked_clip_objects()
+        tag_dicts = [clip.tag_dict() for clip in clips]
         self._bulk_uniform = {}
         for key in SUGGESTED_TAG_FIELDS:
             field = self.ui.tagForm.field(key)
@@ -884,7 +927,7 @@ class LibraryManagerWindow(QMainWindow):
             line.setPlaceholderText("")
             field.setToolTip("")
             values = {
-                clip.tag_dict().get(key, "").strip() for clip in clips}
+                dictionary.get(key, "").strip() for dictionary in tag_dicts}
             uniform = values.pop() if len(values) == 1 else None
             self._bulk_uniform[key] = uniform
             if not initial and key in self._bulk_touched:
@@ -894,11 +937,12 @@ class LibraryManagerWindow(QMainWindow):
             field.blockSignals(False)
             if uniform is None:
                 line.setPlaceholderText("(multiple values)")
-                distinct = sorted(values, key=str.casefold)
-                tooltip = (f"{len(distinct)} different values: "
-                           + ", ".join(distinct[:8]))
-                if len(distinct) > 8:
-                    tooltip += f" … and {len(distinct) - 8} more"
+                total = len(values)
+                distinct = heapq.nsmallest(8, values, key=str.casefold)
+                tooltip = (f"{total} different values: "
+                           + ", ".join(distinct))
+                if total > 8:
+                    tooltip += f" … and {total - 8} more"
                 field.setToolTip(tooltip)
         self._update_bulk_header()
 
