@@ -58,6 +58,7 @@ from PySide6.QtCore import (
     QObject,
     QPoint,
     QThread,
+    QTimer,
     Qt,
     Signal,
     Slot,
@@ -68,6 +69,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStyle,
+    QStyleOptionViewItem,
     QTreeWidgetItem,
 )
 
@@ -392,6 +394,11 @@ class LibraryManagerWindow(QMainWindow):
         self._mode = "singular"
         self._bulk_touched = set()
         self._bulk_uniform: dict[str, str | None] = {}
+        self._suppress_checks = False
+        self._drain_timer = None
+        self._storm_pending = False
+        self._owner_item = None
+        self._storm_before = None
         self._last_press_pos = None
         self._clips_by_id: dict[str, object] = {}
         self._bulk_delta_values: dict[str, str | None] | None = None
@@ -412,6 +419,7 @@ class LibraryManagerWindow(QMainWindow):
             self._on_scrub_ended)
         self.ui.sliderPosition.sliderReleased.connect(self._on_seek)
         self.ui.treeLibrary.viewport().installEventFilter(self)
+        self.ui.treeLibrary.itemChanged.connect(self._on_check_changed)
         self.ui.treeLibrary.itemClicked.connect(
             lambda item, column: self._on_item_clicked(
                 item, column, self._viewport_click_pos()))
@@ -576,6 +584,7 @@ class LibraryManagerWindow(QMainWindow):
         }
         tree = self.ui.treeLibrary
         tree.viewport().setUpdatesEnabled(False)
+        self._suppress_checks = True
         try:
             build_tree(
                 tree, catalog.clips,
@@ -583,6 +592,7 @@ class LibraryManagerWindow(QMainWindow):
                 checkboxes=True)
         finally:
             tree.viewport().setUpdatesEnabled(True)
+            self._suppress_checks = False
 
     def _is_folder_row(self, item):
         """Whether `item` is a folder row (folders are never selectable)."""
@@ -617,7 +627,16 @@ class LibraryManagerWindow(QMainWindow):
                 item = tree.itemFromIndex(index)
                 if self._on_indicator(item, point):
                     self._toggle_item_check(item)
+                    self._owner_item = item
                     return True
+        if (obj is self.ui.treeLibrary.viewport()
+                and event.type() == QEvent.Type.MouseButtonRelease):
+            if self._owner_item is not None:
+                # Qt tracked no press since we consumed it; the release
+                # must not start a click track either. A release Qt
+                # handles here flips the row right back.
+                self._owner_item = None
+                return True
         return super().eventFilter(obj, event)
 
     def _toggle_item_check(self, item):
@@ -638,26 +657,82 @@ class LibraryManagerWindow(QMainWindow):
             target = not all(state == Qt.Checked for state in states)
         else:
             target = item.checkState(0) != Qt.Checked
-        self._set_checked(item, target)
+        if not self._storm_pending:
+            self._storm_before = set(self._checked_ids)
+            self._storm_pending = True
+        tree = self.ui.treeLibrary
+        tree.viewport().setUpdatesEnabled(False)
+        self._suppress_checks = True
+        try:
+            if is_folder:
+                set_subtree_checks(item, target)
+            else:
+                item.setCheckState(0, Qt.Checked if target else Qt.Unchecked)
+        finally:
+            tree.viewport().setUpdatesEnabled(True)
+            self._suppress_checks = False
+        self._schedule_drain()
+
+    def _schedule_drain(self):
+        """Arm the commit drain for the current click storm.
+
+        The first click of a burst snapshots the selection at its
+        start; every flip until the burst settles is folded into one
+        deferred commit. If a drain is already pending it is
+        postponed, so rapid clicking coalesces the expensive
+        bookkeeping into a single pass after the gesture.
+        """
+        if self._drain_timer is None:
+            self._drain_timer = QTimer(self)
+            self._drain_timer.setSingleShot(True)
+            self._drain_timer.setInterval(40)
+            self._drain_timer.timeout.connect(self._drain_checks)
+        self._drain_timer.start()
+
+    def _drain_checks(self):
+        """One deferred commit per click storm, against settled state."""
+        if not self._storm_pending:
+            return
+        self._storm_pending = False
+        before = self._storm_before if self._storm_before is not None \
+            else self._checked_ids
+        self._storm_before = None
+        tree = self.ui.treeLibrary
+        tree.viewport().setUpdatesEnabled(False)
+        self._suppress_checks = True
+        try:
+            self._refresh_all_folder_checks()
+            self._rebuild_checked_ids()
+        finally:
+            tree.viewport().setUpdatesEnabled(True)
+            self._suppress_checks = False
+        self._sync_mode(before)
 
     def _on_indicator(self, item, pos) -> bool:
         """Whether a click at viewport `pos` landed on `item`'s checkbox.
 
-        The checkbox is the first thing in the row's content region,
-        one indent past the depth of its parent — expander at depth
-        insets, then the indicator.
+        The rectangle comes from the style's own indicator geometry —
+        the same sub-element Qt uses to place the checkbox for the
+        current style, indent, pixel ratio and font — so it keeps
+        matching the real thing whichever platform or high-DPI factor
+        the window runs under. Clicks the style disagrees about fall
+        through to Qt, where the fallback handler reconciles the state.
         """
         tree = self.ui.treeLibrary
-        depth = 0
-        parent = item.parent()
-        while parent is not None:
-            depth += 1
-            parent = parent.parent()
-        indent = tree.indentation()
-        width = self.style().pixelMetric(
-            QStyle.PixelMetric.PM_IndicatorWidth, None, tree)
-        x0 = indent * (depth + 1)
-        return pos.x() >= x0 and pos.x() < x0 + width + 4
+        index = tree.indexFromItem(item)
+        rect = tree.visualRect(index)
+        option = QStyleOptionViewItem()
+        option.initFrom(tree)
+        option.rect = rect
+        option.features = (QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator)
+        indicator = tree.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemCheckIndicator, option, tree)
+        if not indicator.isValid():
+            width = self.style().pixelMetric(
+                QStyle.PixelMetric.PM_IndicatorWidth, option, tree)
+            indicator = rect
+            indicator.setWidth(width + 4)
+        return indicator.contains(pos)
 
     def _toggle_leaf(self, leaf):
         """Flip a leaf's check — the whole of what a clip-row click
@@ -724,6 +799,24 @@ class LibraryManagerWindow(QMainWindow):
             self._update_all_folder_checks(
                 self.ui.treeLibrary.topLevelItem(index))
 
+    def _on_check_changed(self, item, column):
+        """Fallback deferred repair for check writes the tree itself
+        emits — native or out-of-band.
+
+        Qt dispatches `itemChanged` from its own machinery as separate
+        event-loop deliveries, dozens of times per gesture over a big
+        tree, which made any inline reconciliation quadratic. The
+        episode therefore also folds into the storm drain: every change
+        we observe just arms (or appends to) the pending drain, which
+        commits once against settled state.
+        """
+        if self._suppress_checks:
+            return
+        if not self._storm_pending:
+            self._storm_before = set(self._checked_ids)
+            self._storm_pending = True
+        self._schedule_drain()
+
     def _set_checked(self, item, checked):
         """Set one row's check and run the bookkeeping synchronously.
 
@@ -737,6 +830,7 @@ class LibraryManagerWindow(QMainWindow):
         before = self._checked_ids
         tree = self.ui.treeLibrary
         tree.viewport().setUpdatesEnabled(False)
+        self._suppress_checks = True
         try:
             if is_folder:
                 set_subtree_checks(item, checked)
@@ -747,6 +841,7 @@ class LibraryManagerWindow(QMainWindow):
             self._rebuild_checked_ids()
         finally:
             tree.viewport().setUpdatesEnabled(True)
+            self._suppress_checks = False
         self._sync_mode(before)
 
     def _rebuild_checked_ids(self):
@@ -771,6 +866,7 @@ class LibraryManagerWindow(QMainWindow):
         ids = set(ids)
         tree = self.ui.treeLibrary
         tree.viewport().setUpdatesEnabled(False)
+        self._suppress_checks = True
         try:
             for leaf in clip_items(tree):
                 leaf.setCheckState(
@@ -779,6 +875,7 @@ class LibraryManagerWindow(QMainWindow):
             self._refresh_all_folder_checks()
         finally:
             tree.viewport().setUpdatesEnabled(True)
+            self._suppress_checks = False
         self._checked_ids = ids
 
     def _checked_leaves(self):

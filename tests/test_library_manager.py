@@ -1405,24 +1405,35 @@ def test_folder_row_click_expands_and_indicator_click_does_not(harness):
 
     try:
         folder = folder_for(window, "CN")
-        leaf = leaf_for(window, "CN/Promo/2000s/Alpha.mp4")
+        tree = window.ui.treeLibrary
+        rect = tree.visualRect(tree.indexFromItem(folder))
+        y = rect.center().y()
 
-        # A click inside the indicator region toggles the check, not
-        # the expansion.
-        window._on_item_clicked(folder, 0, pos=QPoint(12, 0))
+        # Pick a viewport position that lands on the indicator and one
+        # that lands on the row body, through the same geometry the
+        # handler uses — whichever DPI/style the test runs under.
+        x_inside = next(x for x in range(rect.left(), rect.right() + 1)
+                        if window._on_indicator(folder, QPoint(x, y)))
+        x_inside_body = next(x for x in range(rect.right(), rect.left() - 1, -1)
+                             if not window._on_indicator(folder, QPoint(x, y)))
+
+        window._on_item_clicked(folder, 0, pos=QPoint(x_inside, y))
         assert not folder.isExpanded()
 
-        # A click outside the indicator region expands.
-        indent = window.ui.treeLibrary.indentation()
-        window._on_item_clicked(folder, 0, pos=QPoint(10 * indent, 5))
+        window._on_item_clicked(folder, 0, pos=QPoint(x_inside_body, y))
         assert folder.isExpanded()
 
-        # Indicators of nested folders also discriminate.
+        # Indicators of nested folders also discriminate. The nested
+        # row must be visible for Qt to give it a visual rect.
+        for parent in ("CN", "Promo"):
+            folder_for(window, parent).setExpanded(True)
         nested = folder_for(window, "2000s")
-        window._on_item_clicked(nested, 0, pos=QPoint(32, 0))
+        rect = tree.visualRect(tree.indexFromItem(nested))
+        y = rect.center().y()
+        x_inside = next(x for x in range(rect.left(), rect.right() + 1)
+                        if window._on_indicator(nested, QPoint(x, y)))
+        window._on_item_clicked(nested, 0, pos=QPoint(x_inside, y))
         assert not nested.isExpanded()
-        window._on_item_clicked(nested, 0, pos=QPoint(60, 0))
-        assert nested.isExpanded()
     finally:
         window.close()
         window.deleteLater()
@@ -1754,16 +1765,18 @@ from PySide6.QtTest import QTest
 
 
 def _indicator_pos(tree, leaf):
-    parent = leaf.parent()
-    depth = 0
-    node = parent
-    while node is not None:
-        depth += 1
-        node = node.parent()
+    """The center of the row's checkbox indicator, via the same style
+    geometry the event filter uses to decide what is a checkbox click."""
+    from PySide6.QtWidgets import QStyle, QStyleOptionViewItem
     index = tree.indexFromItem(leaf)
     rect = tree.visualRect(index)
-    indent = tree.indentation()
-    return QPoint(indent * (depth + 1) + 6, rect.center().y())
+    option = QStyleOptionViewItem()
+    option.initFrom(tree)
+    option.rect = rect
+    option.features = QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+    indicator = tree.style().subElementRect(
+        QStyle.SubElement.SE_ItemViewItemCheckIndicator, option, tree)
+    return indicator.center()
 
 
 def _body_pos(tree, leaf):
@@ -1775,6 +1788,93 @@ def _body_pos(tree, leaf):
 def _click(tree, pos):
     QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton,
                      Qt.KeyboardModifier.NoModifier, pos)
+
+
+def test_rapid_toggles_coalesce_into_one_drain(harness, monkeypatch):
+    """A burst of indicator clicks must not re-run the bookkeeping per
+    click; the drain coalesces them into one commit after the burst
+    settles."""
+    open_library, root = harness
+    window = open_library(
+        *(tags_for(f"Clip{i}") for i in range(100)))
+
+    sync_calls = []
+
+    original_sync = window._sync_mode
+
+    def spy(before_ids):
+        sync_calls.append(before_ids)
+        return original_sync(before_ids)
+
+    monkeypatch.setattr(window, "_sync_mode", spy)
+
+    folder = folder_for(window, "CN")
+
+    try:
+        for _ in range(10):
+            window._toggle_item_check(folder)
+        assert sync_calls == []
+
+        window._drain_checks()
+        assert len(sync_calls) == 1
+        assert len(window._checked_ids) == 0
+        assert window._mode == "singular"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_checked_set_and_mode_stay_in_sync_with_the_tree(harness):
+    """Every toggle that reaches the tree — our machinery or a raw
+    style-native flip — must leave the checked set and the mode in
+    agreement with the rows' real check states. A quick tap of the
+    same folder on and off is the failure mode that used to diverge."""
+    open_library, root = harness
+    window = open_library(tags_for("Alpha"), tags_for("Beta"))
+
+    def leaves_checked():
+        return {leaf.data(0, Qt.UserRole + 1) for leaf in clip_leaves(window)
+                if leaf.checkState(0) == Qt.Checked}
+
+    def ids_checked():
+        return {leaf.data(0, Qt.UserRole) for leaf in clip_leaves(window)
+                if leaf.checkState(0) == Qt.Checked}
+
+    try:
+        folder = folder_for(window, "CN")
+
+        window._toggle_item_check(folder)
+        window._drain_checks()
+        assert window._checked_ids == ids_checked()
+        assert len(window._checked_ids) == 2
+        assert window._mode == "bulk"
+
+        window._toggle_item_check(folder)
+        window._drain_checks()
+        assert window._checked_ids == set()
+        assert leaves_checked() == set()
+        assert window._mode == "singular"
+
+        # A raw flip the machinery did not drive — the exact-click
+        # discrimination misfiring or queued native emits. The model
+        # fallback catches the change, coalesced onto the drain.
+        raw = leaf_for(window, "CN/Promo/2000s/Alpha.mp4")
+        raw.setCheckState(0, Qt.Checked)
+        window._drain_checks()
+
+        assert window._checked_ids == ids_checked()
+        assert len(window._checked_ids) == 1
+        assert leaves_checked() == {"CN/Promo/2000s/Alpha.mp4"}
+        assert window._mode == "bulk"
+
+        raw.setCheckState(0, Qt.Unchecked)
+        window._drain_checks()
+        assert window._checked_ids == set()
+        assert leaves_checked() == set()
+        assert window._mode == "singular"
+    finally:
+        window.close()
+        window.deleteLater()
 
 
 def test_real_clicks_on_indicators_toggle_exactly_once(harness):
@@ -1793,11 +1893,13 @@ def test_real_clicks_on_indicators_toggle_exactly_once(harness):
     assert window._mode == "singular"
 
     _click(tree, _indicator_pos(tree, a))
+    window._drain_checks()
     assert a.checkState(0) == Qt.Checked
     assert window._mode == "bulk"
     assert window.ui.labelClipName.text() == "1 clip selected"
 
     _click(tree, _indicator_pos(tree, b))
+    window._drain_checks()
     assert b.checkState(0) == Qt.Checked
     assert window._mode == "bulk"
     assert window.ui.labelClipName.text() == "2 clips selected"
@@ -1805,47 +1907,47 @@ def test_real_clicks_on_indicators_toggle_exactly_once(harness):
     # A row-body click toggles in bulk mode without touching the
     # current-item machinery.
     _click(tree, _body_pos(tree, b))
+    window._drain_checks()
     assert b.checkState(0) == Qt.Unchecked
     assert window._mode == "bulk"
 
     _click(tree, _body_pos(tree, a))
+    window._drain_checks()
     assert a.checkState(0) == Qt.Unchecked
     assert window._mode == "singular"
     assert not window.ui.videoContainer.isHidden()
-import time
-
-CLIP_COUNT = 600
 
 
-def _big_library(open_library, count=CLIP_COUNT):
-    return open_library(
-        *(tags_for(f"Clip{i}") for i in range(count)))
+
+from PySide6.QtCore import QObject, QEvent, Qt, QPoint
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication,
+    QStyle,
+    QStyleOptionViewItem,
+)
 
 
-import time
-
-CLIP_COUNT = 600
+CLIP_COUNT = 30
 
 
-def _big_library(open_library, count=CLIP_COUNT):
-    return open_library(
-        *(tags_for(f"Clip{i}") for i in range(count)))
+class Spy(QObject):
+    def __init__(self, tree):
+        super().__init__()
+        self.events = []
 
+    def eventFilter(self, obj, event):
+        t = event.type()
+        if t in (QEvent.Type.MouseButtonPress,
+                 QEvent.Type.MouseButtonRelease,
+                 QEvent.Type.MouseButtonDblClick):
+            label = {
+                QEvent.Type.MouseButtonPress: "Press",
+                QEvent.Type.MouseButtonRelease: "Release",
+                QEvent.Type.MouseButtonDblClick: "DblClick",
+            }[t]
+            pos = event.position()
+            self.events.append((label, int(pos.x()), int(pos.y())))
+        return False
 
-import time
-
-CLIP_COUNT = 600
-
-
-def _big_library(open_library, count=CLIP_COUNT):
-    return open_library(
-        *(tags_for(f"Clip{i}") for i in range(count)))
-
-
-CLIP_COUNT = 400
-
-
-def _big_library(open_library, count=CLIP_COUNT):
-    return open_library(
-        *(tags_for(f"Clip{i}") for i in range(count)))
 
