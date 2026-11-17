@@ -220,6 +220,23 @@ When you've staged the last segment, click "Finished - Export" at the bottom, an
 
 **Manage your filler clips, (soon) deal with duplicate clips, and perform library maintenance**
 
+Pretty self explanatory, used to browse your filler library and manage its tags, both singularly and in bulk.
+
+### Single Editing Mode
+
+1. Expand folders in the library tree in order to navigate to your desired clip.
+2. Click on the text of the clip to load it into the right pane.
+3. Watch the clip, and change its tags in the tag form below as desired.
+4. Click save, and your clip will be renamed and moved to its new location, according to its tags and your set schemes.
+
+### Bulk Editing Mode
+
+1. Click on one or more of the toggles in the library tree in order to enter Bulk Editing Mode.
+2. The video player will disappear, and the tag form on the right will activate a "blended" mode, overlapping all of the toggled clip's tags.
+3. In this blended mode, any namespaces that are the same tag across every single toggled clip, will display as that tag, while any with differing tags will display as `(multiple values)`
+4. Any changed tags (aside from Title which cannot be bulk edited) in this blended mode will apply to **every** toggled clip once "Apply to X clips" is clicked.
+5. To bulk remove a tag from all clips, simply erase it and then apply it (if the entries you wish to remove are multiple values, you must first type any character, and then delete it).
+
 ## Library Import
 
 **Import both tagged and untagged libraries into your own**
@@ -234,7 +251,7 @@ Any clips in the `/import` folder which do not have an associated `.cnfo` files 
 
 1. Assuming the existing untagged library has some sort of organization scheme, the Untagged Library Mesh will show you each folder name, and ask you what namespace and tag should be applied to every clip contained within it (recursively, so it applies to clips in all subfolders as well). Each instance of that folder name will have the tag applied to it, so any duplicates will receive it as well. Folders that do not need a tag (e.g. technically namespace folders like "Blocks") can be skipped.
 2. Once you've assigned a tag to every folder name, you will advance to the individual clip Tag Editor, where you will assign a title to each clip, and make any needed tag edits.
-3. Title must be manuall set for each clip, if the file names contain the title, this can be sped up: click and drag your cursor over the file name at the top in order to highlight it, then click the button to add the highlighted text as the title.
+3. Title must be manually set for each clip, if the file names contain the title, this can be sped up: click and drag your cursor over the file name at the top in order to highlight it, then click the button to add the highlighted text as the title.
 4. Apply any other required/desired tags as needed on a clip by clip basis.
 5. Derive tags based on text contained in the file name by clicking "Manage Autofill Rules", it comes with year parsing as a default rule, but this can be temporarily removed if desired. Add new rules as you discover them in the library (e.g. if a filename has "30 Sec" in it, apply the tag `length:30 Sec`) and your tagging will get faster as you progress. Autofill Rules are per session, they reset to only the year one on every new import.
 6. You may stop at any time, your progress through the clips is saved (you are actually writing `.cnfo` files to each clip, slowly turning it into a Tagged Library) and will resume where you left off the next time you open the importer. Once you have completed all of them, you will be given the opportunity to review the tags in the Tagged Library Mesh (next section). If you are confident you got all of them right and didn't make any mistakes, you can click "Import Now" to skip this process and go straight to moving/copying the imported library straight to your export directory.
@@ -252,6 +269,15 @@ If all of the clips in the `/import/` folder already have associated `.cnfo` fil
 ## Library Sharing
 
 **Share all or part of your filler library with others**
+
+Package your filler into a convenient zip file, which the recipient can simply drag and drop onto their CommCut main menu in order to import it into their library.
+
+1. If you wish to share your entire library, open the Library Sharing window and simply click "Share".
+2. If you only want to share a portion of your library, first edit the included and/or excluded tag lists.
+3. Included tags are a whitelist, only clips which contain these tags will be included in the share zip file.
+4. Excluded tags are a blacklist, clips which contain these tags will not be included in the share zip file.
+5. Once you are satisfied and click "Share", supply a descriptive name for the Share, and the zip file will be deposited in the "share" folder in the root of your CommCut directory, with all the clips and their associated `.cnfo` files included.
+6. Upload this zip somewhere and share it with whoever you want, they will be able to use CommCut to import it and mesh it into their existing CommCut library.
 
 # Roadmap
 
